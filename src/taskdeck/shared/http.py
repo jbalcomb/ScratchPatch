@@ -64,6 +64,19 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         return raw
 
 
+def reachable(url: str, timeout: float = 3) -> bool:
+    """Quick TCP connect to the URL's host and port: is anything listening there?"""
+    parts = urllib.parse.urlsplit(url.strip())
+    if not parts.hostname:
+        return False
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        with socket.create_connection((parts.hostname, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def post_json(url: str, body: Any, **kw: Any) -> Any:
     return request("POST", url, json_body=body, **kw)
 

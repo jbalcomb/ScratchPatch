@@ -147,42 +147,13 @@ def test_save_appends_one_row():
     assert len(backend.rows) == 1 and backend.rows[0][14] == 257
 
 
-# ---- model reply handling --------------------------------------------------------------
+# ---- model endpoints ----------------------------------------------------------------
 
-def test_model_json_with_stray_text():
-    assert extract.parse_model_json('Sure!\n```json\n{"day": 16}\n```') == {"day": 16}
-
-
-@pytest.mark.parametrize("content", ["no json here", "{not: valid}", ""])
-def test_model_garbage_is_a_clear_error(content):
-    with pytest.raises(StepError, match="AI model"):
-        extract.parse_model_json(content)
-
-
-def test_ask_model_sends_prompt_and_settings(monkeypatch):
-    sent = {}
-
-    def fake_post(url, body, timeout):
-        sent.update(url=url, body=body, timeout=timeout)
-        return {"choices": [{"message": {"content": '{"day": 16}'}}]}
-
-    monkeypatch.setattr(extract, "post_json", fake_post)
-    assert extract.ask_model("log", "http://ws:8080/v1/chat/completions", "qwen") == {"day": 16}
-    assert sent["body"]["temperature"] == 0
-    assert sent["body"]["response_format"] == {"type": "json_object"}
-    assert sent["body"]["model"] == "qwen" and sent["timeout"] == 120
-    assert sent["body"]["messages"][0]["content"] == extract.PROMPT
-
-
-def test_unreachable_model_message(monkeypatch):  # acceptance 8
-    from taskdeck.shared.http import HttpError
-
-    def down(*a, **k):
-        raise HttpError("Can't reach ws:8080: Connection refused")
-
-    monkeypatch.setattr(extract, "post_json", down)
-    with pytest.raises(StepError, match="AI Workstation on"):
-        extract.ask_model("log", "http://ws:8080/v1/chat/completions", "local")
+def test_endpoints_from_settings():
+    eps = extract.endpoints({"llm_url": "http://ws:8080/v1/chat/completions", "fallback_api_key": "k"})
+    assert [e.label for e in eps] == ["AI Workstation", "Gemini"]
+    assert eps[1].model == "gemini-flash-latest" and "generativelanguage.googleapis.com" in eps[1].url
+    assert [e.label for e in extract.endpoints({"llm_url": "x"})] == ["AI Workstation"]  # no key -> no fallback
 
 
 # ---- whole job through the plugin contract ------------------------------------------------
@@ -191,7 +162,7 @@ SETTINGS = {"llm_url": "http://ws:8080/v1/chat/completions", "service_account_js
 
 
 def test_parse_is_side_effect_free_and_previews(monkeypatch):
-    monkeypatch.setattr(extract, "ask_model", lambda text, url, model: dict(SAMPLE_RAW))
+    monkeypatch.setattr(extract, "ask_model", lambda text, settings: (dict(SAMPLE_RAW), "Gemini"))
     monkeypatch.setattr(daily_log, "build_record", lambda raw: build_record(raw, TODAY))
     monkeypatch.setattr(sheets, "make_backend", lambda s: pytest.fail("parse must not touch the sheet"))
     report = daily_log.PLUGIN.run({"log": SAMPLE_LOG}, settings=SETTINGS)
@@ -200,11 +171,12 @@ def test_parse_is_side_effect_free_and_previews(monkeypatch):
     assert rows["Earnings"] == "$187.82" and rows["Batch count"] == "—" and rows["Miles driven"] == "257"
     assert report.result.warning == "Not found: Batch count."
     assert report.result.payload["earnings"] == 187.82  # sheet gets the plain number
+    assert report.result.title == "Row for 10/16/2026 · parsed by Gemini"
 
 
 def test_parse_requires_model_url():
     report = daily_log.PLUGIN.run({"log": SAMPLE_LOG}, settings={})
-    assert not report.ok and "AI model URL" in report.error
+    assert not report.ok and "AI Workstation URL or a Gemini API key" in report.error
 
 
 def test_parse_requires_log_text():

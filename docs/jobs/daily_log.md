@@ -1,7 +1,8 @@
 # Daily Log to Sheet
 
-Paste the day's delivery log, tap **Parse log**, check the preview, tap **Save to sheet**. The local AI model
-on the AI Workstation only extracts values. All arithmetic happens in code
+Paste the day's delivery log, tap **Parse log**, check the preview, tap **Save to sheet**. An AI model only
+extracts values: the AI Workstation's llama.cpp first, and **Gemini as a fallback** when the workstation is
+offline or fails. The phone itself writes the row to the sheet. All arithmetic happens in code
 (`src/taskdeck/jobs/daily_log/record.py`). The full spec is in [daily_log_PRD.md](daily_log_PRD.md).
 
 ## One-time setup
@@ -28,8 +29,11 @@ Open the job, tap the **tune** icon (top right):
 
 | Setting | Value |
 |---|---|
-| AI model URL | the llama.cpp endpoint on the AI Workstation, e.g. `http://192.168.1.50:8080/v1/chat/completions` at home, or its Tailscale name/IP when away. `localhost` will **not** work from the phone. |
-| AI model name | whatever llama.cpp expects (`local` is fine for a single-model server) |
+| AI Workstation URL | the llama.cpp endpoint, e.g. `http://192.168.1.50:8080/v1/chat/completions` at home, or its Tailscale name/IP when away. `localhost` will **not** work from the phone. |
+| AI Workstation model name | whatever llama.cpp expects (`local` is fine for a single-model server) |
+| Gemini API key (fallback) | create one at [aistudio.google.com](https://aistudio.google.com) → *Get API key*. Leave blank for no fallback. |
+| Gemini model | `gemini-flash-latest` by default; change it if Google rejects the name |
+| Fallback URL | Gemini's OpenAI-compatible endpoint by default; any OpenAI-compatible chat API works |
 | Sheet ID | pre-filled with the Instacart sheet |
 | Tab name | `Sheet1` |
 | Google service account key | tap **Import file…** and pick the `.json`, or paste its contents |
@@ -37,18 +41,27 @@ Open the job, tap the **tune** icon (top right):
 llama.cpp must listen on the network, not just loopback: start it with `--host 0.0.0.0` (or the
 Tailscale IP).
 
+## Which model parses
+
+1. The phone checks (3-second connect) whether the AI Workstation is reachable. If it is, the log goes there.
+2. If the workstation is unreachable or returns an error, and a Gemini key is set, the log goes to Gemini.
+3. The preview title says which one answered ("Row for 10/16/2026 · parsed by Gemini").
+4. If both fail, the error names each failure, and the pasted text is kept.
+
+On Gemini's **free tier**, Google may use what you send to improve its products. The log contains times,
+earnings and mileage. Enabling billing on the AI Studio project (Google AI Pro includes monthly Cloud credit
+that can cover this) makes it paid usage, which isn't used that way.
+
 ## Security note
 
 With the current setup, the service-account key is stored as plain JSON in TaskDeck's private app storage on
-the phone. Anyone who can read that storage (a rooted phone, a backup) can edit any sheet shared with that
-service account. Share only this one sheet with it. The planned switches:
+the phone (`state.json` in TaskDeck's private app storage). Anyone who can read that storage (a rooted phone,
+a backup) can edit any sheet shared with that service account. Share only this one sheet with it, and delete
+the downloaded `.json` from the phone after importing it. The Gemini API key is stored the same way.
 
-1. **Relay on the AI Workstation**: the phone sends the finished record to a small service there, which holds
-   the key, checks the headers and appends the row. The key leaves the phone.
-2. **Google sign-in on the phone (OAuth)**: no service account at all.
-
-Both go in `jobs/daily_log/sheets.py` as another `SheetBackend` (`header_row()` + `append(row)`). The job, the
-preview and the header check don't change.
+The AI Workstation only parses; it never touches the sheet. The planned next step is **Google sign-in on the
+phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_log/sheets.py` as another
+`SheetBackend` (`header_row()` + `append(row)`). The job, the preview and the header check don't change.
 
 ## How it maps to the PRD
 
