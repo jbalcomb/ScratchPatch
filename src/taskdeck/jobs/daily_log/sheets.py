@@ -5,9 +5,9 @@ without touching the job:
 
 * ``service_account`` (now): the service-account key is stored on the phone and
   the phone calls the Sheets API directly.
-* ``relay`` (planned): POST the record to a small service on the AI Workstation
-  that holds the key.
 * ``oauth`` (planned): sign in with the user's Google account on the phone.
+
+The AI Workstation only parses logs; it never writes to the sheet.
 """
 
 from __future__ import annotations
