@@ -21,6 +21,13 @@ Keys (use null when a value is missing):
   orders: integer
   earnings: number, no currency symbol
   gas_fills: list of {"at": number, "after": number}, one per fill-up
+Labels in the log:
+  "Start time" = departure_time (leaving home). It is NOT online_time.
+  "Online at" = online_time; "Offline at" = offline_time (the delivery app's on/off times).
+  "Arrival time" = arrival_time (back home).
+  "Starting mileage" = departure_mileage; "Ending mileage" = arrival_mileage.
+  "N orders for $X" = orders N and earnings X.
+Only fill a key from its own label; if that label is absent, use null.
 Notes: times like 2146 mean 21:46. Mileage values are fuel range shown on the dash, not odometer readings.
 For a fill-up, "at" is the range when gas was bought and "after" is the range after filling."""
 

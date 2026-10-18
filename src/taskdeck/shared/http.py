@@ -91,6 +91,8 @@ def _error_detail(body: str) -> str:
         data = json.loads(body)
     except (json.JSONDecodeError, TypeError):
         return body.strip()[:200]
+    if isinstance(data, list) and data:
+        data = data[0]
     err = data.get("error") if isinstance(data, dict) else None
     if isinstance(err, dict):
         return str(err.get("message") or err)

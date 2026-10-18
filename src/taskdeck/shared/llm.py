@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,6 +18,7 @@ from taskdeck.core import StepError
 from .http import HttpError, post_json, reachable
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+RETRY_DELAYS = (2.0, 5.0)  # seconds before the 2nd and 3rd attempt on a busy/transient error
 
 
 @dataclass(frozen=True)
@@ -73,10 +75,16 @@ def chat_json(endpoint: ModelEndpoint, system: str, user: str) -> dict[str, Any]
     }
     key = extract_api_key(endpoint.api_key)
     headers = {"Authorization": f"Bearer {key}"} if key else None
-    try:
-        resp = post_json(endpoint.url.strip(), payload, headers=headers, timeout=endpoint.timeout)
-    except HttpError as exc:
-        raise StepError(f"{endpoint.label}: {exc}") from None
+    for attempt, delay in enumerate(RETRY_DELAYS + (None,)):
+        try:
+            resp = post_json(endpoint.url.strip(), payload, headers=headers, timeout=endpoint.timeout)
+            break
+        except HttpError as exc:
+            # Busy / rate-limited / transient server errors are worth a short retry.
+            if delay is not None and exc.status in (429, 500, 502, 503, 504):
+                time.sleep(delay)
+                continue
+            raise StepError(f"{endpoint.label}: {exc}") from None
     try:
         content = resp["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):

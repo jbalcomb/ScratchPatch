@@ -28,6 +28,7 @@ def net(monkeypatch):
         return ans
 
     monkeypatch.setattr(llm, "reachable", fake_reachable)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
     monkeypatch.setattr(llm, "post_json", fake_post)
     return state
 
@@ -109,3 +110,31 @@ def test_curl_paste_is_sent_as_bearer(net):
     endpoint = llm.ModelEndpoint("Gemini", llm.GEMINI_URL, "gemini-flash-latest", api_key=CURL)
     llm.chat_json_with_fallback([endpoint], "SYS", "log")
     assert net["sent"][0]["headers"] == {"Authorization": "Bearer AQ.Ab8-example_KEY.value1234567890"}
+
+
+def test_busy_model_is_retried(net, monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = iter([HttpError("HTTP 503: high demand", 503), reply('{"day": 16}')])
+
+    def flaky(url, body, headers=None, timeout=30):
+        ans = next(calls)
+        if isinstance(ans, Exception):
+            raise ans
+        return ans
+
+    monkeypatch.setattr(llm, "post_json", flaky)
+    assert llm.chat_json(CLOUD, "SYS", "log") == {"day": 16}
+
+
+def test_gives_up_after_retries(net, monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    net["answers"][CLOUD.url] = HttpError("HTTP 503: high demand", 503)
+    with pytest.raises(StepError, match="Gemini: HTTP 503"):
+        llm.chat_json(CLOUD, "SYS", "log")
+    assert len(net["sent"]) == 3
+
+
+def test_list_shaped_error_body():
+    from taskdeck.shared.http import _error_detail
+    body = '[{"error": {"code": 503, "message": "This model is currently experiencing high demand."}}]'
+    assert _error_detail(body) == "This model is currently experiencing high demand."
