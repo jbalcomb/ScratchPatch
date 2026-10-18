@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import ast
 import builtins
+import importlib
+import pkgutil
 import difflib
 import inspect
 import re
@@ -145,6 +147,28 @@ def _functions_in(module: ModuleType, owner: str, step_names: set[str]) -> list[
     return out
 
 
+def _package_modules(name: str) -> list[ModuleType]:
+    """A module plus, if it is a package, all of its submodules."""
+    module = importlib.import_module(name)
+    out = [module]
+    if hasattr(module, "__path__"):
+        for info in pkgutil.walk_packages(module.__path__, prefix=f"{name}."):
+            try:
+                out.append(importlib.import_module(info.name))
+            except Exception:
+                continue
+    return out
+
+
+def _plugin_modules(plugin: JobPlugin) -> list[ModuleType]:
+    """Every module of the package that defines the plugin (a job may span several files)."""
+    module = inspect.getmodule(type(plugin))
+    if module is None:
+        return []
+    package = module.__name__ if hasattr(module, "__path__") else None
+    return _package_modules(package) if package else [module]
+
+
 # ---- analysis ---------------------------------------------------------------
 
 def similarity(a: list[str], b: list[str]) -> float:
@@ -231,9 +255,7 @@ def check_plugin(plugin: JobPlugin) -> list[str]:
 def review(registry: PluginRegistry, threshold: float = 0.85, min_tokens: int = 40,
            shared_modules: tuple[ModuleType, ...] | None = None) -> ReviewReport:
     if shared_modules is None:
-        from taskdeck.shared import steps as shared_steps, text as shared_text
-
-        shared_modules = (shared_steps, shared_text)
+        shared_modules = tuple(_package_modules("taskdeck.shared"))
 
     funcs: list[FunctionInfo] = []
     pipelines: dict[str, list[str]] = {}
@@ -252,11 +274,11 @@ def review(registry: PluginRegistry, threshold: float = 0.85, min_tokens: int = 
         pipelines[plugin.id] = keys
         shapes[tuple(s.value for s in pipe.shape)].append(plugin.id)
         adoption[plugin.id] = round(sum(k.startswith("shared.") for k in keys) / len(keys), 2) if keys else 0.0
-        module = inspect.getmodule(type(plugin))
-        if module and module.__name__ not in modules_seen:
-            modules_seen.add(module.__name__)
-            step_names = {getattr(s.fn, "__name__", "") for s in pipe if not s.key.startswith("shared.")}
-            funcs.extend(_functions_in(module, plugin.id, step_names))
+        step_names = {getattr(s.fn, "__name__", "") for s in pipe if not s.key.startswith("shared.")}
+        for module in _plugin_modules(plugin):
+            if module.__name__ not in modules_seen:
+                modules_seen.add(module.__name__)
+                funcs.extend(_functions_in(module, plugin.id, step_names))
 
     for mod in shared_modules:
         funcs.extend(_functions_in(mod, "shared", set()))

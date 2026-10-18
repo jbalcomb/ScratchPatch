@@ -41,6 +41,16 @@ flet build apk      # or: flet build aab  (for the Play Store)
 App metadata (package id, product name) is in `pyproject.toml` under `[tool.flet]`. On the device, state is
 stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 
+## Jobs
+
+| Job | Notes |
+|---|---|
+| **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
+| Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
+
+Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:
+the first button builds a preview without side effects, and a second button commits it.
+
 ## Add a job
 
 ```bash

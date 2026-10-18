@@ -47,6 +47,9 @@ class Result:
     text: str | None = None
     rows: list[tuple[str, str]] = field(default_factory=list)
     title: str | None = None
+    warning: str | None = None  # shown under the result, e.g. "Not found: Batch count."
+    # Machine-readable data for a later commit step (see JobPlugin.commit); not displayed.
+    payload: Any = None
 
     def as_plain_text(self) -> str:
         parts = []
@@ -57,6 +60,8 @@ class Result:
             parts.extend(f"{k.ljust(width)}  {v}" for k, v in self.rows)
         if self.text:
             parts.append(self.text)
+        if self.warning:
+            parts.append(self.warning)
         return "\n".join(parts)
 
 
@@ -66,6 +71,7 @@ class Context:
 
     inputs: dict[str, Any]
     data: dict[str, Any] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
     result: Result | None = None
     log: list[str] = field(default_factory=list)
     _cancelled: bool = False

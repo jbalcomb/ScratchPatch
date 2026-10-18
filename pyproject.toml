@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "A plugin-driven interface for running jobs, built with Flet for Android."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["flet==1.0.4"]
+dependencies = [
+    "flet==1.0.4",
+    "rsa>=4.9",      # pure-Python RSA for Google service-account auth on Android
+    "certifi",       # CA bundle: Python on Android has no system certificates
+]
 
 [dependency-groups]
 dev = [
@@ -26,8 +30,8 @@ copyright = "Copyright (C) 2026"
 [tool.flet.app]
 path = "src"
 
-[tool.flet.android]
-# Portrait-first phone UI; the layout also adapts to tablets and desktop.
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true  # AI model on the home network, Google Sheets
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -15,6 +15,7 @@ from taskdeck.core import (
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
+from .settings_view import JobSettingsScreen
 from .palette import CommandPalette
 
 TABS = [
@@ -44,7 +45,7 @@ class TaskDeckApp:
         self.commands = CommandRegistry()
         self.palette = CommandPalette(self)
         self.tab = "home"
-        self.job_screens: list[JobScreen] = []
+        self.stack: list[JobScreen | JobSettingsScreen] = []  # pushed views above the root
 
         page.title = "TaskDeck"
         page.theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO)
@@ -75,9 +76,9 @@ class TaskDeckApp:
     # ---- navigation ---------------------------------------------------------------
 
     def go(self, tab: str) -> None:
-        while len(self.page.views) > 1:  # leave any open job
+        while len(self.page.views) > 1:  # leave any open job or settings screen
             self.page.views.pop()
-            self.job_screens.pop()
+            self.stack.pop()
         self.tab = tab
         self.nav.selected_index = [t[0] for t in TABS].index(tab)
         self.render()
@@ -88,15 +89,22 @@ class TaskDeckApp:
         if plugin is None:
             self.toast(f"Job {job_id!r} is not installed")
             return
-        screen = JobScreen(self, plugin, preset)
-        self.job_screens.append(screen)
+        self.push(JobScreen(self, plugin, preset))
+
+    def open_settings(self, job_id: str) -> None:
+        plugin = self.registry.get(job_id)
+        if plugin and plugin.settings:
+            self.push(JobSettingsScreen(self, plugin))
+
+    def push(self, screen) -> None:
+        self.stack.append(screen)
         self.page.views.append(screen.view)
         self.page.update()
 
     def on_view_pop(self, e) -> None:
         if len(self.page.views) > 1:
             self.page.views.pop()
-            self.job_screens.pop()
+            self.stack.pop()
             self.render()
             self.page.update()
 
@@ -107,8 +115,24 @@ class TaskDeckApp:
             self.on_view_pop(None)
 
     @property
+    def job_screens(self) -> list[JobScreen]:
+        return [s for s in self.stack if isinstance(s, JobScreen)]
+
+    @property
+    def top_job_screen(self) -> JobScreen | None:
+        return self.stack[-1] if self.stack and isinstance(self.stack[-1], JobScreen) else None
+
+    @property
     def current_job(self) -> JobPlugin | None:
-        return self.job_screens[-1].plugin if self.job_screens else None
+        return self.stack[-1].plugin if self.stack else None
+
+    # ---- job settings -------------------------------------------------------------
+
+    def job_settings(self, job_id: str) -> dict[str, Any]:
+        return dict(self.store.get(f"settings:{job_id}", {}))
+
+    def save_job_settings(self, job_id: str, values: dict[str, Any]) -> None:
+        self.store.set(f"settings:{job_id}", values)
 
     # ---- rendering ----------------------------------------------------------------
 
@@ -281,6 +305,7 @@ class TaskDeckApp:
             selected=[self.store.get("theme", "system")],
             on_change=lambda e: self.set_theme(list(e.control.selected)[0]),
         )
+        configurable = [p for p in self.registry if p.settings]
         shortcuts = [("Ctrl+K / Ctrl+Shift+P", "Command palette"), ("Ctrl+1…4", "Switch tab"),
                      ("Ctrl+D", "Pin / unpin the open job"), ("Esc", "Close palette or go back"),
                      ("> / @ in palette", "Only actions / only jobs")]
@@ -289,6 +314,9 @@ class TaskDeckApp:
                 ft.Container(height=8),
                 section_title("Appearance"),
                 theme,
+                *([section_title("Job settings")] if configurable else []),
+                *[ft.ListTile(leading=ft.Icon(plugin_icon(p)), title=ft.Text(p.title), trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
+                              on_click=lambda e, pid=p.id: self.open_settings(pid)) for p in configurable],
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
                 section_title("About"),
@@ -353,6 +381,9 @@ class TaskDeckApp:
         for p in self.registry:
             c.add(Command(f"job:{p.id}", p.title, lambda pid=p.id: self.open_job(pid), CommandKind.JOB,
                           subtitle=f"{p.category} · {p.description}", icon=p.icon, keywords=p.tags))
+            if p.settings:
+                c.add(Command(f"settings:{p.id}", f"Settings: {p.title}", lambda pid=p.id: self.open_settings(pid),
+                              icon="TUNE", subtitle="Job settings", keywords=("configure", *p.tags)))
             for qa in p.quick_actions:
                 c.add(Command(f"quick:{p.id}:{qa.title}", qa.title,
                               lambda pid=p.id, inputs=qa.inputs: self.open_job(pid, inputs),
@@ -367,10 +398,13 @@ class TaskDeckApp:
         c.add(Command("job:unpin", "Unpin current job", lambda: self.toggle_pin(self.current_job.id), icon="PUSH_PIN_OUTLINED",
                       shortcut="Ctrl+D", keywords=("favorite", "remove"),
                       when=lambda: bool(self.current_job) and self.favorites.is_pinned(self.current_job.id)))
-        c.add(Command("job:run", "Run current job", lambda: self.page.run_task(self.job_screens[-1].run),
-                      icon="PLAY_ARROW", keywords=("execute", "start"), when=lambda: bool(self.job_screens)))
+        c.add(Command("job:run", "Run current job", lambda: self.page.run_task(self.top_job_screen.run),
+                      icon="PLAY_ARROW", keywords=("execute", "start"), when=lambda: bool(self.top_job_screen)))
+        c.add(Command("job:settings", "Settings for current job", lambda: self.open_settings(self.current_job.id),
+                      icon="TUNE", keywords=("configure", "options"),
+                      when=lambda: bool(self.top_job_screen) and bool(self.current_job.settings)))
         c.add(Command("job:back", "Close current job", self.back, icon="ARROW_BACK", shortcut="Esc",
-                      when=lambda: bool(self.job_screens)))
+                      when=lambda: bool(self.stack)))
         for key in THEMES:
             c.add(Command(f"theme:{key}", f"Theme: {key.title()}", lambda k=key: self.set_theme(k),
                           icon="DARK_MODE" if key == "dark" else "LIGHT_MODE" if key == "light" else "BRIGHTNESS_AUTO",

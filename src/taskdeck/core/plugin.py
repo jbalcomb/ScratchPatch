@@ -40,6 +40,9 @@ class Field:
     default: Any = None
     help: str = ""
     choices: tuple[str, ...] = ()
+    secret: bool = False  # masked in the UI; for settings such as API keys
+    lines: int = 3  # visible lines for MULTILINE fields
+    importable: bool = False  # offer "Import file" to fill the value from a file
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -104,15 +107,39 @@ class JobPlugin:
     tags: ClassVar[tuple[str, ...]] = ()
     fields: ClassVar[tuple[Field, ...]] = ()
     quick_actions: ClassVar[tuple[QuickAction, ...]] = ()
+    # Per-job configuration (URLs, IDs, keys). Edited from the job's settings screen,
+    # persisted by the host, and handed to steps as ``ctx.settings``.
+    settings: ClassVar[tuple[Field, ...]] = ()
+    run_label: ClassVar[str] = "Run"
+    # Two-phase jobs: the pipeline must be side-effect free and produce a preview whose
+    # ``Result.payload`` is passed to :meth:`commit` once the user confirms.
+    commit_label: ClassVar[str] = ""
+    committed_label: ClassVar[str] = "Done"
 
     def build_pipeline(self) -> Pipeline:
+        raise NotImplementedError
+
+    @property
+    def has_commit(self) -> bool:
+        return bool(self.commit_label)
+
+    def commit(self, payload: Any, settings: dict[str, Any]) -> str:
+        """Perform the job's side effect. Raise StepError with a user-facing message on failure.
+
+        Returns a short confirmation message.
+        """
         raise NotImplementedError
 
     def collect_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {f.name: f.coerce(raw.get(f.name, f.default)) for f in self.fields}
 
+    def resolve_settings(self, stored: dict[str, Any] | None) -> dict[str, Any]:
+        """Stored values merged over defaults. Not validated: steps check what they need."""
+        stored = stored or {}
+        return {f.name: stored.get(f.name, f.default) for f in self.settings}
+
     def run(self, raw_inputs: dict[str, Any], on_progress: ProgressFn | None = None,
-            ctx: Context | None = None) -> RunReport:
+            ctx: Context | None = None, settings: dict[str, Any] | None = None) -> RunReport:
         """Coerce inputs, build the pipeline and run it. Never raises for user errors."""
         try:
             inputs = self.collect_inputs(raw_inputs)
@@ -120,7 +147,17 @@ class JobPlugin:
             return RunReport(False, None, [], str(exc))
         ctx = ctx or Context(inputs)
         ctx.inputs = inputs
+        ctx.settings = self.resolve_settings(settings)
         return self.build_pipeline().run(ctx, on_progress)
+
+    def try_commit(self, payload: Any, settings: dict[str, Any] | None = None) -> tuple[bool, str]:
+        """Run :meth:`commit`, turning any failure into ``(False, message)``."""
+        try:
+            return True, self.commit(payload, self.resolve_settings(settings))
+        except StepError as exc:
+            return False, str(exc)
+        except Exception as exc:  # bug or unexpected I/O failure in the plugin
+            return False, f"{type(exc).__name__}: {exc}"
 
     @property
     def search_text(self) -> str:
