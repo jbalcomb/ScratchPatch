@@ -28,7 +28,10 @@ class FieldControl:
             )
         if field.importable:
             self.control = ft.Column(
-                [self.input, ft.Row([ft.TextButton("Import file…", icon=ft.Icons.UPLOAD_FILE, on_click=self._import)])],
+                [self.input, ft.Row([
+                    ft.TextButton("Paste", icon=ft.Icons.CONTENT_PASTE, on_click=self._paste),
+                    ft.TextButton("Import file…", icon=ft.Icons.UPLOAD_FILE, on_click=self._import),
+                ])],
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )

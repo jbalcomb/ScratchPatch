@@ -54,7 +54,7 @@ class DailyLog(JobPlugin):
         Field.text("sheet_id", "Sheet ID", default=DEFAULT_SHEET_ID),
         Field.text("sheet_tab", "Tab name", default="Sheet1"),
         Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True,
-                   help="Import the .json key file, or paste its contents. Share the sheet with the key's "
+                   help="Tap Paste after copying the whole .json key text, or Import the file. Share the sheet with the key's "
                         "client_email as Editor."),
     )
     run_label = "Parse log"

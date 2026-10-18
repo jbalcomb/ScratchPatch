@@ -34,7 +34,7 @@ class ServiceAccountKey:
     @classmethod
     def from_json(cls, text: str) -> "ServiceAccountKey":
         try:
-            info = json.loads(text)
+            info = json.loads((text or "").strip(), strict=False)
         except (json.JSONDecodeError, TypeError):
             raise GoogleError("The service account key isn't valid JSON. Paste or import the whole .json key file.") from None
         if not isinstance(info, dict) or info.get("type") != "service_account":

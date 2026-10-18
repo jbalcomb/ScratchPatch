@@ -8,6 +8,9 @@ on:
       - "pyproject.toml"
       - ".github/workflows/android.yml"
 
+permissions:
+  contents: write  # publish the APK to the "taskdeck-latest" release
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -25,8 +28,17 @@ jobs:
       - name: Build APK
         # --yes lets flet install the matching Flutter and Android SDKs
         run: flet build apk --yes --no-rich-output --build-number ${{ github.run_number }}
+      - run: cp "$(ls build/apk/*.apk | head -n1)" TaskDeck.apk
       - uses: actions/upload-artifact@v4
         with:
           name: taskdeck-apk
-          path: build/apk/*.apk
+          path: TaskDeck.apk
           if-no-files-found: error
+      - name: Publish to the "latest" release (stable download link)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete taskdeck-latest --yes --cleanup-tag || true
+          gh release create taskdeck-latest TaskDeck.apk --prerelease --target "$GITHUB_SHA" \
+            --title "TaskDeck (latest build #${{ github.run_number }})" \
+            --notes "Built from ${GITHUB_SHA::7}. Download TaskDeck.apk on your phone and tap it to install."
