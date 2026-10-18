@@ -24,7 +24,7 @@ its timing.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install "flet[all]==1.0.4" pytest
+pip install "flet[all]==1.0.4" "fastapi<0.120" pytest   # fastapi pin: needed by flet-web 1.0.4
 flet run src/main.py            # desktop window
 flet run --web src/main.py      # browser
 pytest                          # tests
