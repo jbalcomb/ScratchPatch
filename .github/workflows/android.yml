@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write  # publish the APK to the "taskdeck-latest" release
 
+# A newer push cancels an older build, so the release always holds the newest APK.
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   apk:
     runs-on: ubuntu-latest
