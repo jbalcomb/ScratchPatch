@@ -55,7 +55,8 @@ class DailyLog(JobPlugin):
                         "http://192.168.1.50:8080/v1/chat/completions or its Tailscale address"),
         Field.text("llm_model", "AI Workstation model name", default="local"),
         Field.text("fallback_api_key", "Gemini API key (fallback)", secret=True,
-                   help="Used when the AI Workstation is offline. Create one at aistudio.google.com. Leave blank for no fallback."),
+                   help="Used when the AI Workstation is offline. Paste the key from aistudio.google.com (pasting the whole "
+                        "curl command it shows works too). Leave blank for no fallback."),
         Field.text("fallback_model", "Gemini model", default="gemini-flash-latest"),
         Field.text("fallback_url", "Fallback URL", default=GEMINI_URL,
                    help="Any OpenAI-compatible chat-completions endpoint works here."),

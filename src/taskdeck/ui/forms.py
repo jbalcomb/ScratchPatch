@@ -20,7 +20,7 @@ class FieldControl:
         self.control: ft.Control = self.input
         if isinstance(self.input, ft.Dropdown):
             self.control = ft.Row([self.input])
-        if field.kind == FieldKind.MULTILINE:
+        if field.kind == FieldKind.MULTILINE or (field.secret and not field.importable):
             self.control = ft.Column(
                 [self.input, ft.Row([ft.TextButton("Paste", icon=ft.Icons.CONTENT_PASTE, on_click=self._paste)])],
                 spacing=4,

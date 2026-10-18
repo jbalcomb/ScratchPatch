@@ -83,3 +83,29 @@ def test_nothing_configured():
 def test_reachable_real_socket():
     assert llm.reachable("http://127.0.0.1:1/v1", timeout=0.5) is False
     assert llm.reachable("not a url") is False
+
+
+CURL = """curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent" \\
+  -H 'Content-Type: application/json' \\
+  -H 'X-goog-api-key: AQ.Ab8-example_KEY.value1234567890' \\
+  -X POST -d '{"contents": []}'"""
+
+
+@pytest.mark.parametrize("pasted", [
+    "AQ.Ab8-example_KEY.value1234567890",
+    "  'AQ.Ab8-example_KEY.value1234567890'\n",
+    CURL,
+    "X-goog-api-key: AQ.Ab8-example_KEY.value1234567890",
+    "Authorization: Bearer AQ.Ab8-example_KEY.value1234567890",
+    "https://generativelanguage.googleapis.com/v1beta/models?key=AQ.Ab8-example_KEY.value1234567890",
+])
+def test_api_key_extracted_from_whatever_was_pasted(pasted):
+    assert llm.extract_api_key(pasted) == "AQ.Ab8-example_KEY.value1234567890"
+
+
+def test_curl_paste_is_sent_as_bearer(net):
+    net["up"] = {"generativelanguage.googleapis.com"}
+    net["answers"][CLOUD.url] = reply('{"day": 16}')
+    endpoint = llm.ModelEndpoint("Gemini", llm.GEMINI_URL, "gemini-flash-latest", api_key=CURL)
+    llm.chat_json_with_fallback([endpoint], "SYS", "log")
+    assert net["sent"][0]["headers"] == {"Authorization": "Bearer AQ.Ab8-example_KEY.value1234567890"}

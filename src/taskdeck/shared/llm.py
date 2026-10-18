@@ -32,6 +32,23 @@ class ModelEndpoint:
         return bool(self.url.strip())
 
 
+_KEY_PATTERNS = (
+    re.compile(r"x-goog-api-key\s*[:=]\s*['\"]?([A-Za-z0-9._\-]{20,})", re.I),
+    re.compile(r"authorization\s*:\s*bearer\s+([A-Za-z0-9._\-]{20,})", re.I),
+    re.compile(r"[?&]key=([A-Za-z0-9._\-]{20,})"),
+)
+
+
+def extract_api_key(text: str) -> str:
+    """Accept a bare key, or pull it out of a pasted curl command, header line or URL."""
+    text = (text or "").strip()
+    for pattern in _KEY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return text.strip("'\"")
+
+
 def parse_json_object(content: str) -> dict[str, Any]:
     """Take the first {...} block from a reply, tolerating stray text around it."""
     match = re.search(r"\{.*\}", content or "", re.S)
@@ -54,7 +71,8 @@ def chat_json(endpoint: ModelEndpoint, system: str, user: str) -> dict[str, Any]
         "response_format": {"type": "json_object"},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
-    headers = {"Authorization": f"Bearer {endpoint.api_key.strip()}"} if endpoint.api_key.strip() else None
+    key = extract_api_key(endpoint.api_key)
+    headers = {"Authorization": f"Bearer {key}"} if key else None
     try:
         resp = post_json(endpoint.url.strip(), payload, headers=headers, timeout=endpoint.timeout)
     except HttpError as exc:
