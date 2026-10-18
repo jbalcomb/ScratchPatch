@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"  # weekly plugin review, Mondays
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "flet==1.0.4" pytest
+      - run: pytest -q
+
+  plugin-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "flet==1.0.4"
+      - name: Commonality review
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m taskdeck.review --out reports/plugin-review.md
+          python -m taskdeck.review --json --out reports/plugin-review.json
+          cat reports/plugin-review.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-review
+          path: reports/
+      - name: Gate on duplicate code and hygiene
+        env:
+          PYTHONPATH: src
+        run: python -m taskdeck.review --strict > /dev/null

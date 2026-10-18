@@ -1,0 +1,33 @@
+[project]
+name = "taskdeck"
+version = "0.1.0"
+description = "A plugin-driven interface for running jobs, built with Flet for Android."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["flet==1.0.4"]
+
+[dependency-groups]
+dev = [
+    "flet[all]==1.0.4",
+    "pytest>=8",
+]
+
+# Third-party job packages register here, e.g.
+# [project.entry-points."taskdeck.jobs"]
+# my_job = "my_package.my_job:PLUGIN"
+
+[tool.flet]
+org = "dev.taskdeck"
+product = "TaskDeck"
+company = "TaskDeck"
+copyright = "Copyright (C) 2026"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.android]
+# Portrait-first phone UI; the layout also adapts to tablets and desktop.
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
