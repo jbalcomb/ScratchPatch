@@ -101,3 +101,29 @@ class History:
         for e in self.entries():
             counts[e.job_id] = counts.get(e.job_id, 0) + 1
         return counts
+
+
+class Drafts:
+    """Unfinished job inputs (e.g. a pasted log), kept per job so nothing typed is lost
+    to an error, leaving the screen, closing the app or a live-update reload."""
+
+    KEY = "drafts"
+
+    def __init__(self, store: JsonStore):
+        self.store = store
+
+    def get(self, job_id: str) -> dict:
+        return dict(self.store.get(self.KEY, {}).get(job_id, {}))
+
+    def save(self, job_id: str, values: dict) -> None:
+        clean = {k: v for k, v in values.items() if isinstance(v, (str, int, float, bool)) or v is None}
+        drafts = dict(self.store.get(self.KEY, {}))
+        if drafts.get(job_id) == clean:
+            return  # unchanged: skip the disk write
+        drafts[job_id] = clean
+        self.store.set(self.KEY, drafts)
+
+    def clear(self, job_id: str) -> None:
+        drafts = dict(self.store.get(self.KEY, {}))
+        if drafts.pop(job_id, None) is not None:
+            self.store.set(self.KEY, drafts)

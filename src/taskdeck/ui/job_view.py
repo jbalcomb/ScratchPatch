@@ -34,17 +34,21 @@ class JobScreen:
         self.generation = 0
         self.payload: Any = None
         self.has_output = False
-        preset = preset or {}
+        # A preset (quick action, history entry) wins; otherwise restore what was typed last time.
+        draft = {} if preset else app.drafts.get(plugin.id)
+        initial = preset or draft
 
         self.fields = {
-            f.name: FieldControl(f, preset.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run)
+            f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run)
             for f in plugin.fields
         }
+        restored = any(initial.get(f.name) not in (None, "", f.default) for f in plugin.fields) and bool(draft)
         self.run_button = ft.FilledButton(plugin.run_label, icon=ft.Icons.PLAY_ARROW, on_click=self.run, height=52)
         self.cancel_button = ft.TextButton("Cancel", visible=False, on_click=self.cancel, height=52)
         self.clear_button = ft.TextButton("Clear", icon=ft.Icons.CLEAR_ALL, on_click=self.clear, height=52)
         self.progress = ft.ProgressBar(value=0, visible=False)
-        self.status = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.status = ft.Text("Restored what you entered last time." if restored else "", size=12,
+                              color=ft.Colors.ON_SURFACE_VARIANT)
         self.output = ft.Column(spacing=8)
         self.steps_list = ft.Column([self._step_row(s) for s in self.pipeline], spacing=2)
 
@@ -90,7 +94,8 @@ class JobScreen:
         return {name: fc.value for name, fc in self.fields.items()}
 
     def invalidate(self, e=None) -> None:
-        """Inputs changed: drop the result so a stale preview can never be committed."""
+        """Inputs changed: keep a draft, and drop the result so a stale preview can never be committed."""
+        self.app.drafts.save(self.plugin.id, self.raw_inputs())
         self.generation += 1
         self.payload = None
         if self.has_output:
@@ -103,6 +108,7 @@ class JobScreen:
         for fc in self.fields.values():
             fc.value = fc.field.default
         self.invalidate()
+        self.app.drafts.clear(self.plugin.id)
         self.view.update()
 
     # ---- pipeline display ---------------------------------------------------------
@@ -143,6 +149,7 @@ class JobScreen:
         if self.run_button.disabled:
             return
         raw = self.raw_inputs()
+        self.app.drafts.save(self.plugin.id, raw)
         generation = self.generation
         self.ctx = Context({})
         self._set_running(True)
@@ -166,6 +173,9 @@ class JobScreen:
             return
         self._show_report(report)
         self._set_running(False)
+        if report.ok:
+            # The draft is kept until the run succeeds; after that the next visit starts empty.
+            self.app.drafts.clear(self.plugin.id)
         self.app.history.add(self.plugin.id, report.ok, _summary(report), raw)
         self.app.on_history_changed()
         self.view.update()

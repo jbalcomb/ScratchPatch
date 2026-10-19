@@ -14,7 +14,7 @@ except ImportError:  # e.g. imported as a library without the app shell
 import flet as ft
 
 from taskdeck.core import (
-    Command, CommandKind, CommandRegistry, Favorites, History, JobPlugin, JsonStore,
+    Command, CommandKind, CommandRegistry, Drafts, Favorites, History, JobPlugin, JsonStore,
     PluginRegistry, default_data_dir,
 )
 
@@ -40,6 +40,7 @@ class TaskDeckApp:
         self.store = store or JsonStore(default_data_dir() / "state.json")
         self.favorites = Favorites(self.store)
         self.history = History(self.store)
+        self.drafts = Drafts(self.store)
         self.favorites.prune({p.id for p in self.registry})
         if not self.store.get("initialized"):
             for pid in ("unit_convert", "text_stats", "json_format"):  # sensible first-run pins

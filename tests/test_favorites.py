@@ -34,3 +34,15 @@ def test_corrupt_store_starts_empty(tmp_path):
     p = tmp_path / "s.json"
     p.write_text("{not json")
     assert JsonStore(p).get("pinned", []) == []
+
+
+def test_drafts_survive_reload_and_clear(tmp_path):
+    from taskdeck.core import Drafts
+
+    path = tmp_path / "s.json"
+    Drafts(JsonStore(path)).save("daily_log", {"log": "Friday October 16th\nStart time 10:38", "obj": object()})
+    drafts = Drafts(JsonStore(path))  # e.g. app restarted
+    assert drafts.get("daily_log") == {"log": "Friday October 16th\nStart time 10:38"}
+    assert drafts.get("other_job") == {}
+    drafts.clear("daily_log")
+    assert Drafts(JsonStore(path)).get("daily_log") == {}
