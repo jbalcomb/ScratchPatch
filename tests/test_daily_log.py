@@ -123,28 +123,143 @@ def test_headers_missing_and_swapped():  # acceptance 6
 
 
 class FakeBackend:
-    def __init__(self, headers):
-        self.headers = headers
-        self.rows = []
+    """An in-memory tab: ``values`` is what the sheet holds (row 1 = headers)."""
 
-    def header_row(self):
-        return self.headers
+    def __init__(self, headers, *rows):
+        self.values = [list(headers), *[list(r) for r in rows]]
+        self.writes, self.backups = [], []
 
-    def append(self, row):
-        self.rows.append(row)
+    def rows(self):
+        values = [list(r) for r in self.values]
+        while values and all(str(v).strip() == "" for v in values[-1]):
+            values.pop()  # the API leaves off trailing empty rows
+        return values
+
+    def write(self, first_row, rows):
+        self.writes.append((first_row, len(rows)))
+        while len(self.values) < first_row - 1 + len(rows):
+            self.values.append([])
+        for i, row in enumerate(rows):
+            self.values[first_row - 1 + i] = list(row)
+
+    def backup(self, title):
+        self.backups.append(title)
+
+
+ROW = build_row(build_record(SAMPLE_RAW, TODAY))
 
 
 def test_save_writes_nothing_when_headers_wrong():  # acceptance 6
     backend = FakeBackend(HEADERS[:12])
     with pytest.raises(StepError, match="M1 should be"):
         sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend)
-    assert backend.rows == []
+    assert backend.writes == []
 
 
-def test_save_appends_one_row():
-    backend = FakeBackend(HEADERS)
-    sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend)
-    assert len(backend.rows) == 1 and backend.rows[0][14] == 257
+def test_save_writes_below_the_last_filled_row():
+    backend = FakeBackend(HEADERS, ["10/15/2026", "11:13"], [], ["10/14/2026"])
+    msg = sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend)
+    assert msg == "Saved row for 10/16/2026 (row 5)" and backend.writes == [(5, 1)]
+    assert backend.values[4][14] == 257
+    assert sheets.save_record(build_record(SAMPLE_RAW, TODAY), FakeBackend(HEADERS)).endswith("(row 2)")
+
+
+def test_save_same_date_same_values_writes_nothing():
+    sheet_row = ["2026-10-16"] + [str(v) for v in ROW[1:]]  # typed by hand, shown as text
+    sheet_row[12] = "32"
+    backend = FakeBackend(HEADERS, sheet_row)
+    assert sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend) == "Already in the sheet (row 2); nothing changed"
+    assert backend.writes == []
+
+
+def test_save_same_date_different_values_asks_then_replaces():
+    from taskdeck.core import NeedsConfirmation
+
+    old = list(ROW)
+    old[9] = 190
+    backend = FakeBackend(HEADERS, ["10/15/2026"], old)
+    with pytest.raises(NeedsConfirmation) as info:
+        sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend)
+    assert "Row 3 already has 10/16/2026" in str(info.value) and "Earnings: 190 → 187.82" in str(info.value)
+    assert info.value.confirm_label == "Replace row 3" and backend.writes == []
+    assert sheets.save_record(info.value.payload, backend) == "Replaced row 3 (10/16/2026)"
+    assert backend.writes == [(3, 1)] and backend.values[2][9] == 187.82
+
+
+def test_replace_refuses_if_the_row_moved():
+    backend = FakeBackend(HEADERS, ["10/15/2026"])
+    with pytest.raises(StepError, match="changed since"):
+        sheets.save_record({**build_record(SAMPLE_RAW, TODAY), "_replace_row": 2}, backend)
+
+
+def test_save_refuses_when_date_already_twice():
+    backend = FakeBackend(HEADERS, ROW, ROW)
+    with pytest.raises(StepError, match="Reconcile"):
+        sheets.save_record(build_record(SAMPLE_RAW, TODAY), backend)
+    assert backend.writes == []
+
+
+# ---- reconciliation -------------------------------------------------------------------
+
+from taskdeck.jobs.daily_log import reconcile, reconcile_job  # noqa: E402
+
+DAY15 = ["10/15/2026", "11:13", 191, "11:29", "21:01", "21:28", 53, 6, 10, 115.34, 9.53, 10.25, "-", "-", 138]
+MESSY = [HEADERS, DAY15] + [[]] * 39 + [["2026-10-18", "8:37", 303, "8:54"], DAY15[:12] + ["", "", 138], ROW]
+
+
+def test_plan_for_the_messy_sheet():
+    plan = reconcile.plan(MESSY)
+    assert plan.changes == [
+        "Remove 39 blank rows (rows 3–41).",
+        "Remove row 43: a duplicate of row 2 (10/15/2026).",
+        "Row 42: write the date “2026-10-18” as 10/18/2026.",
+        "Put the rows in date order.",
+    ]
+    assert [r[0] for r in plan.rows] == ["10/15/2026", "10/16/2026", "10/18/2026"]
+    assert plan.rows[0] == DAY15  # the hand-typed copy is kept
+    assert plan.span == 44
+    assert plan.remarks == ["Row 42 (10/18/2026) is missing values; check it by hand.",
+                            "Row 44 (10/16/2026) is missing values; check it by hand."]
+
+
+def test_plan_keeps_the_more_complete_of_two_different_rows():
+    partial = DAY15[:5]
+    plan = reconcile.plan([HEADERS, partial, DAY15[:4] + ["21:05"] + DAY15[5:]])
+    assert len(plan.rows) == 1 and plan.rows[0][4] == "21:05"
+    assert "Remove row 2: another row for 10/15/2026" in plan.changes[0]
+
+
+def test_plan_tidy_sheet_has_no_changes():
+    plan = reconcile.plan([HEADERS, DAY15, ROW])
+    assert not plan.changed and plan.rows == [DAY15, ROW]
+
+
+def test_plan_keeps_rows_without_a_date_at_the_end():
+    plan = reconcile.plan([HEADERS, ["note"], [], ROW, DAY15])
+    assert [r[0] for r in plan.rows] == ["10/15/2026", "10/16/2026", "note"]
+    assert any("no readable date" in r for r in plan.remarks)
+
+
+def test_reconcile_job_previews_then_applies_with_backup(monkeypatch):
+    backend = FakeBackend(*MESSY)
+    monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: backend)
+    report = reconcile_job.PLUGIN.run({}, settings=SETTINGS)
+    assert report.ok, report.error
+    assert report.result.title == "4 fixes to apply" and backend.writes == []  # preview writes nothing
+    ok, msg = reconcile_job.PLUGIN.try_commit(report.result.payload, SETTINGS)
+    assert ok, msg
+    assert len(backend.backups) == 1 and backend.backups[0] in msg
+    assert backend.rows() == [HEADERS, DAY15, ROW, ["10/18/2026", "8:37", 303, "8:54"] + [""] * 11]
+    assert not reconcile_job.PLUGIN.run({}, settings=SETTINGS).result.payload  # now tidy: nothing to apply
+
+
+def test_reconcile_refuses_if_the_sheet_changed(monkeypatch):
+    backend = FakeBackend(*MESSY)
+    monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: backend)
+    payload = reconcile_job.PLUGIN.run({}, settings=SETTINGS).result.payload
+    backend.values.append(["10/20/2026"])
+    ok, msg = reconcile_job.PLUGIN.try_commit(payload, SETTINGS)
+    assert not ok and "changed since" in msg and backend.backups == []
 
 
 # ---- model endpoints ----------------------------------------------------------------
@@ -188,8 +303,8 @@ def test_commit_validates_then_appends(monkeypatch):
     backend = FakeBackend(HEADERS)
     monkeypatch.setattr(sheets, "make_backend", lambda s: backend)
     ok, msg = daily_log.PLUGIN.try_commit(build_record(SAMPLE_RAW, TODAY), SETTINGS)
-    assert ok and msg == "Saved row for 10/16/2026"
-    assert len(backend.rows) == 1
+    assert ok and msg == "Saved row for 10/16/2026 (row 2)"
+    assert backend.writes == [(2, 1)]
 
 
 def test_commit_without_key_explains():
@@ -249,6 +364,9 @@ def test_ready_online_checks_sheet_headers(monkeypatch):
     assert any("M1 should be" in m for m in messages(p))
     monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: FakeBackend(HEADERS))
     assert daily_log.PLUGIN.check_ready_online(READY) == []
+    monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: FakeBackend(*MESSY))
+    (p,) = daily_log.PLUGIN.check_ready_online(READY)
+    assert not p.blocking and p.fix == "job:daily_log_reconcile" and "39 blank rows" in p.message
 
 
 def test_ready_online_no_connection_is_not_blocking(monkeypatch):
@@ -261,20 +379,19 @@ def test_ready_online_no_connection_is_not_blocking(monkeypatch):
 
 
 class FakeClient:
-    def __init__(self, filled):
-        self.filled, self.writes = filled, []
+    def __init__(self, values):
+        self.values, self.writes = values, []
 
-    def get_values(self, rng):
-        return self.filled
+    def get_values(self, rng, raw=False):
+        return self.values
 
-    def write_row(self, rng, row):
-        self.writes.append(rng)
+    def write_rows(self, rng, rows):
+        self.writes.append((rng, rows))
 
 
-@pytest.mark.parametrize("filled,target", [([HEADERS], "A2:O2"), ([HEADERS, ["10/15/2026"]], "A3:O3"),
-                                           ([], "A2:O2"), ([[""] + HEADERS[1:], [], ["x"]], "A4:O4")])
-def test_service_account_backend_writes_below_last_row(filled, target):
+def test_service_account_backend_writes_exact_range():
     backend = sheets.ServiceAccountBackend.__new__(sheets.ServiceAccountBackend)
-    backend.client, backend.tab = FakeClient(filled), "Sheet1"
-    backend.append(build_row(build_record(SAMPLE_RAW, TODAY)))
-    assert backend.client.writes == [f"'Sheet1'!{target}"]
+    backend.client, backend.tab = FakeClient([HEADERS]), "Sheet1"
+    assert backend.rows() == [HEADERS]
+    backend.write(5, [ROW, ["x"]])
+    assert backend.client.writes == [("'Sheet1'!A5:O6", [ROW, ["x"] + [""] * 14])]

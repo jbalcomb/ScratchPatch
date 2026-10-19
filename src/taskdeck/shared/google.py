@@ -141,9 +141,9 @@ class ServiceAccountCredentials:
             return self._token
 
 
-def a1_range(tab: str, cells: str) -> str:
-    """Quote a sheet name for A1 notation: Sheet1 -> 'Sheet1'!A1."""
-    return "'" + tab.replace("'", "''") + "'!" + cells
+def a1_range(tab: str, cells: str = "") -> str:
+    """Quote a sheet name for A1 notation: Sheet1 -> 'Sheet1'!A1, or 'Sheet1' (the whole tab)."""
+    return "'" + tab.replace("'", "''") + "'" + (f"!{cells}" if cells else "")
 
 
 class SheetsClient:
@@ -159,9 +159,12 @@ class SheetsClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.credentials.token()}"}
 
-    def get_values(self, rng: str) -> list[list[Any]]:
+    def get_values(self, rng: str, raw: bool = False) -> list[list[Any]]:
+        """Read a range as displayed, or with ``raw`` as stored: formulas kept, numbers
+        unformatted, dates and times as shown (so they can be written back unchanged)."""
+        params = {"valueRenderOption": "FORMULA", "dateTimeRenderOption": "FORMATTED_STRING"} if raw else {}
         try:
-            data = get_json(self._url(rng), headers=self._headers(), timeout=self.timeout)
+            data = get_json(self._url(rng, **params), headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
         return data.get("values", []) if isinstance(data, dict) else []
@@ -173,12 +176,38 @@ class SheetsClient:
         except HttpError as exc:
             raise self._explain(exc) from None
 
-    def write_row(self, rng: str, row: list[Any]) -> None:
-        """Overwrite exactly the cells in ``rng`` with one row (no table guessing, unlike append)."""
+    def write_rows(self, rng: str, rows: list[list[Any]]) -> None:
+        """Overwrite exactly the cells in ``rng`` (no table guessing, unlike append). "" clears a cell."""
         url = self._url(rng, valueInputOption="USER_ENTERED")
         try:
-            request("PUT", url, json_body={"range": rng, "majorDimension": "ROWS", "values": [row]},
+            request("PUT", url, json_body={"range": rng, "majorDimension": "ROWS", "values": rows},
                     headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+
+    def write_row(self, rng: str, row: list[Any]) -> None:
+        self.write_rows(rng, [row])
+
+    def tabs(self) -> list[dict[str, Any]]:
+        """Each tab's properties (title, sheetId, index...), in order."""
+        url = f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}?fields=sheets.properties"
+        try:
+            data = get_json(url, headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+        return [s.get("properties", {}) for s in (data.get("sheets", []) if isinstance(data, dict) else [])]
+
+    def duplicate_tab(self, title: str, new_title: str) -> None:
+        """Copy a whole tab (values, formulas, formatting) to a new tab at the end."""
+        tabs = self.tabs()
+        source = next((t for t in tabs if t.get("title") == title), None)
+        if source is None:
+            raise GoogleError(f"Tab “{title}” not found in the spreadsheet. Check the tab name.")
+        body = {"requests": [{"duplicateSheet": {"sourceSheetId": int(source.get("sheetId", 0)),
+                                                 "insertSheetIndex": len(tabs), "newSheetName": new_title}}]}
+        try:
+            post_json(f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}:batchUpdate", body,
+                      headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
 

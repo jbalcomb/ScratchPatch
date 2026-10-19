@@ -232,8 +232,8 @@ def check_plugin(plugin: JobPlugin) -> list[str]:
         problems.append("description is missing or too short to be useful in search")
     if not plugin.tags:
         problems.append("no tags: the command palette can only match on title")
-    if not plugin.fields:
-        problems.append("declares no input fields")
+    if not plugin.fields and not plugin.settings:
+        problems.append("declares no input fields or settings")
     try:
         pipe = plugin.build_pipeline()
     except Exception as exc:

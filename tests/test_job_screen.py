@@ -66,7 +66,9 @@ def commit_screen(screen, ok):
 
     import flet as ft
 
-    screen.plugin.try_commit = lambda payload, settings: (ok, "Saved row" if ok else "Sheet error")
+    from taskdeck.core import CommitOutcome
+
+    screen.plugin.attempt_commit = lambda payload, settings: CommitOutcome(ok, "Saved row" if ok else "Sheet error")
     screen.plugin.committed_label = "Saved"
     screen.app.toast = lambda message: None
     screen.payload = {"date": "10/16/2026"}
@@ -113,3 +115,11 @@ def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
     screen = JobScreen(app, daily_log.PLUGIN)
     screen.check_ready()
     assert not screen.checking and screen.blocked
+
+
+def test_job_without_inputs_and_shared_settings(tmp_path):
+    from taskdeck.jobs.daily_log import reconcile_job
+
+    screen = JobScreen(fake_app(tmp_path), reconcile_job.PLUGIN)
+    assert screen.fields == {}
+    assert reconcile_job.PLUGIN.settings_id == "daily_log"

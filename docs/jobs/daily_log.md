@@ -79,12 +79,29 @@ The AI Workstation only parses; it never touches the sheet. The planned next ste
 phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_log/sheets.py` as another
 `SheetBackend` (`header_row()` + `append(row)`). The job, the preview and the header check don't change.
 
+## One row per date, no gaps
+
+* **Saving** reads the tab first and writes the new row directly under the last filled row (never
+  Google's "append", which guesses where the table is and put a row above the headers when A1 was blank).
+  * Date already in the sheet with the same values: nothing is written ("Already in the sheet").
+  * Date already there with different values: the differences are listed and a **Replace row N** button
+    overwrites that row. Nothing is replaced without that tap.
+  * Date there more than once: the save is refused until the sheet is reconciled.
+* **Reconcile Daily Log sheet** (a second job, using the same settings) checks the tab and previews the fixes:
+  removes blank rows, keeps one row per date (identical copies: the first; differing copies: the most
+  complete, listing what differs), writes dates as MM/DD/YYYY, and sorts by date. Rows without a readable
+  date are kept at the end; incomplete rows are pointed out, not changed. **Apply fixes** first copies the
+  tab to a `Backup <date time>` tab, refuses if the sheet changed since the preview, then rewrites rows 2
+  onward. Formulas are kept.
+* Opening **Daily Log to Sheet** shows a "needs tidying" heads-up with a button to the reconcile job when
+  the sheet has any of these problems.
+
 ## How it maps to the PRD
 
 | PRD | Where |
 |---|---|
 | `parse(text)`: no side effects | the job's pipeline: require → model configured → ask AI model → calculate → preview |
-| `commit(record)`: the only side effect | `DailyLog.commit` → `sheets.save_record` (header check, then append) |
+| `commit(record)`: the only side effect | `DailyLog.commit` → `sheets.save_record` (header check, one row per date, write below the last filled row) |
 | Column map: the only source of layout truth | `record.COLUMNS` (header, record field, preview label, optional flag) |
 | Stale preview can't be saved / no double save | the host's job screen: editing any input discards the preview; the Save button is disabled while saving and after success |
 | Adding a note type | prompt key in `extract.py`, calculation in `record.build_record`, one `Column` in `record.COLUMNS` |
@@ -94,4 +111,3 @@ phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_l
 
 - Gas math beyond miles driven (gallons, cost, MPG)?
 - Will Batch Count be written into the log, or stay blank?
-- Warn when saving a date that already has a row? (not checked today)

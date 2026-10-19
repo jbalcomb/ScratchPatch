@@ -101,12 +101,31 @@ class Problem:
     """Something that would make the job fail, found before it runs.
 
     ``blocking`` problems disable the run button. ``fix`` names where to fix it:
-    "settings" adds an "Open settings" button.
+    "settings" adds an "Open settings" button, "recheck" only "Check again", and
+    "job:<id>" a button that opens that job (e.g. a clean-up job).
     """
 
     message: str
     blocking: bool = True
     fix: str = "settings"
+
+
+class NeedsConfirmation(StepError):
+    """Raised by :meth:`JobPlugin.commit` when it could go ahead, but only with the user's OK
+    (e.g. overwrite an existing row). The UI shows ``message`` and a ``confirm_label``
+    button that commits again with ``payload``."""
+
+    def __init__(self, message: str, confirm_label: str, payload: Any):
+        super().__init__(message)
+        self.confirm_label = confirm_label
+        self.payload = payload
+
+
+@dataclass(frozen=True)
+class CommitOutcome:
+    ok: bool
+    message: str
+    confirm: NeedsConfirmation | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +156,8 @@ class JobPlugin:
     # persisted by the host, and handed to steps as ``ctx.settings``.
     settings: ClassVar[tuple[Field, ...]] = ()
     settings_actions: ClassVar[tuple[SettingsAction, ...]] = ()
+    # Use another job's stored settings (same fields) instead of keeping a separate copy.
+    settings_from: ClassVar[str] = ""
     run_label: ClassVar[str] = "Run"
     # Two-phase jobs: the pipeline must be side-effect free and produce a preview whose
     # ``Result.payload`` is passed to :meth:`commit` once the user confirms.
@@ -188,14 +209,25 @@ class JobPlugin:
         ctx.settings = self.resolve_settings(settings)
         return self.build_pipeline().run(ctx, on_progress)
 
-    def try_commit(self, payload: Any, settings: dict[str, Any] | None = None) -> tuple[bool, str]:
-        """Run :meth:`commit`, turning any failure into ``(False, message)``."""
+    @property
+    def settings_id(self) -> str:
+        """The job id whose stored settings this job uses."""
+        return self.settings_from or self.id
+
+    def attempt_commit(self, payload: Any, settings: dict[str, Any] | None = None) -> CommitOutcome:
+        """Run :meth:`commit`, turning any failure into an unsuccessful outcome."""
         try:
-            return True, self.commit(payload, self.resolve_settings(settings))
+            return CommitOutcome(True, self.commit(payload, self.resolve_settings(settings)))
+        except NeedsConfirmation as exc:
+            return CommitOutcome(False, str(exc), exc)
         except StepError as exc:
-            return False, str(exc)
+            return CommitOutcome(False, str(exc))
         except Exception as exc:  # bug or unexpected I/O failure in the plugin
-            return False, f"{type(exc).__name__}: {exc}"
+            return CommitOutcome(False, f"{type(exc).__name__}: {exc}")
+
+    def try_commit(self, payload: Any, settings: dict[str, Any] | None = None) -> tuple[bool, str]:
+        outcome = self.attempt_commit(payload, settings)
+        return outcome.ok, outcome.message
 
     @property
     def search_text(self) -> str:

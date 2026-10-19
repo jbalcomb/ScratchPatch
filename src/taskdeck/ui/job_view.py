@@ -134,6 +134,11 @@ class JobScreen:
         if any(p.fix == "settings" for p in self.problems) and self.plugin.settings:
             buttons.append(ft.FilledTonalButton("Open settings", icon=ft.Icons.TUNE,
                                                 on_click=lambda e: self.app.open_settings(self.plugin.id)))
+        for job_id in dict.fromkeys(p.fix[4:] for p in self.problems if p.fix.startswith("job:")):
+            other = self.app.registry.get(job_id)
+            if other:
+                buttons.append(ft.FilledTonalButton(other.title, icon=plugin_icon(other),
+                                                    on_click=lambda e, j=job_id: self.app.open_job(j)))
         buttons.append(ft.TextButton("Check again", icon=ft.Icons.REFRESH, on_click=lambda e: self.recheck()))
         color = ft.Colors.ON_ERROR_CONTAINER if blocking else ft.Colors.ON_SURFACE
         self.readiness.controls = [ft.Container(
@@ -305,23 +310,26 @@ class JobScreen:
             )
         )
         self.output.controls = [ft.Card(ft.Container(ft.Column(parts, spacing=8), padding=16), variant=ft.CardVariant.OUTLINED)]
-        if self.plugin.has_commit:
+        if self.plugin.has_commit and result.payload is not None:
             self.payload = result.payload
             self.commit_button = ft.FilledButton(self.plugin.commit_label, icon=ft.Icons.SAVE_OUTLINED,
                                                  on_click=self.commit, height=52)
             self.commit_error = ft.Column()
             self.output.controls += [self.commit_button, self.commit_error]
 
-    async def commit(self, e=None) -> None:
-        """The only step with side effects. Disabled while running and after success."""
-        if self.payload is None or self.commit_button.disabled:
+    async def commit(self, e=None, payload: Any = None) -> None:
+        """The only step with side effects. Disabled while running and after success.
+
+        ``payload`` overrides the preview's when the user confirms a follow-up (e.g. "Replace row 44")."""
+        if self.payload is None or (self.commit_button.disabled and payload is None):
             return
-        payload, generation = self.payload, self.generation
+        payload, generation = payload if payload is not None else self.payload, self.generation
         self.commit_button.disabled = True
         self.commit_button.content = "Saving…"
         self.commit_error.controls = []
         self.view.update()
-        ok, message = await asyncio.to_thread(self.plugin.try_commit, payload, self.app.job_settings(self.plugin.id))
+        outcome = await asyncio.to_thread(self.plugin.attempt_commit, payload, self.app.job_settings(self.plugin.id))
+        ok, message = outcome.ok, outcome.message
         if ok:
             self.commit_button.content = self.plugin.committed_label
             self.commit_button.icon = ft.Icons.CHECK
@@ -335,6 +343,11 @@ class JobScreen:
             # Re-enable only if the preview is still current.
             self.commit_button.disabled = generation != self.generation
             self.commit_error.controls = [_error_card(message)]
+            if outcome.confirm and generation == self.generation:
+                confirm = outcome.confirm
+                self.commit_error.controls.append(ft.OutlinedButton(
+                    confirm.confirm_label, icon=ft.Icons.WARNING_AMBER,
+                    on_click=lambda e: self.app.page.run_task(self.commit, None, confirm.payload)))
         self.view.update()
 
 

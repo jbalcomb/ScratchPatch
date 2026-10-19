@@ -140,11 +140,15 @@ class TaskDeckApp:
 
     # ---- job settings -------------------------------------------------------------
 
+    def _settings_key(self, job_id: str) -> str:
+        plugin = self.registry.get(job_id)
+        return f"settings:{plugin.settings_id if plugin else job_id}"
+
     def job_settings(self, job_id: str) -> dict[str, Any]:
-        return dict(self.store.get(f"settings:{job_id}", {}))
+        return dict(self.store.get(self._settings_key(job_id), {}))
 
     def save_job_settings(self, job_id: str, values: dict[str, Any]) -> None:
-        self.store.set(f"settings:{job_id}", values)
+        self.store.set(self._settings_key(job_id), values)
 
     # ---- rendering ----------------------------------------------------------------
 
