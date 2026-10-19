@@ -38,7 +38,7 @@ def endpoints(settings: dict[str, Any]) -> list[ModelEndpoint]:
     if (s.get("fallback_api_key") or "").strip():
         out.append(ModelEndpoint("Gemini", s.get("fallback_url") or GEMINI_URL,
                                  s.get("fallback_model") or "gemini-flash-latest",
-                                 api_key=s["fallback_api_key"], timeout=60))
+                                 api_key=s["fallback_api_key"], timeout=90))
     return out
 
 

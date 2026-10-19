@@ -7,6 +7,7 @@ when it is installed.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import ssl
@@ -37,6 +38,44 @@ def _ssl_context() -> ssl.SSLContext:
 _SSL = _ssl_context()
 
 
+class _Response(http.client.HTTPResponse):
+    """Skip every interim 1xx response, not just 100 Continue.
+
+    Python's http.client only skips 100, so a ``103 Early Hints`` (which Google's
+    front ends can send) is mistaken for the final response and surfaces as
+    "HTTP 103". Browsers ignore it; so do we.
+    """
+
+    def _read_status(self):
+        while True:
+            version, status, reason = super()._read_status()
+            if 100 <= status < 200 and status != 101:
+                http.client._read_headers(self.fp)  # discard the interim response's headers
+                continue
+            return version, status, reason
+
+
+class _HTTPConnection(http.client.HTTPConnection):
+    response_class = _Response
+
+
+class _HTTPSConnection(http.client.HTTPSConnection):
+    response_class = _Response
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_HTTPConnection, req)
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_HTTPSConnection, req, context=self._context)
+
+
+_OPENER = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler(context=_SSL))
+
+
 def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str] | None = None,
             headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
     """Send a request and decode a JSON response (or return text if it isn't JSON)."""
@@ -50,7 +89,7 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         hdrs["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
