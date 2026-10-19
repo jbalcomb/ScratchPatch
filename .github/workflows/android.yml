@@ -56,7 +56,7 @@ jobs:
         run: |
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)apksigner"
           "$APKSIGNER" verify --print-certs TaskDeck.apk | tee certs.txt
-          grep -q "SHA-256 digest: 677bc5707165701ae751f22c6b3566fbe1dc3d66221a98e18a54c563f4f6e4e6" certs.txt
+          grep -q "SHA-256 digest: 677bc5706571701ae751f22c6b3566fbe1dc3d66221a98e18a54c563f4f6e4e6" certs.txt
       - uses: actions/upload-artifact@v4
         with:
           name: taskdeck-apk
