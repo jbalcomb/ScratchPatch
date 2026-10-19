@@ -33,17 +33,48 @@ class ServiceAccountKey:
 
     @classmethod
     def from_json(cls, text: str) -> "ServiceAccountKey":
-        try:
-            info = json.loads((text or "").strip(), strict=False)
-        except (json.JSONDecodeError, TypeError):
-            raise GoogleError("The service account key isn't valid JSON. Paste or import the whole .json key file.") from None
-        if not isinstance(info, dict) or info.get("type") != "service_account":
+        """Read a service-account key, tolerating how pasted/imported text gets mangled on phones:
+        extra text before or after the JSON (e.g. copied from a chat message), a byte-order mark,
+        "smart" quotes, or real line breaks inside the private key."""
+        info = _parse_key_json(text)
+        if info.get("type") != "service_account":
             raise GoogleError("That JSON isn't a service account key (its \"type\" should be \"service_account\").")
         missing = [k for k in ("client_email", "private_key") if not info.get(k)]
         if missing:
             raise GoogleError(f"The service account key is missing: {', '.join(missing)}")
         return cls(info["client_email"], info["private_key"], info.get("private_key_id", ""),
                    info.get("token_uri") or cls.token_uri)
+
+    def check(self) -> None:
+        """Raise GoogleError if the private key can't be loaded (e.g. truncated). No network."""
+        try:
+            _load_private_key(self.private_key_pem)
+        except Exception:
+            raise GoogleError("The private key inside the service account key is damaged or incomplete. "
+                              "Import the original .json file again.") from None
+
+
+_SMART_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'"})
+
+
+def _parse_key_json(text: str) -> dict:
+    raw = (text or "").strip().lstrip("\ufeff")
+    start = raw.find("{")
+    if start < 0:
+        preview = raw[:30].replace("\n", " ")
+        raise GoogleError(f"The service account key isn't JSON: got {len(raw)} characters starting with "
+                          f"\"{preview}\" instead of {{. Import the .json key file (Import file…).")
+    error = None
+    for candidate in (raw[start:], raw[start:].translate(_SMART_QUOTES)):
+        try:
+            info, _ = json.JSONDecoder(strict=False).raw_decode(candidate)  # ignores trailing text
+        except json.JSONDecodeError as exc:
+            error = exc
+            continue
+        if isinstance(info, dict):
+            return info
+    raise GoogleError(f"The service account key isn't valid JSON ({error.msg}; character {error.pos + start} "
+                      f"of {len(raw)}). It may be cut off. Import the original .json key file (Import file…).")
 
 
 def _b64url(data: bytes) -> str:
@@ -116,9 +147,10 @@ def a1_range(tab: str, cells: str) -> str:
 
 
 class SheetsClient:
-    def __init__(self, credentials: ServiceAccountCredentials, spreadsheet_id: str):
+    def __init__(self, credentials: ServiceAccountCredentials, spreadsheet_id: str, timeout: float = 30):
         self.credentials = credentials
         self.spreadsheet_id = spreadsheet_id
+        self.timeout = timeout
 
     def _url(self, rng: str, suffix: str = "", **params: str) -> str:
         url = f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}/values/{urllib.parse.quote(rng, safe='')}{suffix}"
@@ -129,7 +161,7 @@ class SheetsClient:
 
     def get_values(self, rng: str) -> list[list[Any]]:
         try:
-            data = get_json(self._url(rng), headers=self._headers(), timeout=30)
+            data = get_json(self._url(rng), headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
         return data.get("values", []) if isinstance(data, dict) else []
@@ -137,7 +169,7 @@ class SheetsClient:
     def append_row(self, rng: str, row: list[Any]) -> None:
         url = self._url(rng, ":append", valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS")
         try:
-            post_json(url, {"values": [row]}, headers=self._headers(), timeout=30)
+            post_json(url, {"values": [row]}, headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
 

@@ -29,9 +29,10 @@ class SheetBackend(Protocol):
 
 
 class ServiceAccountBackend:
-    def __init__(self, key_json: str, sheet_id: str, tab: str):
+    def __init__(self, key_json: str, sheet_id: str, tab: str, timeout: float = 30):
         key = ServiceAccountKey.from_json(key_json)
-        self.client = SheetsClient(ServiceAccountCredentials(key), sheet_id)
+        key.check()
+        self.client = SheetsClient(ServiceAccountCredentials(key), sheet_id, timeout=timeout)
         self.tab = tab
 
     def header_row(self) -> list[Any]:
@@ -43,14 +44,14 @@ class ServiceAccountBackend:
         self.client.append_row(a1_range(self.tab, "A1"), row)
 
 
-def make_backend(settings: dict[str, Any]) -> SheetBackend:
+def make_backend(settings: dict[str, Any], timeout: float = 30) -> SheetBackend:
     if not (settings.get("service_account_json") or "").strip():
         raise StepError("Add the Google service account key in this job's settings (the tune icon at the top).")
     if not (settings.get("sheet_id") or "").strip():
         raise StepError("Set the Sheet ID in this job's settings.")
     try:
         return ServiceAccountBackend(settings["service_account_json"], settings["sheet_id"].strip(),
-                                     (settings.get("sheet_tab") or "Sheet1").strip())
+                                     (settings.get("sheet_tab") or "Sheet1").strip(), timeout=timeout)
     except GoogleError as exc:
         raise StepError(str(exc)) from None
 

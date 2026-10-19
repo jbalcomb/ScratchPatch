@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from taskdeck.core import Context, JobPlugin, RunReport, Stage
+from taskdeck.core import Context, JobPlugin, Problem, RunReport, Stage
 
 from .common import plugin_icon, screen_view
 from .forms import FieldControl
@@ -44,6 +44,10 @@ class JobScreen:
         }
         restored = any(initial.get(f.name) not in (None, "", f.default) for f in plugin.fields) and bool(draft)
         self.run_button = ft.FilledButton(plugin.run_label, icon=ft.Icons.PLAY_ARROW, on_click=self.run, height=52)
+        # Readiness: problems found before running (missing settings, unreadable key, sheet headers...).
+        self.readiness = ft.Column(spacing=8)
+        self.problems: list[Problem] = []
+        self.checking = False
         self.cancel_button = ft.TextButton("Cancel", visible=False, on_click=self.cancel, height=52)
         self.clear_button = ft.TextButton("Clear", icon=ft.Icons.CLEAR_ALL, on_click=self.clear, height=52)
         self.progress = ft.ProgressBar(value=0, visible=False)
@@ -74,6 +78,7 @@ class JobScreen:
                         ft.Text(plugin.description, color=ft.Colors.ON_SURFACE_VARIANT, expand=True),
                     ]
                 ),
+                self.readiness,
                 *[fc.control for fc in self.fields.values()],
                 ft.Row([self.run_button, self.cancel_button, self.clear_button]),
                 self.progress,
@@ -87,6 +92,70 @@ class JobScreen:
                 ),
             ],
         )
+
+    # ---- readiness ------------------------------------------------------------------
+
+    @property
+    def blocked(self) -> bool:
+        return self.checking or any(p.blocking for p in self.problems)
+
+    def check_ready(self) -> None:
+        """Run the job's checks: offline ones now, network ones in the background."""
+        settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
+        self.problems = self.plugin.check_ready(settings)
+        has_online = type(self.plugin).check_ready_online is not JobPlugin.check_ready_online
+        self.checking = has_online and not any(p.blocking for p in self.problems)
+        self._render_readiness()
+        if self.checking:
+            def work():
+                try:
+                    found = self.plugin.check_ready_online(settings)
+                except Exception as exc:  # a broken check must not lock the job
+                    found = [Problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}", blocking=False, fix="recheck")]
+                self.problems = self.problems + found
+                self.checking = False
+                self._render_readiness()
+                self._update()
+
+            self.app.page.run_thread(work)
+
+    def _render_readiness(self) -> None:
+        self.run_button.disabled = self.blocked
+        if self.checking:
+            self.readiness.controls = [ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2),
+                                               ft.Text("Checking that everything this job needs is ready…", size=13)])]
+            return
+        if not self.problems:
+            self.readiness.controls = []
+            return
+        blocking = [p for p in self.problems if p.blocking]
+        title = "Before you can run this job:" if blocking else "Heads up:"
+        buttons = []
+        if any(p.fix == "settings" for p in self.problems) and self.plugin.settings:
+            buttons.append(ft.FilledTonalButton("Open settings", icon=ft.Icons.TUNE,
+                                                on_click=lambda e: self.app.open_settings(self.plugin.id)))
+        buttons.append(ft.TextButton("Check again", icon=ft.Icons.REFRESH, on_click=lambda e: self.recheck()))
+        color = ft.Colors.ON_ERROR_CONTAINER if blocking else ft.Colors.ON_SURFACE
+        self.readiness.controls = [ft.Container(
+            ft.Column([
+                ft.Text(title, weight=ft.FontWeight.W_600, color=color),
+                *[ft.Text(f"• {p.message}", color=color, selectable=True) for p in self.problems],
+                ft.Row(buttons, wrap=True),
+            ], spacing=6),
+            bgcolor=ft.Colors.ERROR_CONTAINER if blocking else ft.Colors.SURFACE_CONTAINER_HIGH,
+            border_radius=12,
+            padding=12,
+        )]
+
+    def recheck(self) -> None:
+        self.check_ready()
+        self._update()
+
+    def _update(self) -> None:
+        try:
+            self.view.update()
+        except Exception:  # not on screen (yet / any more)
+            pass
 
     # ---- form -----------------------------------------------------------------
 
@@ -146,7 +215,7 @@ class JobScreen:
             self.ctx.cancel()
 
     async def run(self, e=None) -> None:
-        if self.run_button.disabled:
+        if self.run_button.disabled or self.blocked:
             return
         raw = self.raw_inputs()
         self.app.drafts.save(self.plugin.id, raw)
@@ -181,7 +250,7 @@ class JobScreen:
         self.view.update()
 
     def _set_running(self, running: bool) -> None:
-        self.run_button.disabled = running
+        self.run_button.disabled = running or self.blocked
         self.cancel_button.visible = running
         self.progress.visible = running
         self.progress.value = 0 if running else None

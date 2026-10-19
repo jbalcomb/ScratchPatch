@@ -96,7 +96,10 @@ class TaskDeckApp:
         if plugin is None:
             self.toast(f"Job {job_id!r} is not installed")
             return
-        self.push(JobScreen(self, plugin, preset))
+        screen = JobScreen(self, plugin, preset)
+        self.push(screen)
+        screen.check_ready()
+        self.page.update()
 
     def open_settings(self, job_id: str) -> None:
         plugin = self.registry.get(job_id)
@@ -111,7 +114,9 @@ class TaskDeckApp:
     def on_view_pop(self, e) -> None:
         if len(self.page.views) > 1:
             self.page.views.pop()
-            self.stack.pop()
+            left = self.stack.pop()
+            if isinstance(left, JobSettingsScreen) and self.top_job_screen:
+                self.top_job_screen.check_ready()  # settings may have fixed (or broken) something
             self.render()
             self.page.update()
 

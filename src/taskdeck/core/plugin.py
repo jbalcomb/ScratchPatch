@@ -97,6 +97,19 @@ class QuickAction:
 
 
 @dataclass(frozen=True)
+class Problem:
+    """Something that would make the job fail, found before it runs.
+
+    ``blocking`` problems disable the run button. ``fix`` names where to fix it:
+    "settings" adds an "Open settings" button.
+    """
+
+    message: str
+    blocking: bool = True
+    fix: str = "settings"
+
+
+@dataclass(frozen=True)
 class SettingsAction:
     """A button on the job's settings screen, e.g. "Test connection".
 
@@ -143,6 +156,17 @@ class JobPlugin:
         Returns a short confirmation message.
         """
         raise NotImplementedError
+
+    def check_ready(self, settings: dict[str, Any]) -> list[Problem]:
+        """Fast, offline checks run when the job opens. Override and extend ``super()``."""
+        return [Problem(f"Set “{f.label}” in this job's settings.")
+                for f in self.settings
+                if f.required and not str(settings.get(f.name) or "").strip()]
+
+    def check_ready_online(self, settings: dict[str, Any]) -> list[Problem]:
+        """Slower checks that may use the network (run in the background when the job opens).
+        Only called when :meth:`check_ready` found nothing blocking."""
+        return []
 
     def collect_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {f.name: f.coerce(raw.get(f.name, f.default)) for f in self.fields}

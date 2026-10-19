@@ -72,3 +72,27 @@ def test_draft_kept_when_parse_fails_and_dropped_when_it_succeeds(tmp_path):
     run_screen(screen, RunReport(True, None, []))
     assert app.drafts.get("daily_log") == {}  # parsed: dropped
     assert screen.fields["log"].value == LOG  # the text box itself is untouched
+
+
+def test_run_is_blocked_until_the_job_is_ready(tmp_path):
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {}  # nothing set up
+    screen = JobScreen(app, daily_log.PLUGIN)
+    screen.check_ready()
+    assert screen.blocked and screen.run_button.disabled
+    text = " ".join(c.value for c in screen.readiness.controls[0].content.controls if hasattr(c, "value") and c.value)
+    assert "Before you can run this job" in text and "Gemini API key" in text
+
+
+def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
+    from taskdeck.core import Problem
+
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {}
+    app.page = SimpleNamespace(run_thread=lambda fn: fn())  # run the background check inline
+    monkeypatch.setattr(type(daily_log.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(daily_log.PLUGIN), "check_ready_online",
+                        lambda self, s: [Problem("Sheet headers don’t match: M1 …", fix="recheck")])
+    screen = JobScreen(app, daily_log.PLUGIN)
+    screen.check_ready()
+    assert not screen.checking and screen.blocked

@@ -207,3 +207,54 @@ def test_settings_test_button_lists_each_model(monkeypatch):
     assert extract.test_models({"llm_url": "http://ws:8080/v1/chat/completions"}).splitlines() == [
         "✓ AI Workstation: answered in 1.0 s", "Gemini: not set up (no API key)"]
     assert daily_log.PLUGIN.settings_actions[0].label == "Test AI models"
+
+
+# ---- readiness (checked when the job opens) ---------------------------------------------
+
+import json as _json
+
+GOOD_KEY = _json.dumps({"type": "service_account", "client_email": "bot@p.iam.gserviceaccount.com",
+                        "private_key": "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"})
+READY = {"fallback_api_key": "k", "sheet_id": "S", "service_account_json": GOOD_KEY}
+
+
+def messages(problems, blocking=True):
+    return [p.message for p in problems if p.blocking == blocking]
+
+
+def test_ready_needs_model_key_and_sheet(monkeypatch):
+    monkeypatch.setattr("taskdeck.shared.google.ServiceAccountKey.check", lambda self: None)
+    assert daily_log.PLUGIN.check_ready(READY) == []
+    got = messages(daily_log.PLUGIN.check_ready({}))
+    assert any("Sheet ID" in m for m in got)
+    assert any("service account key" in m for m in got)
+    assert any("AI Workstation URL or a Gemini API key" in m for m in got)
+
+
+def test_ready_reports_unreadable_key():
+    got = messages(daily_log.PLUGIN.check_ready({**READY, "service_account_json": GOOD_KEY[:50]}))
+    assert any("isn't valid JSON" in m for m in got)
+    got = messages(daily_log.PLUGIN.check_ready(READY))  # parses, but the private key is junk
+    assert any("damaged or incomplete" in m for m in got)
+
+
+def test_ready_flags_localhost_workstation():
+    p = daily_log.PLUGIN.check_ready({**READY, "llm_url": "http://localhost:8080/v1/chat/completions"})
+    assert any("phone itself" in m for m in messages(p, blocking=False))  # Gemini key set: only a warning
+
+
+def test_ready_online_checks_sheet_headers(monkeypatch):
+    monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: FakeBackend(HEADERS[:12]))
+    p = daily_log.PLUGIN.check_ready_online(READY)
+    assert any("M1 should be" in m for m in messages(p))
+    monkeypatch.setattr(sheets, "make_backend", lambda s, timeout=30: FakeBackend(HEADERS))
+    assert daily_log.PLUGIN.check_ready_online(READY) == []
+
+
+def test_ready_online_no_connection_is_not_blocking(monkeypatch):
+    def offline(s, timeout=30):
+        raise StepError("Can't reach sheets.googleapis.com: Network is unreachable")
+
+    monkeypatch.setattr(sheets, "make_backend", offline)
+    p = daily_log.PLUGIN.check_ready_online(READY)
+    assert p and not p[0].blocking and "no connection" in p[0].message

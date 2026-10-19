@@ -50,7 +50,7 @@ def test_assertion_is_a_valid_rs256_jwt(keypair):
     assert rsa.verify(f"{head}.{claims}".encode(), b64d(sig), public) == "SHA-256"
 
 
-@pytest.mark.parametrize("text,msg", [("not json", "valid JSON"), ('{"type": "authorized_user"}', "service account"),
+@pytest.mark.parametrize("text,msg", [("not json", "isn.t JSON"), ('{"type": "authorized_user"}', "service account"),
                                       ('{"type": "service_account"}', "missing")])
 def test_bad_key_files(text, msg):
     with pytest.raises(google.GoogleError, match=msg):
