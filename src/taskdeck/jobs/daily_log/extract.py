@@ -39,7 +39,8 @@ LAST_RESORT_MODEL = "gemini-flash-lite-latest"
 
 def endpoints(settings: dict[str, Any]) -> list[ModelEndpoint]:
     s = {k: (v or "") if isinstance(v, str) or v is None else v for k, v in settings.items()}
-    out = [ModelEndpoint("AI Workstation", s.get("llm_url", ""), s.get("llm_model") or "local", timeout=120)]
+    out = [ModelEndpoint("AI Workstation", s.get("llm_url", ""), s.get("llm_model") or "local",
+                         api_key=s.get("llm_api_key", ""), timeout=120)]
     if (s.get("fallback_api_key") or "").strip():
         models = [m.strip() for m in (s.get("fallback_model") or "gemini-flash-latest").split(",") if m.strip()]
         if LAST_RESORT_MODEL not in models:

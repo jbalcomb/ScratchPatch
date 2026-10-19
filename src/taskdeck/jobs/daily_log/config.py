@@ -10,6 +10,8 @@ SETTINGS = (
                help="llama.cpp chat endpoint, tried first, e.g. "
                     "http://192.168.1.50:8080/v1/chat/completions or its Tailscale address"),
     Field.text("llm_model", "AI Workstation model name", default="local"),
+    Field.text("llm_api_key", "AI Workstation API key", secret=True,
+               help="The --api-key llama-server was started with. Leave blank if it has none."),
     Field.text("fallback_api_key", "Gemini API key (fallback)", secret=True,
                help="Used when the AI Workstation is offline. Paste the key from aistudio.google.com (pasting the whole "
                     "curl command it shows works too). Leave blank for no fallback."),

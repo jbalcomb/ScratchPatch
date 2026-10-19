@@ -395,3 +395,8 @@ def test_service_account_backend_writes_exact_range():
     assert backend.rows() == [HEADERS]
     backend.write(5, [ROW, ["x"]])
     assert backend.client.writes == [("'Sheet1'!A5:O6", [ROW, ["x"] + [""] * 14])]
+
+
+def test_workstation_api_key_is_sent():
+    (ws,) = extract.endpoints({"llm_url": "http://100.83.88.59:8080/v1/chat/completions", "llm_api_key": "secret"})
+    assert ws.api_key == "secret" and ws.label == "AI Workstation"

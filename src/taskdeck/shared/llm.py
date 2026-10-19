@@ -129,6 +129,8 @@ def _friendly(exc: HttpError) -> str:
         return _rate_limit_message(retry_after(exc.body))
     if exc.timed_out:
         return f"{exc}. The connection or the model is slow right now; try again."
+    if exc.status in (401, 403):
+        return f"{exc}. The API key is missing or wrong; check it in this job's settings."
     return str(exc)
 
 

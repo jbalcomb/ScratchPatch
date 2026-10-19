@@ -212,3 +212,9 @@ def test_stall_moves_on_to_next_model_without_retrying(net):
     net["answers"][lite.url] = reply('{"day": 16}')
     assert llm.chat_json_with_fallback([CLOUD, lite], "SYS", "log")[1] is lite
     assert [s["url"] for s in net["sent"]] == [CLOUD.url, lite.url]  # CLOUD tried once only
+
+
+def test_wrong_workstation_key_says_so(net):
+    net["answers"][LOCAL.url] = HttpError("HTTP 401: Invalid API Key", 401)
+    with pytest.raises(StepError, match="API key is missing or wrong"):
+        llm.chat_json_with_fallback([LOCAL], "SYS", "log")

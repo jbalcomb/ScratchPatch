@@ -31,6 +31,7 @@ Open the job, tap the **tune** icon (top right):
 |---|---|
 | AI Workstation URL | the llama.cpp endpoint, e.g. `http://192.168.1.50:8080/v1/chat/completions` at home, or its Tailscale name/IP when away. `localhost` will **not** work from the phone. |
 | AI Workstation model name | whatever llama.cpp expects (`local` is fine for a single-model server) |
+| AI Workstation API key | the `--api-key` llama-server was started with (sent as `Authorization: Bearer …`); blank if none |
 | Gemini API key (fallback) | create one at [aistudio.google.com](https://aistudio.google.com) → *Get API key*, then tap **Paste**. Pasting the whole curl example AI Studio shows also works; the key is pulled out of it. Leave blank for no fallback. |
 | Gemini model(s) | `gemini-flash-latest` by default (resolved to `gemini-3.8-flash` on 2026-10-18); comma-separated list allowed. `gemini-flash-lite-latest` is always tried last. |
 | Fallback URL | Gemini's OpenAI-compatible endpoint by default; any OpenAI-compatible chat API works |
