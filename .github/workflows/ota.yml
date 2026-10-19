@@ -1,0 +1,66 @@
+name: Live update
+
+# Publishes the taskdeck package as a live (over-the-air) update for installed apps.
+# Runs the tests first: nothing reaches the phone unless they pass.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - ".github/workflows/ota.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ota-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "flet==1.0.4" "rsa>=4.9" certifi pytest
+      - name: Stamp version
+        run: |
+          printf 'VERSION = "%s"\nBUILD_TIME = %s\n' "$(git rev-parse --short=7 HEAD)" "$(git log -1 --format=%ct)" > src/taskdeck/_build.py
+          cat src/taskdeck/_build.py
+      - name: Tests
+        run: pytest -q
+      - name: Smoke-import the UI
+        run: PYTHONPATH=src python -c "import taskdeck.ui.app, taskdeck.core; from taskdeck.core import PluginRegistry; r = PluginRegistry().discover(); assert not r.errors, r.errors; print(len(r), 'jobs')"
+      - name: Build bundle
+        run: |
+          cd src
+          find taskdeck -name __pycache__ -prune -o -name '*.py' -print | sort | zip -q -X ../ota.zip -@
+          cd ..
+          python - <<'PY'
+          import hashlib, json, subprocess, sys
+          sys.path.insert(0, "src")
+          import taskdeck_boot
+          data = open("ota.zip", "rb").read()
+          manifest = {
+              "version": subprocess.check_output(["git", "rev-parse", "--short=7", "HEAD"], text=True).strip(),
+              "build_time": int(subprocess.check_output(["git", "log", "-1", "--format=%ct"], text=True)),
+              "requires_api": taskdeck_boot.OTA_API,
+              "sha256": hashlib.sha256(data).hexdigest(),
+              "size": len(data),
+          }
+          json.dump(manifest, open("ota-manifest.json", "w"), indent=2)
+          print(manifest)
+          PY
+      - name: Publish to the taskdeck-ota release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view taskdeck-ota >/dev/null 2>&1 || gh release create taskdeck-ota --prerelease \
+            --title "TaskDeck live update" --notes "Live code updates downloaded by the installed app. Not an APK."
+          # Bundle first, manifest last: a client that sees the new manifest finds the new bundle
+          # (and a stale manifest with a new bundle fails the checksum and is retried later).
+          gh release upload taskdeck-ota ota.zip --clobber
+          gh release upload taskdeck-ota ota-manifest.json --clobber

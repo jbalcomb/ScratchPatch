@@ -30,10 +30,33 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pip install "flet[all]==1.0.4"
+      - name: Stamp version
+        # Same stamp as the live-update bundle, so the app knows which code it shipped with.
+        run: printf 'VERSION = "%s"\nBUILD_TIME = %s\n' "$(git rev-parse --short=7 HEAD)" "$(git log -1 --format=%ct)" > src/taskdeck/_build.py
+      - name: Check signing secret
+        env:
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$PW" ]; then
+            echo "::error::Add the ANDROID_KEYSTORE_PASSWORD repository secret (Settings > Secrets and variables > Actions)."
+            echo "::error::Without it every build gets a different signature and phones refuse to install updates."
+            exit 1
+          fi
       - name: Build APK
-        # --yes lets flet install the matching Flutter and Android SDKs
+        # --yes lets flet install the matching Flutter and Android SDKs.
+        # Signed with the permanent key in android/ so each APK installs over the previous one.
+        env:
+          FLET_ANDROID_SIGNING_KEY_STORE: ${{ github.workspace }}/android/taskdeck-release.jks
+          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_ALIAS: taskdeck
         run: flet build apk --yes --no-rich-output --build-number ${{ github.run_number }}
       - run: cp "$(ls build/apk/*.apk | head -n1)" TaskDeck.apk
+      - name: Verify the APK is signed with the permanent key
+        run: |
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)apksigner"
+          "$APKSIGNER" verify --print-certs TaskDeck.apk | tee certs.txt
+          grep -q "SHA-256 digest: 677bc5707165701ae751f22c6b3566fbe1dc3d66221a98e18a54c563f4f6e4e6" certs.txt
       - uses: actions/upload-artifact@v4
         with:
           name: taskdeck-apk
@@ -46,4 +69,4 @@ jobs:
           gh release delete taskdeck-latest --yes --cleanup-tag || true
           gh release create taskdeck-latest TaskDeck.apk --prerelease --target "$GITHUB_SHA" \
             --title "TaskDeck (latest build #${{ github.run_number }})" \
-            --notes "Built from ${GITHUB_SHA::7}. Download TaskDeck.apk on your phone and tap it to install."
+            --notes "Built from ${GITHUB_SHA::7}. Download TaskDeck.apk on your phone and tap it to install. Code changes after this arrive as live updates inside the app."

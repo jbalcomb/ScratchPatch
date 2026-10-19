@@ -6,6 +6,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
+try:  # the fixed loader that ships in the APK (src/taskdeck_boot.py)
+    import taskdeck_boot as boot
+except ImportError:  # e.g. imported as a library without the app shell
+    boot = None
+
 import flet as ft
 
 from taskdeck.core import (
@@ -72,6 +77,10 @@ class TaskDeckApp:
         page.views.append(self.root)
         self.register_commands()
         self.render()
+        self.update_status = ""
+        if boot:
+            boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
+            boot.listeners.append(self.on_update_ready)
 
     # ---- navigation ---------------------------------------------------------------
 
@@ -319,6 +328,7 @@ class TaskDeckApp:
                               on_click=lambda e, pid=p.id: self.open_settings(pid)) for p in configurable],
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
+                *self.updates_section(),
                 section_title("About"),
                 ft.Text(f"{len(self.registry)} jobs installed · {len(self.commands)} palette commands"),
             ],
@@ -326,6 +336,57 @@ class TaskDeckApp:
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )
+
+    # ---- live code updates -------------------------------------------------------------
+
+    def updates_section(self) -> list[ft.Control]:
+        if not boot:
+            return []
+        st = boot.status()
+        running = st["active"]
+        ready = st["staged"] and st["staged"] != running["version"]
+        lines = [f"Running: {running['version']} ({running['source']})"]
+        if ready:
+            lines.append(f"Downloaded: {st['staged']}, reload to use it")
+        if st.get("last_error"):
+            lines.append(f"Last rejected update: {st['last_error'].splitlines()[0][:120]}")
+        if self.update_status:
+            lines.append(self.update_status)
+        buttons = [ft.OutlinedButton("Check for updates", icon=ft.Icons.SYSTEM_UPDATE, on_click=lambda e: self.check_updates())]
+        if ready:
+            buttons.append(ft.FilledButton("Reload now", icon=ft.Icons.REFRESH, on_click=lambda e: self.reload_app()))
+        return [
+            section_title("App updates"),
+            ft.Text("\n".join(lines), color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
+            ft.Row(buttons, wrap=True),
+        ]
+
+    def check_updates(self) -> None:
+        self.update_status = "Checking…"
+        self.render()
+        self.page.update()
+
+        def work():
+            result = boot.check_for_update()
+            self.update_status = result["message"]
+            self.render()
+            self.page.update()
+
+        self.page.run_thread(work)
+
+    def on_update_ready(self, result: dict) -> None:
+        """Called from the updater's background thread when a new version is downloaded."""
+        self.update_status = result["message"]
+        self.render()
+        self.page.show_dialog(ft.SnackBar(
+            ft.Text(f"Update {result['version']} downloaded"),
+            action="Reload",
+            on_action=lambda e: self.reload_app(),
+            duration=ft.Duration(seconds=10),
+        ))
+
+    def reload_app(self) -> None:
+        boot.reload(self.page)
 
     # ---- state changes ------------------------------------------------------------
 
@@ -409,6 +470,9 @@ class TaskDeckApp:
             c.add(Command(f"theme:{key}", f"Theme: {key.title()}", lambda k=key: self.set_theme(k),
                           icon="DARK_MODE" if key == "dark" else "LIGHT_MODE" if key == "light" else "BRIGHTNESS_AUTO",
                           keywords=("appearance", "color", "mode")))
+        if boot:
+            c.add(Command("app:update", "Check for app updates", self.check_updates, icon="SYSTEM_UPDATE",
+                          keywords=("upgrade", "version", "ota", "reload")))
         c.add(Command("history:clear", "Clear run history", self.clear_history, icon="DELETE_SWEEP", keywords=("reset",)))
 
     # ---- keyboard -----------------------------------------------------------------
