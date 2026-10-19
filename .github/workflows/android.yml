@@ -50,7 +50,7 @@ jobs:
           FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           FLET_ANDROID_SIGNING_KEY_ALIAS: taskdeck
-        run: flet build apk --yes --no-rich-output --build-number ${{ github.run_number }}
+        run: flet build apk --yes --no-rich-output --arch arm64-v8a --build-number ${{ github.run_number }}
       - run: cp "$(ls build/apk/*.apk | head -n1)" TaskDeck.apk
       - name: Verify the APK is signed with the permanent key
         run: |
