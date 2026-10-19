@@ -258,3 +258,23 @@ def test_ready_online_no_connection_is_not_blocking(monkeypatch):
     monkeypatch.setattr(sheets, "make_backend", offline)
     p = daily_log.PLUGIN.check_ready_online(READY)
     assert p and not p[0].blocking and "no connection" in p[0].message
+
+
+class FakeClient:
+    def __init__(self, filled):
+        self.filled, self.writes = filled, []
+
+    def get_values(self, rng):
+        return self.filled
+
+    def write_row(self, rng, row):
+        self.writes.append(rng)
+
+
+@pytest.mark.parametrize("filled,target", [([HEADERS], "A2:O2"), ([HEADERS, ["10/15/2026"]], "A3:O3"),
+                                           ([], "A2:O2"), ([[""] + HEADERS[1:], [], ["x"]], "A4:O4")])
+def test_service_account_backend_writes_below_last_row(filled, target):
+    backend = sheets.ServiceAccountBackend.__new__(sheets.ServiceAccountBackend)
+    backend.client, backend.tab = FakeClient(filled), "Sheet1"
+    backend.append(build_row(build_record(SAMPLE_RAW, TODAY)))
+    assert backend.client.writes == [f"'Sheet1'!{target}"]

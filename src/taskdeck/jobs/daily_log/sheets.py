@@ -41,7 +41,12 @@ class ServiceAccountBackend:
         return values[0] if values else []
 
     def append(self, row: list[Any]) -> None:
-        self.client.append_row(a1_range(self.tab, "A1"), row)
+        # Write to the row under the last filled one ourselves. Google's :append guesses
+        # the table from the given range, and with a blank A1 it inserted above the headers.
+        last = column_letter(max(c.number for c in COLUMNS))
+        filled = self.client.get_values(a1_range(self.tab, f"A:{last}"))  # trailing empty rows are trimmed
+        n = max(len(filled), 1) + 1
+        self.client.write_row(a1_range(self.tab, f"A{n}:{column_letter(len(row))}{n}"), row)
 
 
 def make_backend(settings: dict[str, Any], timeout: float = 30) -> SheetBackend:

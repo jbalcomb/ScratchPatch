@@ -1,7 +1,7 @@
 """Google service-account auth and a small Sheets values client.
 
 Pure Python (``rsa`` + ``pyasn1``) so it runs inside the Android build without
-compiled wheels. Only what jobs need today: read a range, append rows.
+compiled wheels. Only what jobs need today: read a range, append or write rows.
 """
 
 from __future__ import annotations
@@ -170,6 +170,15 @@ class SheetsClient:
         url = self._url(rng, ":append", valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS")
         try:
             post_json(url, {"values": [row]}, headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+
+    def write_row(self, rng: str, row: list[Any]) -> None:
+        """Overwrite exactly the cells in ``rng`` with one row (no table guessing, unlike append)."""
+        url = self._url(rng, valueInputOption="USER_ENTERED")
+        try:
+            request("PUT", url, json_body={"range": rng, "majorDimension": "ROWS", "values": [row]},
+                    headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
 
