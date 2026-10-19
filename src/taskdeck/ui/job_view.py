@@ -10,7 +10,7 @@ import flet as ft
 
 from taskdeck.core import Context, JobPlugin, RunReport, Stage
 
-from .common import plugin_icon
+from .common import plugin_icon, screen_view
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -60,12 +60,9 @@ class JobScreen:
             actions.append(ft.IconButton(ft.Icons.TUNE, tooltip="Job settings", on_click=lambda e: app.open_settings(plugin.id)))
         actions.append(ft.IconButton(ft.Icons.SEARCH, tooltip="Command palette (Ctrl+K)", on_click=lambda e: app.palette.show()))
 
-        self.view = ft.View(
+        self.view = screen_view(
             route=f"/job/{plugin.id}",
             appbar=ft.AppBar(title=ft.Text(plugin.title), actions=actions),
-            scroll=ft.ScrollMode.AUTO,
-            padding=16,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             controls=[
                 ft.Row(
                     [

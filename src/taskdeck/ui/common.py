@@ -15,6 +15,28 @@ def plugin_icon(plugin: JobPlugin) -> ft.IconData:
     return icon_for(plugin.icon)
 
 
+def screen_view(route: str, appbar: ft.AppBar, controls: list[ft.Control], spacing: int = 12) -> ft.View:
+    """A pushed screen whose content scrolls inside the safe area.
+
+    SafeArea keeps the bottom of the content clear of the phone's own navigation bar
+    (gesture pill or back/home buttons); the trailing spacer lets the last control
+    scroll fully into view.
+    """
+    column = ft.Column(
+        [*controls, ft.Container(height=24)],
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+        spacing=spacing,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    return ft.View(
+        route=route,
+        appbar=appbar,
+        padding=0,
+        controls=[ft.SafeArea(ft.Container(column, padding=ft.Padding.only(left=16, top=16, right=16)), expand=True)],
+    )
+
+
 def section_title(text: str, action: ft.Control | None = None) -> ft.Control:
     label = ft.Text(text, size=14, weight=ft.FontWeight.W_600, color=ft.Colors.ON_SURFACE_VARIANT)
     return ft.Row([label, action] if action else [label], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)

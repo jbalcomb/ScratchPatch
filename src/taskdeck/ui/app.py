@@ -68,9 +68,6 @@ class TaskDeckApp:
             route="/",
             controls=[ft.SafeArea(self.body, expand=True)],
             navigation_bar=self.nav,
-            floating_action_button=ft.FloatingActionButton(
-                icon=ft.Icons.MANAGE_SEARCH, tooltip="Command palette (Ctrl+K)", on_click=lambda e: self.palette.show()
-            ),
             padding=0,
         )
         page.views.clear()
@@ -290,7 +287,7 @@ class TaskDeckApp:
         header = section_title("History", ft.TextButton("Clear", icon=ft.Icons.DELETE_SWEEP_OUTLINED,
                                                         on_click=lambda e: self.clear_history(), disabled=not entries))
         if not entries:
-            return ft.Column([ft.Container(height=8), header,
+            return ft.Column([ft.Container(height=8), self.search_pill(), header,
                               empty_state(ft.Icons.HISTORY, "No runs yet", "Every job you run is listed here so you can re-run it.")])
         rows = []
         for entry in entries:
@@ -306,7 +303,8 @@ class TaskDeckApp:
                 tooltip="Open with these inputs",
                 on_click=lambda e, en=entry: self.open_job(en.job_id, en.inputs),
             ))
-        return ft.Column([ft.Container(height=8), header, *rows], scroll=ft.ScrollMode.AUTO, spacing=2, expand=True)
+        return ft.Column([ft.Container(height=8), self.search_pill(), header, *rows], scroll=ft.ScrollMode.AUTO,
+                         spacing=2, expand=True)
 
     def settings_tab(self) -> ft.Control:
         theme = ft.SegmentedButton(
@@ -321,6 +319,7 @@ class TaskDeckApp:
         return ft.Column(
             [
                 ft.Container(height=8),
+                self.search_pill(),
                 section_title("Appearance"),
                 theme,
                 *([section_title("Job settings")] if configurable else []),

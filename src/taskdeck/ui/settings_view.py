@@ -8,6 +8,7 @@ import flet as ft
 
 from taskdeck.core import JobPlugin
 
+from .common import screen_view
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -20,13 +21,14 @@ class JobSettingsScreen:
         self.plugin = plugin
         values = plugin.resolve_settings(app.job_settings(plugin.id))
         self.fields = {f.name: FieldControl(f, values.get(f.name)) for f in plugin.settings}
-        self.view = ft.View(
+        self.view = screen_view(
             route=f"/job/{plugin.id}/settings",
-            appbar=ft.AppBar(title=ft.Text(f"{plugin.title} settings")),
-            scroll=ft.ScrollMode.AUTO,
-            padding=16,
+            # Save is also in the top bar so it is reachable without scrolling past the form.
+            appbar=ft.AppBar(
+                title=ft.Text(f"Settings · {plugin.title}", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                actions=[ft.TextButton("Save", icon=ft.Icons.CHECK, on_click=self.save)],
+            ),
             spacing=16,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             controls=[
                 ft.Text("Stored only on this device.", color=ft.Colors.ON_SURFACE_VARIANT),
                 *[fc.control for fc in self.fields.values()],
