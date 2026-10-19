@@ -73,7 +73,7 @@ def test_both_down_reports_each(net):
     net["answers"][CLOUD.url] = HttpError("HTTP 429: quota exceeded", 429)
     with pytest.raises(StepError) as exc:
         llm.chat_json_with_fallback([LOCAL, CLOUD], "SYS", "log")
-    assert "AI Workstation: not reachable" in str(exc.value) and "Gemini: HTTP 429" in str(exc.value)
+    assert "AI Workstation: not reachable" in str(exc.value) and "Gemini: rate limit reached" in str(exc.value)
 
 
 def test_nothing_configured():
@@ -138,3 +138,77 @@ def test_list_shaped_error_body():
     from taskdeck.shared.http import _error_detail
     body = '[{"error": {"code": 503, "message": "This model is currently experiencing high demand."}}]'
     assert _error_detail(body) == "This model is currently experiencing high demand."
+
+
+def test_stalled_connection_is_retried_once(net, monkeypatch):
+    calls = iter([HttpError("x didn't answer within 30 s", timed_out=True), reply('{"day": 16}')])
+
+    def flaky(url, body, headers=None, timeout=30):
+        ans = next(calls)
+        if isinstance(ans, Exception):
+            raise ans
+        return ans
+
+    monkeypatch.setattr(llm, "post_json", flaky)
+    assert llm.chat_json(CLOUD, "SYS", "log") == {"day": 16}
+
+
+def test_two_timeouts_give_up_with_clear_message(net):
+    net["answers"][CLOUD.url] = HttpError("generativelanguage.googleapis.com didn't answer within 30 s", timed_out=True)
+    with pytest.raises(StepError, match="slow right now"):
+        llm.chat_json(CLOUD, "SYS", "log")
+    assert len(net["sent"]) == 2  # one retry only: each attempt costs a full timeout
+
+
+def test_ping_reports_each_outcome(net):
+    net["answers"][LOCAL.url] = reply('{"ok": true}')
+    assert llm.ping(LOCAL).startswith("✓ AI Workstation: answered in")
+    net["up"] = set()
+    assert llm.ping(CLOUD) == f"Gemini: not reachable ({llm.GEMINI_URL})"
+    assert llm.ping(llm.ModelEndpoint("X", "", "m")) == "X: not set up"
+
+
+DAILY_QUOTA_BODY = (
+    '[{"error": {"code": 429, "message": "You exceeded your current quota", "details": ['
+    '{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "77833s"}]}}]'
+)
+
+
+def test_daily_quota_fails_fast_and_next_model_answers(net, monkeypatch):
+    slept = []
+    monkeypatch.setattr(llm.time, "sleep", slept.append)
+    lite = llm.ModelEndpoint("Gemini (flash-lite)", llm.GEMINI_URL + "#lite", "gemini-flash-lite-latest", api_key="K")
+    net["answers"][CLOUD.url] = HttpError("HTTP 429: quota", 429, body=DAILY_QUOTA_BODY)
+    net["answers"][lite.url] = reply('{"day": 16}')
+    data, used = llm.chat_json_with_fallback([CLOUD, lite], "SYS", "log")
+    assert used.label == "Gemini (flash-lite)" and slept == []  # no pointless retries
+
+
+def test_daily_quota_message():
+    assert llm.retry_after(DAILY_QUOTA_BODY) == 77833
+    exc = HttpError("HTTP 429", 429, body=DAILY_QUOTA_BODY)
+    assert llm._friendly(exc) == "daily free-tier limit reached (resets in about 22 h)."
+
+
+def test_short_retry_delay_is_waited_out(net, monkeypatch):
+    slept = []
+    monkeypatch.setattr(llm.time, "sleep", slept.append)
+    body = '{"error": {"details": [{"retryDelay": "7s"}]}}'
+    calls = iter([HttpError("HTTP 429", 429, body=body), reply('{"day": 16}')])
+
+    def flaky(url, payload, headers=None, timeout=30):
+        ans = next(calls)
+        if isinstance(ans, Exception):
+            raise ans
+        return ans
+
+    monkeypatch.setattr(llm, "post_json", flaky)
+    assert llm.chat_json(CLOUD, "SYS", "log") == {"day": 16} and slept == [7.0]
+
+
+def test_stall_moves_on_to_next_model_without_retrying(net):
+    lite = llm.ModelEndpoint("Gemini (flash-lite)", llm.GEMINI_URL + "#lite", "gemini-flash-lite-latest", api_key="K")
+    net["answers"][CLOUD.url] = HttpError("didn't answer within 30 s", timed_out=True)
+    net["answers"][lite.url] = reply('{"day": 16}')
+    assert llm.chat_json_with_fallback([CLOUD, lite], "SYS", "log")[1] is lite
+    assert [s["url"] for s in net["sent"]] == [CLOUD.url, lite.url]  # CLOUD tried once only

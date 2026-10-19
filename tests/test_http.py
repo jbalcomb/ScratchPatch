@@ -69,3 +69,14 @@ def test_unreachable_has_no_status():
     with pytest.raises(http.HttpError) as exc:
         http.post_json("http://127.0.0.1:1/x", {}, timeout=2)
     assert exc.value.status is None
+
+
+def test_silent_server_times_out_with_flag():
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)  # accepts the connection but never answers
+    url = f"http://127.0.0.1:{srv.getsockname()[1]}/x"
+    with pytest.raises(http.HttpError) as exc:
+        http.post_json(url, {}, timeout=1)
+    srv.close()
+    assert exc.value.timed_out and "didn't answer within 1 s" in str(exc.value)

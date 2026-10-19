@@ -151,7 +151,8 @@ def test_save_appends_one_row():
 
 def test_endpoints_from_settings():
     eps = extract.endpoints({"llm_url": "http://ws:8080/v1/chat/completions", "fallback_api_key": "k"})
-    assert [e.label for e in eps] == ["AI Workstation", "Gemini"]
+    assert [e.label for e in eps] == ["AI Workstation", "Gemini", "Gemini (flash-lite)"]
+    assert eps[2].model == "gemini-flash-lite-latest"
     assert eps[1].model == "gemini-flash-latest" and "generativelanguage.googleapis.com" in eps[1].url
     assert [e.label for e in extract.endpoints({"llm_url": "x"})] == ["AI Workstation"]  # no key -> no fallback
 
@@ -199,3 +200,10 @@ def test_commit_without_key_explains():
 def test_commit_with_bad_key_explains():
     ok, msg = daily_log.PLUGIN.try_commit(build_record(SAMPLE_RAW, TODAY), {"service_account_json": '{"type": "user"}'})
     assert not ok and "isn't a service account key" in msg
+
+
+def test_settings_test_button_lists_each_model(monkeypatch):
+    monkeypatch.setattr(extract, "ping", lambda e: f"✓ {e.label}: answered in 1.0 s")
+    assert extract.test_models({"llm_url": "http://ws:8080/v1/chat/completions"}).splitlines() == [
+        "✓ AI Workstation: answered in 1.0 s", "Gemini: not set up (no API key)"]
+    assert daily_log.PLUGIN.settings_actions[0].label == "Test AI models"

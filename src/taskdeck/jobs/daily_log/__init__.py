@@ -1,7 +1,7 @@
 """Daily Log → Google Sheet: parse a pasted delivery log with the local AI model,
 preview the row, and append it to the sheet on confirmation (see docs/jobs/daily_log.md)."""
 
-from taskdeck.core import Field, JobPlugin, Pipeline, Result, Stage, StepError, step
+from taskdeck.core import Field, JobPlugin, Pipeline, Result, SettingsAction, Stage, StepError, step
 from taskdeck.shared import steps
 
 from taskdeck.shared.llm import GEMINI_URL
@@ -57,7 +57,9 @@ class DailyLog(JobPlugin):
         Field.text("fallback_api_key", "Gemini API key (fallback)", secret=True,
                    help="Used when the AI Workstation is offline. Paste the key from aistudio.google.com (pasting the whole "
                         "curl command it shows works too). Leave blank for no fallback."),
-        Field.text("fallback_model", "Gemini model", default="gemini-flash-latest"),
+        Field.text("fallback_model", "Gemini model(s)", default="gemini-flash-latest",
+                   help="Comma-separated, tried in order. gemini-flash-lite-latest is always tried last "
+                        "(each model has its own free daily limit)."),
         Field.text("fallback_url", "Fallback URL", default=GEMINI_URL,
                    help="Any OpenAI-compatible chat-completions endpoint works here."),
         Field.text("sheet_id", "Sheet ID", default=DEFAULT_SHEET_ID),
@@ -66,6 +68,7 @@ class DailyLog(JobPlugin):
                    help="Tap Paste after copying the whole .json key text, or Import the file. Share the sheet with the key's "
                         "client_email as Editor."),
     )
+    settings_actions = (SettingsAction("Test AI models", extract.test_models, icon="NETWORK_CHECK"),)
     run_label = "Parse log"
     commit_label = "Save to sheet"
     committed_label = "Saved to sheet"

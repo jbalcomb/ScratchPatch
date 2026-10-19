@@ -32,7 +32,7 @@ Open the job, tap the **tune** icon (top right):
 | AI Workstation URL | the llama.cpp endpoint, e.g. `http://192.168.1.50:8080/v1/chat/completions` at home, or its Tailscale name/IP when away. `localhost` will **not** work from the phone. |
 | AI Workstation model name | whatever llama.cpp expects (`local` is fine for a single-model server) |
 | Gemini API key (fallback) | create one at [aistudio.google.com](https://aistudio.google.com) → *Get API key*, then tap **Paste**. Pasting the whole curl example AI Studio shows also works; the key is pulled out of it. Leave blank for no fallback. |
-| Gemini model | `gemini-flash-latest` by default (resolved to `gemini-3.8-flash` when tested on 2026-10-18) |
+| Gemini model(s) | `gemini-flash-latest` by default (resolved to `gemini-3.8-flash` on 2026-10-18); comma-separated list allowed. `gemini-flash-lite-latest` is always tried last. |
 | Fallback URL | Gemini's OpenAI-compatible endpoint by default; any OpenAI-compatible chat API works |
 | Sheet ID | pre-filled with the Instacart sheet |
 | Tab name | `Sheet1` |
@@ -48,8 +48,16 @@ Tailscale IP).
 3. The preview title says which one answered ("Row for 10/16/2026 · parsed by Gemini").
 4. If both fail, the error names each failure, and the pasted text is kept.
 
-A busy or rate-limited model (HTTP 429/5xx, e.g. Gemini's free-tier "high demand" 503) is retried twice, after
-2 s and 5 s, before moving on.
+Gemini models are tried in order: the configured model(s), then always `gemini-flash-lite-latest`. **The free
+tier has a per-model daily limit; on 2026-10-19 it was only 20 requests/day for `gemini-3.8-flash`**, so a second
+model doubles the allowance. Flash-Lite parsed the PRD sample correctly in about 1 s.
+
+* A daily-quota error (HTTP 429 with a long `retryDelay`) moves straight to the next model, and the message says
+  when it resets. A short `retryDelay` (≤ 20 s) is waited out once; busy errors (5xx) are retried after 2 s and 5 s.
+* Each Gemini request waits up to 30 s. Gemini sometimes *hangs* instead of answering (seen when the quota was
+  used up), so a stall moves on to the next model; only the last model is retried once.
+* **Settings → Test AI models** sends one tiny request to each configured model and shows the result and time
+  (each test counts toward the daily limit).
 
 Tested on 2026-10-18 against Gemini's free tier: the PRD §8 sample produces exactly the expected row, and a
 log with two gas stops and a post-midnight arrival is correct. The first test showed Gemini reading

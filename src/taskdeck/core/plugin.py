@@ -96,6 +96,19 @@ class QuickAction:
     inputs: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SettingsAction:
+    """A button on the job's settings screen, e.g. "Test connection".
+
+    ``run`` receives the settings as currently entered (saved or not) and returns
+    text to show under the button. It runs off the UI thread.
+    """
+
+    label: str
+    run: Callable[[dict[str, Any]], str]
+    icon: str = "PLAY_ARROW"
+
+
 class JobPlugin:
     """Base class every job derives from."""
 
@@ -110,6 +123,7 @@ class JobPlugin:
     # Per-job configuration (URLs, IDs, keys). Edited from the job's settings screen,
     # persisted by the host, and handed to steps as ``ctx.settings``.
     settings: ClassVar[tuple[Field, ...]] = ()
+    settings_actions: ClassVar[tuple[SettingsAction, ...]] = ()
     run_label: ClassVar[str] = "Run"
     # Two-phase jobs: the pipeline must be side-effect free and produce a preview whose
     # ``Result.payload`` is passed to :meth:`commit` once the user confirms.

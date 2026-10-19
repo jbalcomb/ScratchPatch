@@ -20,10 +20,11 @@ from typing import Any
 class HttpError(Exception):
     """A request failed. ``status`` is the HTTP status, or None if the server was unreachable."""
 
-    def __init__(self, message: str, status: int | None = None, body: str = ""):
+    def __init__(self, message: str, status: int | None = None, body: str = "", timed_out: bool = False):
         super().__init__(message)
         self.status = status
         self.body = body
+        self.timed_out = timed_out  # connected, but no (complete) answer within the timeout
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -96,7 +97,10 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         raise HttpError(f"HTTP {exc.code}: {_error_detail(body) or exc.reason}", exc.code, body) from None
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
         reason = getattr(exc, "reason", exc)
-        raise HttpError(f"Can't reach {urllib.parse.urlsplit(url).netloc or url}: {reason}") from None
+        host = urllib.parse.urlsplit(url).netloc or url
+        if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
+            raise HttpError(f"{host} didn't answer within {timeout:g} s", timed_out=True) from None
+        raise HttpError(f"Can't reach {host}: {reason}") from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
