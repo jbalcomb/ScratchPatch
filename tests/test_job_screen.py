@@ -61,16 +61,33 @@ def run_screen(screen, report):
     asyncio.run(screen.run())
 
 
-def test_draft_kept_when_parse_fails_and_dropped_when_it_succeeds(tmp_path):
+def commit_screen(screen, ok):
+    import asyncio
+
+    import flet as ft
+
+    screen.plugin.try_commit = lambda payload, settings: (ok, "Saved row" if ok else "Sheet error")
+    screen.plugin.committed_label = "Saved"
+    screen.app.toast = lambda message: None
+    screen.payload = {"date": "10/16/2026"}
+    screen.commit_button, screen.commit_error = ft.FilledButton("Save"), ft.Column()
+    asyncio.run(screen.commit())
+
+
+def test_draft_kept_until_the_row_is_saved(tmp_path):
     from taskdeck.core import RunReport
 
     app = fake_app(tmp_path)
     screen = JobScreen(app, daily_log.PLUGIN)
     screen.fields["log"].input.value = LOG
     run_screen(screen, RunReport(False, None, [], "Gemini: didn't answer"))
-    assert app.drafts.get("daily_log") == {"log": LOG}  # error: still there
+    assert app.drafts.get("daily_log") == {"log": LOG}  # parse error: still there
     run_screen(screen, RunReport(True, None, []))
-    assert app.drafts.get("daily_log") == {}  # parsed: dropped
+    assert app.drafts.get("daily_log") == {"log": LOG}  # parsed but not saved: still there
+    commit_screen(screen, ok=False)
+    assert app.drafts.get("daily_log") == {"log": LOG}  # save failed: still there
+    commit_screen(screen, ok=True)
+    assert app.drafts.get("daily_log") == {}  # saved: dropped
     assert screen.fields["log"].value == LOG  # the text box itself is untouched
 
 
