@@ -36,7 +36,13 @@ def parse_date(value: Any) -> date | None:
 
 
 def format_date(d: date) -> str:
-    return f"{d.month:02d}/{d.day:02d}/{d.year}"
+    return f"{d.month}/{d.day}/{d.year}"
+
+
+def is_sheet_date(value: Any) -> bool:
+    """Shown the way the sheet's date format shows a real date (M/D/YYYY, leading zeros or not).
+    Anything else (2026-10-18, 10/18/26) was most likely typed in as text."""
+    return bool(re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", str(value or "").strip()))
 
 
 def is_blank(cells: list[Any]) -> bool:
@@ -115,8 +121,8 @@ class Plan:
 
 def plan(values: list[list[Any]]) -> Plan:
     """Work out the tidy version of the sheet: blank rows dropped, one row per date
-    (the most complete one, or the later one if equally complete), dates written as
-    MM/DD/YYYY, sorted by date. Rows without a readable date are kept, at the end."""
+    (the most complete one, or the later one if equally complete), dates not in the
+    sheet's M/D/YYYY form rewritten, sorted by date. Rows without a readable date are kept, at the end."""
     span = last_filled_row(values)
     width = max([WIDTH] + [len(r) for r in values[:span]])
     data = [(n, _cells(values[n - 1], width)) for n in range(2, span + 1)]
@@ -150,7 +156,7 @@ def plan(values: list[list[Any]]) -> Plan:
             else:
                 notes.append(f"Remove row {n}: another row for {format_date(d)} that differs from row {best_n}, "
                              f"which is kept as the more complete one ({'; '.join(differences(cells, best))}).")
-        if str(best[0]).strip() != format_date(d):
+        if not is_sheet_date(best[0]):
             notes.append(f"Row {best_n}: write the date “{str(best[0]).strip()}” as {format_date(d)}.")
             best = [format_date(d)] + best[1:]
         kept.append((d, best_n, best))

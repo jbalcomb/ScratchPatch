@@ -400,3 +400,11 @@ def test_service_account_backend_writes_exact_range():
 def test_workstation_api_key_is_sent():
     (ws,) = extract.endpoints({"llm_url": "http://100.83.88.59:8080/v1/chat/completions", "llm_api_key": "secret"})
     assert ws.api_key == "secret" and ws.label == "AI Workstation"
+
+
+def test_plan_accepts_dates_without_leading_zeros():
+    day3 = ["10/3/2026"] + DAY15[1:]
+    plan = reconcile.plan([HEADERS, day3, DAY15])
+    assert not plan.changed  # the sheet's own date format, not a problem
+    assert reconcile.plan([HEADERS, ["2026-10-03"] + DAY15[1:]]).changes == [
+        "Row 2: write the date “2026-10-03” as 10/3/2026."]
