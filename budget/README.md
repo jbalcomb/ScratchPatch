@@ -20,6 +20,8 @@ python budget/budget.py summary            # totals per category for the latest 
 python budget/budget.py summary 2026-03    # a specific month
 ```
 
+The summary covers all accounts together, so transfers between your own accounts net to zero.
+
 Default locations (all under `~/budget/` unless `BUDGET_HOME` is set):
 
 | What | Where | Override |

@@ -10,8 +10,18 @@ INSTACART = Income: Instacart
 Online Banking transfer = Transfer
 Transfer = Transfer
 
+# Bills
+VERIZON = Phone
+EXETERFINA = Car loan
+PROG DIRECT INS = Car insurance
+PLANET FITNESS = Gym
+COURSERA = Education
+
 # Bank
 Monthly Maintenance Fee = Bank fees
+OVERDRAFT = Bank fees
+Interest Earned = Interest
+Temporary Credit Adjustment = Refunds
 BKOFAMERICA ATM = Cash
 
 # Gas (Instacart work)
@@ -50,6 +60,12 @@ SKYWORKAI = AI tools
 ANTHROPIC = AI tools
 CLAUDE.AI = AI tools
 OPENAI = AI tools
+GITHUB = Software
+NOTION = Software
+THENOUNPROJECT = Software
+GODADDY = Software
+GOOGLE = Subscriptions
+KLARNA = Buy now pay later
 
 # Car
 AUTOZONE = Car
