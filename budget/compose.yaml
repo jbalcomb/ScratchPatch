@@ -1,0 +1,17 @@
+# Budget upload page + drop folder watcher. From this folder: docker compose up -d --build
+services:
+  budget:
+    build: .
+    container_name: budget
+    restart: unless-stopped
+    # Host networking: the container reaches llama.cpp at localhost:8080 like any program on the
+    # workstation, and the page listens on the workstation's localhost:8090 only. Tailscale Serve
+    # (see README) is what makes it reachable, over HTTPS, from your own devices.
+    network_mode: host
+    command: ["python", "web.py", "--host", "127.0.0.1", "--port", "8090"]
+    # Files it writes in ~/budget belong to you, not root (1000 = the first user on Ubuntu).
+    user: "${UID:-1000}:${GID:-1000}"
+    env_file: ${HOME}/.config/secrets.env  # BUDGET_LLM_URL, BUDGET_LLM_KEY
+    volumes:
+      - ${HOME}/budget:/data        # store, drop folder, rule suggestions
+      - .:/config:ro                # rules.txt from this repo; edits apply on the next categorize

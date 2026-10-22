@@ -13,7 +13,7 @@ python budget/web.py                   # or: the upload page on port 8090, plus 
 ```
 
 On Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a `.csv`).
-Then either open **http://100.83.88.59:8090** (the AI Workstation over Tailscale) on your phone or any computer, pick the account and drop the file, or
+Then either open the upload page on your phone or any computer (the address is set up below), pick the account and drop the file, or
 save it straight into the drop folder. Within a few seconds the watcher stores the new rows, files the CSV under
 `drop/done/`, and categorizes everything.
 
@@ -34,7 +34,7 @@ Default locations (all under `~/budget/` unless `BUDGET_HOME` is set):
 | Drop folder | `~/budget/drop/` | `--folder` or `BUDGET_DROP` |
 | Store | `~/budget/budget.db` (table `transactions`) | `--db` or `BUDGET_DB` |
 | Rules | `budget/rules.txt` in this repo | `--rules` or `BUDGET_RULES` |
-| Suggestions | `budget/rules_suggested.txt` (not committed) | `--suggestions` or `BUDGET_SUGGESTIONS` |
+| Suggestions | `budget/rules_suggested.txt`; in Docker, `~/budget/rules_suggested.txt` | `--suggestions` or `BUDGET_SUGGESTIONS` |
 
 **Accounts.** A file directly in `drop/` is `checking`; `drop/bills/` and `drop/savings/` are those accounts.
 (The upload page does this for you.)
@@ -72,15 +72,16 @@ existing categories so it reuses them.
 
 Keep the key out of the repo and out of chat: put it in `~/.config/secrets.env` (below).
 
-## Run it on the AI Workstation
+## Run it on the AI Workstation (Docker)
 
-It has the battery backup and runs llama.cpp, so the key never leaves that machine.
+It has the battery backup and runs llama.cpp, so the key never leaves that machine. The page and the watcher run
+in one container; your data stays in `~/budget` on the workstation, outside the container.
 
-1. Clone the repo to `~/ScratchPatch` (or edit `WorkingDirectory` in `budget.service`).
-2. Create the secrets file, readable only by you:
+1. Clone the repo, and create the data folder and the secrets file (readable only by you):
 
    ```bash
-   mkdir -p ~/.config && touch ~/.config/secrets.env && chmod 600 ~/.config/secrets.env
+   git clone -b ccr-860724ba-1ahp18 https://github.com/jbalcomb/ScratchPatch.git ~/ScratchPatch   # branch until merged
+   mkdir -p ~/budget ~/.config && touch ~/.config/secrets.env && chmod 600 ~/.config/secrets.env
    nano ~/.config/secrets.env
    ```
 
@@ -90,28 +91,45 @@ It has the battery backup and runs llama.cpp, so the key never leaves that machi
    ```
 
    Other projects on this machine can read the same file (one `KEY=value` per line).
-3. Install and start the service (upload page + watcher), and keep it running when you're logged out:
+2. Start it. It restarts on its own after a crash or reboot:
 
    ```bash
-   mkdir -p ~/.config/systemd/user
-   cp budget/budget.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user enable --now budget
-   loginctl enable-linger "$USER"
-   journalctl --user -u budget -f      # watch it work
+   cd ~/ScratchPatch/budget
+   docker compose up -d --build
+   docker compose logs -f              # watch it work; Ctrl+C stops watching, not the service
    ```
 
-   Then open http://100.83.88.59:8090 on the phone (Tailscale on) and add it to the home screen.
-   If `ufw` is on: `sudo ufw allow 8090/tcp`.
+   If `id -u` isn't `1000`, start it with `UID=$(id -u) GID=$(id -g) docker compose up -d --build` so the files
+   it writes in `~/budget` stay yours.
+3. Give it an HTTPS address with **Tailscale Serve**, so only your own devices can reach it:
+
+   ```bash
+   sudo tailscale serve status         # see whether something already uses https:443
+   sudo tailscale serve --bg 8090      # or, if 443 is taken: sudo tailscale serve --bg --https=8443 8090
+   ```
+
+   It prints the address, like `https://ai-workstation.tail1234.ts.net`. If it says HTTPS isn't enabled, turn on
+   MagicDNS and HTTPS Certificates in the Tailscale admin console (DNS page) and run it again. The setting
+   survives reboots. On the phone, open that address and use Chrome's menu, "Add to Home screen".
+
+The page only listens on the workstation's own `localhost:8090`; Tailscale Serve is the way in, so there is no
+firewall port to open.
+
+**After pulling new code:** `git pull && docker compose up -d --build`. Rules edits need no rebuild.
+
+### Commands by hand
+
+```bash
+cd ~/ScratchPatch/budget
+docker compose exec budget python budget.py summary
+docker compose exec budget python budget.py categorize     # after editing rules.txt
+```
 
 ### From the phone
 
-The upload page is the everyday path. For anything else (`summary`, `categorize`, editing `rules.txt`), use
-Tailscale SSH: run `sudo tailscale set --ssh` once on the workstation, then connect from an SSH app on the phone
-(Termius or JuiceSSH) to `100.83.88.59` with your Linux username. No keys or passwords to manage.
-
-To run a command by hand with the same settings: `set -a; . ~/.config/secrets.env; set +a`, then
-`python3 budget/budget.py categorize`.
+The upload page is the everyday path. For the commands above, use Tailscale SSH: run `sudo tailscale set --ssh`
+once on the workstation, then connect from an SSH app on the phone (Termius or JuiceSSH) to `100.83.88.59` with
+your Linux username. No keys or passwords to manage.
 
 ## Tests
 
