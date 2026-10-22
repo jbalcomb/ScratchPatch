@@ -13,7 +13,7 @@ python budget/web.py                   # or: the upload page on port 8090, plus 
 ```
 
 On Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a `.csv`).
-Then either open `http://<AI Workstation>:8090` on any phone or computer, pick the account and drop the file, or
+Then either open **http://100.83.88.59:8090** (the AI Workstation over Tailscale) on your phone or any computer, pick the account and drop the file, or
 save it straight into the drop folder. Within a few seconds the watcher stores the new rows, files the CSV under
 `drop/done/`, and categorizes everything.
 
@@ -101,7 +101,14 @@ It has the battery backup and runs llama.cpp, so the key never leaves that machi
    journalctl --user -u budget -f      # watch it work
    ```
 
-   Then open `http://<AI Workstation's IP or Tailscale name>:8090`. If `ufw` is on: `sudo ufw allow 8090/tcp`.
+   Then open http://100.83.88.59:8090 on the phone (Tailscale on) and add it to the home screen.
+   If `ufw` is on: `sudo ufw allow 8090/tcp`.
+
+### From the phone
+
+The upload page is the everyday path. For anything else (`summary`, `categorize`, editing `rules.txt`), use
+Tailscale SSH: run `sudo tailscale set --ssh` once on the workstation, then connect from an SSH app on the phone
+(Termius or JuiceSSH) to `100.83.88.59` with your Linux username. No keys or passwords to manage.
 
 To run a command by hand with the same settings: `set -a; . ~/.config/secrets.env; set +a`, then
 `python3 budget/budget.py categorize`.
