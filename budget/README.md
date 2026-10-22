@@ -1,6 +1,6 @@
 # Budget drop folder
 
-Drop a Bank of America CSV export into a folder; its transactions land in a SQLite file, categorized by
+Upload a Bank of America CSV export from any device at home (or drop it into a folder); its transactions land in a SQLite file, categorized by
 `rules.txt`, which you edit by hand. Python 3.10+, standard library only: nothing to install.
 
 Part of [PERSONAL_STACK_PLAN.md](../PERSONAL_STACK_PLAN.md) (first task).
@@ -8,12 +8,17 @@ Part of [PERSONAL_STACK_PLAN.md](../PERSONAL_STACK_PLAN.md) (first task).
 ## Run it
 
 ```bash
-python budget/budget.py watch          # leave running; Ctrl+C to stop
+python budget/budget.py watch          # watch the drop folder; Ctrl+C to stop
+python budget/web.py                   # or: the upload page on port 8090, plus the watcher
 ```
 
-Then, on Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a
-`.csv`). Save it into the drop folder. Within a few seconds the watcher prints how many rows were new, files the
-CSV under `drop/done/`, and categorizes everything.
+On Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a `.csv`).
+Then either open `http://<AI Workstation>:8090` on any phone or computer, pick the account and drop the file, or
+save it straight into the drop folder. Within a few seconds the watcher stores the new rows, files the CSV under
+`drop/done/`, and categorizes everything.
+
+The page checks the file is a Bank of America export before saving it. It has no login, so keep it on the
+home network or Tailscale; don't forward the port to the internet.
 
 ```bash
 python budget/budget.py summary            # totals per category for the latest month
@@ -31,8 +36,8 @@ Default locations (all under `~/budget/` unless `BUDGET_HOME` is set):
 | Rules | `budget/rules.txt` in this repo | `--rules` or `BUDGET_RULES` |
 | Suggestions | `budget/rules_suggested.txt` (not committed) | `--suggestions` or `BUDGET_SUGGESTIONS` |
 
-**Accounts.** A file directly in `drop/` is `checking`. Put other accounts' exports in a subfolder named after
-the account, e.g. `drop/savings/` or `drop/bills/`.
+**Accounts.** A file directly in `drop/` is `checking`; `drop/bills/` and `drop/savings/` are those accounts.
+(The upload page does this for you.)
 
 **Overlapping exports are fine.** Download "this year so far" every time if you like: a transaction already in
 the store is skipped (matched on account, date, description, amount and running balance, so two identical
@@ -71,7 +76,7 @@ Keep the key out of the repo and out of chat: put it in `~/.config/secrets.env` 
 
 It has the battery backup and runs llama.cpp, so the key never leaves that machine.
 
-1. Clone the repo to `~/ScratchPatch` (or edit `WorkingDirectory` in `budget-watch.service`).
+1. Clone the repo to `~/ScratchPatch` (or edit `WorkingDirectory` in `budget.service`).
 2. Create the secrets file, readable only by you:
 
    ```bash
@@ -85,16 +90,18 @@ It has the battery backup and runs llama.cpp, so the key never leaves that machi
    ```
 
    Other projects on this machine can read the same file (one `KEY=value` per line).
-3. Install and start the service, and keep it running when you're logged out:
+3. Install and start the service (upload page + watcher), and keep it running when you're logged out:
 
    ```bash
    mkdir -p ~/.config/systemd/user
-   cp budget/budget-watch.service ~/.config/systemd/user/
+   cp budget/budget.service ~/.config/systemd/user/
    systemctl --user daemon-reload
-   systemctl --user enable --now budget-watch
+   systemctl --user enable --now budget
    loginctl enable-linger "$USER"
-   journalctl --user -u budget-watch -f      # watch it work
+   journalctl --user -u budget -f      # watch it work
    ```
+
+   Then open `http://<AI Workstation's IP or Tailscale name>:8090`. If `ufw` is on: `sudo ufw allow 8090/tcp`.
 
 To run a command by hand with the same settings: `set -a; . ~/.config/secrets.env; set +a`, then
 `python3 budget/budget.py categorize`.

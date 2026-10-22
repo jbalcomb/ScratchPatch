@@ -1,7 +1,7 @@
-# systemd user service: keeps the budget watcher running on the AI Workstation.
+# systemd user service: keeps the budget upload page and watcher running on the AI Workstation.
 # Install: see budget/README.md ("Run it on the AI Workstation").
 [Unit]
-Description=Budget drop folder watcher
+Description=Budget upload page and drop folder watcher
 
 [Service]
 # Expects the repo at ~/ScratchPatch; edit the path if it lives elsewhere.
@@ -9,7 +9,7 @@ WorkingDirectory=%h/ScratchPatch
 # BUDGET_LLM_URL and BUDGET_LLM_KEY come from here (chmod 600, never committed).
 EnvironmentFile=-%h/.config/secrets.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 budget/budget.py watch
+ExecStart=/usr/bin/python3 budget/web.py
 Restart=on-failure
 RestartSec=30
 
