@@ -76,3 +76,8 @@ tests/                     pytest suite (core, jobs, palette ranking, review)
 tools/new_job.py           job scaffold
 docs/                      architecture and plugin-review process
 ```
+
+## Also in this repo
+
+[`chrome-extension/tab-ledger`](chrome-extension/tab-ledger) — a Chrome extension that records your windows and tabs,
+summarizes each page, tracks scrolling and copy/paste, and writes a script to reopen them.

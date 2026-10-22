@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Ledger",
+  "version": "1.0.0",
+  "description": "Captures every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_title": "Tab Ledger",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["lib/summarize.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

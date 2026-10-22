@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tab Ledger</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="" width="28" height="28">
+      <h1>Tab Ledger</h1>
+      <span id="captured-at" class="muted"></span>
+    </div>
+    <div class="actions">
+      <button id="refresh" title="Ask every tab for a fresh report">Refresh</button>
+      <button id="save">Save snapshot</button>
+      <button id="export-json">Export JSON</button>
+      <button id="ai-summarize" hidden title="Summarize pages with the AI model built into Chrome">Summarize with Chrome AI</button>
+    </div>
+  </header>
+
+  <div id="viewing-banner" class="banner" hidden>
+    <span id="viewing-text"></span>
+    <button id="back-to-live">Back to open tabs</button>
+  </div>
+
+  <section id="stats" class="stats" aria-label="Totals"></section>
+
+  <section class="panel relaunch" aria-labelledby="relaunch-title">
+    <h2 id="relaunch-title">Relaunch script</h2>
+    <p class="muted">Downloads a script that reopens these windows and tabs in Chrome.</p>
+    <div class="row">
+      <label>Platform
+        <select id="platform"></select>
+      </label>
+      <label class="check"><input type="checkbox" id="close-after"> Close these windows and tabs after creating the script</label>
+      <button id="make-script" class="primary">Create relaunch script</button>
+    </div>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="toolbar" aria-label="Filter">
+    <input id="search" type="search" placeholder="Filter by title, address or summary">
+    <div class="chips" role="radiogroup" aria-label="Show">
+      <button class="chip" data-filter="all" aria-pressed="true">All</button>
+      <button class="chip" data-filter="scrolled" aria-pressed="false">Scrolled</button>
+      <button class="chip" data-filter="unscrolled" aria-pressed="false">Not scrolled</button>
+      <button class="chip" data-filter="clipboard" aria-pressed="false">Copied or pasted</button>
+    </div>
+  </section>
+
+  <main id="windows"></main>
+
+  <section class="panel" aria-labelledby="saved-title">
+    <h2 id="saved-title">Saved snapshots</h2>
+    <ul id="saved" class="saved"></ul>
+  </section>
+
+  <section class="panel" aria-labelledby="settings-title">
+    <h2 id="settings-title">Settings</h2>
+    <label class="check"><input type="checkbox" id="record-clipboard">
+      Keep a short preview of the text I copy and paste (stays on this computer)</label>
+  </section>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
