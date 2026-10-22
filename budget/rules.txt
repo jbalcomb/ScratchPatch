@@ -1,0 +1,61 @@
+# Budget rules: PATTERN = Category
+# A transaction gets the category of the FIRST line whose pattern appears in its description
+# (case doesn't matter). Lines starting with # are comments. After editing, run:
+#   python budget/budget.py categorize
+
+# Income
+INSTACART = Income: Instacart
+
+# Moving money between your own accounts (not spending)
+Online Banking transfer = Transfer
+Transfer = Transfer
+
+# Bank
+Monthly Maintenance Fee = Bank fees
+BKOFAMERICA ATM = Cash
+
+# Gas (Instacart work)
+SUNOCO = Gas
+GET GO = Gas
+CIRCLE K = Gas
+MAPCO = Gas
+SPEEDWAY = Gas
+MARATHON = Gas
+SHELL = Gas
+SHEETZ = Gas
+MURPHY = Gas
+
+# Groceries and household
+GIANT EAGLE = Groceries
+GIANT-EAGLE = Groceries
+MEIJER = Groceries
+ALDI = Groceries
+WAL-MART = Groceries
+WALMART = Groceries
+WM SUPERCENTER = Groceries
+
+# Eating out
+CHIPOTLE = Eating out
+SUBWAY = Eating out
+DOORDASH = Eating out
+MCDONALD = Eating out
+TST* = Eating out
+
+# Subscriptions and tools
+NETFLIX = Subscriptions
+SPOTIFY = Subscriptions
+YOUTUB = Subscriptions
+CURSOR = AI tools
+SKYWORKAI = AI tools
+ANTHROPIC = AI tools
+CLAUDE.AI = AI tools
+OPENAI = AI tools
+
+# Car
+AUTOZONE = Car
+ADVANCE AUTO = Car
+
+# Shopping and health
+AMAZON = Shopping
+CVS = Pharmacy
+WALGREENS = Pharmacy
