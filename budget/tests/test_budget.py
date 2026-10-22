@@ -31,7 +31,7 @@ def args_for(tmp_path, llm_url=None, **kw):
     rules = tmp_path / "rules.txt"
     if not rules.exists():
         rules.write_text(RULES)
-    ns = dict(db=tmp_path / "b.db", rules=rules, suggestions=tmp_path / "sugg.txt", llm_url=llm_url,
+    ns = dict(db=tmp_path / "b.db", rules=rules, suggestions=tmp_path / "sugg.txt", llm_url=llm_url, llm_key=None,
               folder=tmp_path / "drop", interval=0, once=True)
     ns.update(kw)
     return type("Args", (), ns)()
@@ -138,6 +138,7 @@ def test_suggestions_use_llm_category(tmp_path):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            seen.append(self.headers.get("Authorization"))
             body = json.dumps({"choices": [{"message": {"content": "Subscriptions\n"}}]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -150,7 +151,7 @@ def test_suggestions_use_llm_category(tmp_path):
     server = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        args = args_for(tmp_path, llm_url=f"http://127.0.0.1:{server.server_port}")
+        args = args_for(tmp_path, llm_url=f"http://127.0.0.1:{server.server_port}", llm_key="sekrit")
         f = tmp_path / "x.csv"
         f.write_text(EXPORT, newline="")
         args.files, args.account = [f], "checking"
@@ -160,3 +161,4 @@ def test_suggestions_use_llm_category(tmp_path):
     assert "CROWNBILL.COM = Subscriptions" in args.suggestions.read_text()
     assert "crownbill.com" in seen[0]["messages"][0]["content"]
     assert "Gas" in seen[0]["messages"][0]["content"]  # existing categories offered for reuse
+    assert seen[1] == "Bearer sekrit"

@@ -56,15 +56,48 @@ or shorten the pattern first if needed) and run `categorize`.
 
 ### Let the local model suggest categories
 
-Without a model, suggestions read `MERCHANT = ?`. Point it at your llama.cpp server (`llama-server`, which
-speaks the OpenAI-style `/v1/chat/completions` API) to get a category filled in:
+Without a model, suggestions read `MERCHANT = ?`. Point it at llama.cpp's `llama-server` (OpenAI-style
+`/v1/chat/completions`) and it fills in a category. Each merchant is asked about once, and it's offered your
+existing categories so it reuses them.
 
-```bash
-BUDGET_LLM_URL=http://192.168.1.50:8080 python budget/budget.py watch
-# or: python budget/budget.py --llm-url http://192.168.1.50:8080 categorize
-```
+| Variable | Value |
+|---|---|
+| `BUDGET_LLM_URL` | `http://localhost:8080` on the AI Workstation itself |
+| `BUDGET_LLM_KEY` | the `--api-key` llama-server was started with (sent as `Authorization: Bearer ...`) |
 
-Each merchant is asked about once; it's offered your existing categories so it reuses them.
+Keep the key out of the repo and out of chat: put it in `~/.config/secrets.env` (below).
+
+## Run it on the AI Workstation
+
+It has the battery backup and runs llama.cpp, so the key never leaves that machine.
+
+1. Clone the repo to `~/ScratchPatch` (or edit `WorkingDirectory` in `budget-watch.service`).
+2. Create the secrets file, readable only by you:
+
+   ```bash
+   mkdir -p ~/.config && touch ~/.config/secrets.env && chmod 600 ~/.config/secrets.env
+   nano ~/.config/secrets.env
+   ```
+
+   ```
+   BUDGET_LLM_URL=http://localhost:8080
+   BUDGET_LLM_KEY=your-llama-server-key
+   ```
+
+   Other projects on this machine can read the same file (one `KEY=value` per line).
+3. Install and start the service, and keep it running when you're logged out:
+
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp budget/budget-watch.service ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now budget-watch
+   loginctl enable-linger "$USER"
+   journalctl --user -u budget-watch -f      # watch it work
+   ```
+
+To run a command by hand with the same settings: `set -a; . ~/.config/secrets.env; set +a`, then
+`python3 budget/budget.py categorize`.
 
 ## Tests
 

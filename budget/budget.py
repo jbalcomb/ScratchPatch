@@ -160,7 +160,7 @@ def load_suggested(path):
             if "=" in line and not line.lstrip().startswith("#")}
 
 
-def ask_llm(url, merchant_name, examples, categories):
+def ask_llm(url, merchant_name, examples, categories, api_key=None):
     """One category for a merchant, from an OpenAI-compatible chat endpoint (llama.cpp's llama-server)."""
     prompt = (
         "Pick a budget category for this bank transaction merchant.\n"
@@ -175,14 +175,16 @@ def ask_llm(url, merchant_name, examples, categories):
         "temperature": 0,
         "max_tokens": 20,
     }).encode()
-    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", body,
-                                 {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if api_key:  # llama-server --api-key
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", body, headers)
     with urllib.request.urlopen(req, timeout=120) as resp:
         text = json.load(resp)["choices"][0]["message"]["content"]
     return text.strip().splitlines()[0].strip(" .\"'*") if text.strip() else "?"
 
 
-def suggest(db, rules, suggestions_path, llm_url=None):
+def suggest(db, rules, suggestions_path, llm_url=None, llm_key=None):
     """Append a suggested rule to rules_suggested.txt for each unmatched merchant not already there.
 
     Nothing is applied: James copies the lines he agrees with into rules.txt.
@@ -200,7 +202,7 @@ def suggest(db, rules, suggestions_path, llm_url=None):
         category = "?"
         if llm_url:
             try:
-                category = ask_llm(llm_url, name, examples[:5], categories)
+                category = ask_llm(llm_url, name, examples[:5], categories, llm_key)
             except Exception as e:  # the suggestion is optional; keep going without it
                 print(f"  LLM failed for {name}: {e}", file=sys.stderr)
         lines += [f"# {len(examples)} txns, e.g. {examples[0]}", f"{name} = {category}"]
@@ -229,7 +231,7 @@ def refresh(db, args):
     total = db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
     print(f"categorized {total - left}/{total}; {left} unmatched")
     if left:
-        n = suggest(db, rules, args.suggestions, args.llm_url)
+        n = suggest(db, rules, args.suggestions, args.llm_url, args.llm_key)
         if n:
             print(f"{n} new rule suggestions in {args.suggestions}")
 
@@ -300,7 +302,9 @@ def main(argv=None):
     p.add_argument("--rules", default=os.environ.get("BUDGET_RULES", DEFAULT_RULES))
     p.add_argument("--suggestions", default=os.environ.get("BUDGET_SUGGESTIONS", DEFAULT_SUGGESTIONS))
     p.add_argument("--llm-url", default=os.environ.get("BUDGET_LLM_URL"),
-                   help="llama.cpp server, e.g. http://192.168.1.50:8080 (omit to skip LLM suggestions)")
+                   help="llama.cpp server, e.g. http://localhost:8080 (omit to skip LLM suggestions)")
+    p.add_argument("--llm-key", default=os.environ.get("BUDGET_LLM_KEY"),
+                   help="the --api-key llama-server was started with (prefer the BUDGET_LLM_KEY variable)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("watch")
