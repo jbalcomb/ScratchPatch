@@ -154,7 +154,9 @@ Every system file is named in the root directory's index, with `$Extend` childre
 When a file's attributes don't fit in one record, they spill into **extension records** (header base
 reference ≠ 0) and the base record gains an `$ATTRIBUTE_LIST` (§6.2) listing where every attribute
 lives. A huge `$DATA` can also be split across records by VCN range, each piece a separate non-resident
-attribute with its own `start_vcn`/`last_vcn`. [ref]
+attribute with its own `start_vcn`/`last_vcn`; each piece's runlist starts its LCN deltas from zero.
+[obs: 61 hard links spread `$FILE_NAME`s over 13 extension records; a 12,000-run sparse file split
+`$DATA` over 35 records]
 
 ### `$MFT` growth and the MFT zone
 
@@ -357,8 +359,8 @@ Observed: root directory = `10 / 28 / 28 / flags 1` (one end entry pointing to a
 
 `INDX` · USA offset 0x28 · USA count 9 · LSN (8) · **VCN of this block** (8) at 0x10 · index header at
 0x18 · USA at 0x28 · entries. Observed root block: first entry at 0x28+0x18 = 0x40, 1232 bytes in use of
-4072. [ref] ⚠ When the index block is smaller than a cluster, VCNs count 512-byte units instead of
-clusters.
+4072. When the index block is smaller than a cluster, VCNs count 512-byte units instead of clusters
+[obs: 64 KiB clusters with 4 KiB index blocks; a 187-block directory reads correctly only that way].
 
 ### 7.4 Index entry [ref, partly obs]
 
@@ -439,9 +441,12 @@ CRC64, OS version — field layout to confirm on a Windows image; added in Windo
   `SetEndOfFile` extend without writing. [ref]
 - **Compression (LZNT1)** [doc: MS-XCA 2.5, Microsoft Learn: compression requires clusters ≤ 4 KiB]:
   data is split into compression units of 2^cu clusters (16 → 64 KiB). Each unit is stored either
-  uncompressed (all clusters allocated) or as LZNT1 data in its first *n* clusters followed by a sparse
-  run filling the rest of the unit [ref]. LZNT1 compresses 4 KiB chunks, each with a 2-byte header (size−3
-  in bits 0–11, signature `011` in bits 12–14, compressed flag in bit 15). [doc]
+  uncompressed (all clusters allocated), entirely sparse (all zeros), or as LZNT1 data in its first *n*
+  clusters followed by a sparse run filling the rest of the unit [obs: 512-byte clusters, text file → 2
+  allocated + 14 sparse clusters per unit]. LZNT1 compresses 4 KiB chunks, each with a 2-byte header
+  (size−3 in bits 0–11, signature `011` in bits 12–14, compressed flag in bit 15). [doc] ⚠ A chunk that
+  decompresses to less than 4 KiB but isn't the last is treated as zero-padded to 4 KiB; reads of real
+  data agree, but we haven't yet seen a compressor emit such a chunk.
 - **Windows 10 "system compression"** (XPRESS/LZX) is *not* NTFS compression: `wof.sys` stores it as a
   reparse point plus a named `WofCompressedData` stream. We only need to store those faithfully. [ref]
 - **EFS encryption**: data encrypted by the EFS layer, keys in `$LOGGED_UTILITY_STREAM:$EFS`. Out of scope

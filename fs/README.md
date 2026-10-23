@@ -60,12 +60,45 @@ will verify on a real system before relying on it.
 4. **Every non-obvious fact in the spec cites its source** — a document, or "observed" with how it was
    observed. Facts not yet confirmed are marked ⚠.
 
+## Status
+
+**Milestone 0 (spec): done.** **Milestone 1 (read-only core): in progress.** The core reads everything
+`mkntfs` + ntfs-3g can produce, at 512, 1024, 4096 and 65536-byte clusters:
+
+- boot sector, fixups, MFT records, attribute lists and attributes split across records
+- runlists (fragmented, sparse), initialized size, LZNT1-compressed files
+- directory B+ trees (case-insensitive lookup through the volume's `$UpCase`, DOS names)
+- hard links, alternate data streams, reparse points (symlinks, junctions, others stored as-is)
+
+Still to do in milestone 1: `$Secure` security descriptors, object IDs, extended attributes,
+`$UsnJrnl` and `$LogFile` inspection, and — the real exit test — images formatted by Windows.
+
+## Building and testing
+
+```sh
+make            # library + tools, in build/
+make check      # unit tests, then image tests (need root, /dev/fuse, mkntfs and ntfs-3g)
+make fuzz       # mutation fuzzing under AddressSanitizer + UBSan, in build-san/
+build/ntfsdump info|ls|stat|cat|manifest IMAGE [PATH[:STREAM]]
+```
+
+The image tests build volumes with `mkntfs`, fill them through ntfs-3g (`tests/populate.py`), record
+what ntfs-3g sees (`tests/manifest.py`) and require `ntfsdump manifest` to match it byte for byte:
+every file, directory, stream and reparse point, with sizes, SHA-256 of the contents, attributes, link
+counts and timestamps. ntfs-3g is only *run*, never read, so it is an independent second opinion — but
+not Windows, which is why the Windows-image test stays on the list.
+
 ## Layout
 
 ```
 fs/
-  README.md            this file
-  docs/NTFS_FORMAT.md  the on-disk format spec (milestone 0)
+  README.md                 this file
+  docs/NTFS_FORMAT.md       the on-disk format spec
+  include/pawntfs/          the core's public API
+  src/core/                 the core: portable C11, no OS headers, untrusted-input safe
+  src/posix/                image-file block device for tools and tests
+  tools/ntfsdump.c          command-line inspector
+  tests/                    unit tests, image tests, fuzzer
 ```
 
 [MS-FSCC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/
