@@ -3,6 +3,11 @@ name: TaskDeck Android APK
 on:
   workflow_dispatch:
   push:
+    # Only these branches publish to the phone; any other branch (a project that merged main,
+    # an old copy of TaskDeck) must never replace what is installed.
+    branches:
+      - main
+      - claude/android-job-interface-app-q20urc
     paths:
       - "taskdeck/src/**"
       - "taskdeck/pyproject.toml"

@@ -5,6 +5,11 @@ name: TaskDeck live update
 on:
   workflow_dispatch:
   push:
+    # Only these branches publish to the phone; any other branch (a project that merged main,
+    # an old copy of TaskDeck) must never replace what is installed.
+    branches:
+      - main
+      - claude/android-job-interface-app-q20urc
     paths:
       - "taskdeck/src/**"
       - ".github/workflows/taskdeck-ota.yml"
