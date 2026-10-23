@@ -1,10 +1,20 @@
-name: CI
+name: TaskDeck CI
 
 on:
   push:
+    paths:
+      - "taskdeck/**"
+      - ".github/workflows/taskdeck-ci.yml"
   pull_request:
+    paths:
+      - "taskdeck/**"
+      - ".github/workflows/taskdeck-ci.yml"
   schedule:
     - cron: "17 6 * * 1"  # weekly plugin review, Mondays
+
+defaults:
+  run:
+    working-directory: taskdeck
 
 jobs:
   test:
@@ -35,7 +45,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-review
-          path: reports/
+          path: taskdeck/reports/
       - name: Gate on duplicate code and hygiene
         env:
           PYTHONPATH: src
