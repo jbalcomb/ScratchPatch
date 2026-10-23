@@ -49,8 +49,15 @@ Chrome** directly, which also restores pinned tabs and window sizes.
 
 ```bash
 npm test                         # summarizer and script generator (Node 20+, no dependencies)
-node tools/measure-layout.cjs    # positions and sizes of every data-ui element (needs playwright)
+node tools/measure-layout.cjs layout   # re-measure every data-ui element (needs playwright)
 ```
+
+### Layout workflow
+
+The [UI spec](https://claude.ai/artifact/Fxf9QBmvYvRRk1hVSfpkdh) has a **Layout measurements** tab: one row per
+dashboard control with its x, y, width and height at 1280 × 800. That table is the layout spec. To change the
+layout, edit the table (or its Δ columns), then: compare it with `layout/measured.json` to find the changed rows,
+change the code, re-measure into `layout/`, and write the new numbers and screenshot back to the doc.
 
 | File | Role |
 |---|---|

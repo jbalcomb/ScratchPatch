@@ -1,0 +1,1078 @@
+{
+ "live": {
+  "columnLeft": 106,
+  "columnWidth": 1068,
+  "pageHeight": 1011,
+  "items": [
+   {
+    "id": "R1",
+    "x": 0,
+    "y": 16,
+    "w": 1068,
+    "h": 34,
+    "count": 1,
+    "text": "Tab Ledger Updated 10/23/2026, 3:25:59 AM Refresh "
+   },
+   {
+    "id": "R1.logo",
+    "x": 0,
+    "y": 19,
+    "w": 28,
+    "h": 28,
+    "count": 1,
+    "text": ""
+   },
+   {
+    "id": "R1.title",
+    "x": 38,
+    "y": 19,
+    "w": 109,
+    "h": 29,
+    "count": 1,
+    "text": "Tab Ledger"
+   },
+   {
+    "id": "R1.timestamp",
+    "x": 157,
+    "y": 23,
+    "w": 222,
+    "h": 20,
+    "count": 1,
+    "text": "Updated 10/23/2026, 3:25:59 AM"
+   },
+   {
+    "id": "R1.refresh",
+    "x": 527,
+    "y": 16,
+    "w": 77,
+    "h": 34,
+    "count": 1,
+    "text": "Refresh"
+   },
+   {
+    "id": "R1.save",
+    "x": 612,
+    "y": 16,
+    "w": 123,
+    "h": 34,
+    "count": 1,
+    "text": "Save snapshot"
+   },
+   {
+    "id": "R1.export",
+    "x": 743,
+    "y": 16,
+    "w": 111,
+    "h": 34,
+    "count": 1,
+    "text": "Export JSON"
+   },
+   {
+    "id": "R1.ai",
+    "x": 862,
+    "y": 16,
+    "w": 206,
+    "h": 34,
+    "count": 1,
+    "text": "Summarize with Chrome AI"
+   },
+   {
+    "id": "R3",
+    "x": 0,
+    "y": 62,
+    "w": 1068,
+    "h": 74,
+    "count": 1,
+    "text": "1 windows 2 tabs 1 scrolled 1 not scrolled 1 copie"
+   },
+   {
+    "id": "R3.windows",
+    "x": 0,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 windows"
+   },
+   {
+    "id": "R3.tabs",
+    "x": 179,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "2 tabs"
+   },
+   {
+    "id": "R3.scrolled",
+    "x": 359,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 scrolled"
+   },
+   {
+    "id": "R3.unscrolled",
+    "x": 538,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 not scrolled"
+   },
+   {
+    "id": "R3.copies",
+    "x": 717,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 copies"
+   },
+   {
+    "id": "R3.pastes",
+    "x": 897,
+    "y": 62,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 pastes"
+   },
+   {
+    "id": "R4",
+    "x": 0,
+    "y": 148,
+    "w": 1068,
+    "h": 152,
+    "count": 1,
+    "text": "Relaunch script Downloads a script that reopens th"
+   },
+   {
+    "id": "R4.title",
+    "x": 17,
+    "y": 163,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Relaunch script"
+   },
+   {
+    "id": "R4.help",
+    "x": 17,
+    "y": 191,
+    "w": 1034,
+    "h": 20,
+    "count": 1,
+    "text": "Downloads a script that reopens these windows and "
+   },
+   {
+    "id": "R4.platform-label",
+    "x": 17,
+    "y": 222,
+    "w": 288,
+    "h": 33,
+    "count": 1,
+    "text": "Platform macOS / Linux (.sh) Windows PowerShell (."
+   },
+   {
+    "id": "R4.platform",
+    "x": 80,
+    "y": 222,
+    "w": 225,
+    "h": 33,
+    "count": 1,
+    "text": "macOS / Linux (.sh) Windows PowerShell (.ps1) Wind"
+   },
+   {
+    "id": "R4.close-label",
+    "x": 317,
+    "y": 228,
+    "w": 388,
+    "h": 20,
+    "count": 1,
+    "text": "Close these windows and tabs after creating the sc"
+   },
+   {
+    "id": "R4.close",
+    "x": 321,
+    "y": 232,
+    "w": 13,
+    "h": 13,
+    "count": 1,
+    "text": "on"
+   },
+   {
+    "id": "R4.create",
+    "x": 718,
+    "y": 221,
+    "w": 176,
+    "h": 34,
+    "count": 1,
+    "text": "Create relaunch script"
+   },
+   {
+    "id": "R4.status",
+    "x": 17,
+    "y": 255,
+    "w": 1034,
+    "h": 20,
+    "count": 1,
+    "text": "Snapshot saved."
+   },
+   {
+    "id": "R5",
+    "x": 0,
+    "y": 313,
+    "w": 1068,
+    "h": 34,
+    "count": 1,
+    "text": "All Scrolled Not scrolled Copied or pasted"
+   },
+   {
+    "id": "R5.search",
+    "x": 0,
+    "y": 313,
+    "w": 672,
+    "h": 34,
+    "count": 1,
+    "text": "Filter by title, address or summary"
+   },
+   {
+    "id": "R5.chip-all",
+    "x": 682,
+    "y": 315,
+    "w": 42,
+    "h": 30,
+    "count": 1,
+    "text": "All"
+   },
+   {
+    "id": "R5.chip-scrolled",
+    "x": 730,
+    "y": 315,
+    "w": 80,
+    "h": 30,
+    "count": 1,
+    "text": "Scrolled"
+   },
+   {
+    "id": "R5.chip-unscrolled",
+    "x": 816,
+    "y": 315,
+    "w": 106,
+    "h": 30,
+    "count": 1,
+    "text": "Not scrolled"
+   },
+   {
+    "id": "R5.chip-clipboard",
+    "x": 928,
+    "y": 315,
+    "w": 140,
+    "h": 30,
+    "count": 1,
+    "text": "Copied or pasted"
+   },
+   {
+    "id": "R6",
+    "x": 0,
+    "y": 359,
+    "w": 1068,
+    "h": 406,
+    "count": 1,
+    "text": "Window 1 2 tabs · focused · 1280×800 Solar power b"
+   },
+   {
+    "id": "R6.header",
+    "x": 1,
+    "y": 360,
+    "w": 1066,
+    "h": 43,
+    "count": 1,
+    "text": "Window 1 2 tabs · focused · 1280×800"
+   },
+   {
+    "id": "R6.title",
+    "x": 17,
+    "y": 370,
+    "w": 70,
+    "h": 22,
+    "count": 1,
+    "text": "Window 1"
+   },
+   {
+    "id": "R6.facts",
+    "x": 95,
+    "y": 371,
+    "w": 186,
+    "h": 20,
+    "count": 1,
+    "text": "2 tabs · focused · 1280×800"
+   },
+   {
+    "id": "R7",
+    "x": 1,
+    "y": 403,
+    "w": 1066,
+    "h": 204,
+    "count": 2,
+    "text": "Solar power basics localhost:8766/solar Scrolled ·"
+   },
+   {
+    "id": "R7.favicon",
+    "x": 17,
+    "y": 417,
+    "w": 16,
+    "h": 16,
+    "count": 2,
+    "text": ""
+   },
+   {
+    "id": "R7.title",
+    "x": 47,
+    "y": 416,
+    "w": 128,
+    "h": 20,
+    "count": 2,
+    "text": "Solar power basics"
+   },
+   {
+    "id": "R7.address",
+    "x": 47,
+    "y": 436,
+    "w": 1004,
+    "h": 17,
+    "count": 2,
+    "text": "localhost:8766/solar"
+   },
+   {
+    "id": "R7.badges",
+    "x": 47,
+    "y": 459,
+    "w": 1004,
+    "h": 19,
+    "count": 2,
+    "text": "Scrolled · reached 100% Copied 1× Pasted 1× 1,080 "
+   },
+   {
+    "id": "R7.badge-scroll",
+    "x": 47,
+    "y": 459,
+    "w": 154,
+    "h": 19,
+    "count": 2,
+    "text": "Scrolled · reached 100%"
+   },
+   {
+    "id": "R7.badge-copied",
+    "x": 207,
+    "y": 459,
+    "w": 73,
+    "h": 19,
+    "count": 1,
+    "text": "Copied 1×"
+   },
+   {
+    "id": "R7.badge-pasted",
+    "x": 286,
+    "y": 459,
+    "w": 71,
+    "h": 19,
+    "count": 1,
+    "text": "Pasted 1×"
+   },
+   {
+    "id": "R7.badge-words",
+    "x": 363,
+    "y": 459,
+    "w": 126,
+    "h": 19,
+    "count": 2,
+    "text": "1,080 words · 5 min"
+   },
+   {
+    "id": "R7.summary",
+    "x": 47,
+    "y": 485,
+    "w": 1004,
+    "h": 85,
+    "count": 2,
+    "text": "Description A primer on solar panels. Key sentence"
+   },
+   {
+    "id": "R7.details",
+    "x": 47,
+    "y": 576,
+    "w": 1004,
+    "h": 17,
+    "count": 2,
+    "text": "More details"
+   },
+   {
+    "id": "R8",
+    "x": 0,
+    "y": 777,
+    "w": 1068,
+    "h": 115,
+    "count": 1,
+    "text": "Saved snapshots 10/23/2026, 3:25:58 AM 1 window, 2"
+   },
+   {
+    "id": "R8.title",
+    "x": 17,
+    "y": 792,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Saved snapshots"
+   },
+   {
+    "id": "R8.item",
+    "x": 17,
+    "y": 819,
+    "w": 1034,
+    "h": 58,
+    "count": 1,
+    "text": "10/23/2026, 3:25:58 AM 1 window, 2 tabs View Reope"
+   },
+   {
+    "id": "R8.buttons",
+    "x": 623,
+    "y": 830,
+    "w": 428,
+    "h": 34,
+    "count": 1,
+    "text": "View Reopen in Chrome Script JSON Delete"
+   },
+   {
+    "id": "R8.view",
+    "x": 623,
+    "y": 830,
+    "w": 58,
+    "h": 34,
+    "count": 1,
+    "text": "View"
+   },
+   {
+    "id": "R8.reopen",
+    "x": 687,
+    "y": 830,
+    "w": 148,
+    "h": 34,
+    "count": 1,
+    "text": "Reopen in Chrome"
+   },
+   {
+    "id": "R8.script",
+    "x": 841,
+    "y": 830,
+    "w": 65,
+    "h": 34,
+    "count": 1,
+    "text": "Script"
+   },
+   {
+    "id": "R8.json",
+    "x": 912,
+    "y": 830,
+    "w": 64,
+    "h": 34,
+    "count": 1,
+    "text": "JSON"
+   },
+   {
+    "id": "R8.delete",
+    "x": 983,
+    "y": 830,
+    "w": 68,
+    "h": 34,
+    "count": 1,
+    "text": "Delete"
+   },
+   {
+    "id": "R9",
+    "x": 0,
+    "y": 903,
+    "w": 1068,
+    "h": 79,
+    "count": 1,
+    "text": "Settings Keep a short preview of the text I copy a"
+   },
+   {
+    "id": "R9.title",
+    "x": 17,
+    "y": 918,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Settings"
+   },
+   {
+    "id": "R9.clip-label",
+    "x": 17,
+    "y": 946,
+    "w": 517,
+    "h": 20,
+    "count": 1,
+    "text": "Keep a short preview of the text I copy and paste "
+   },
+   {
+    "id": "R9.clip",
+    "x": 21,
+    "y": 949,
+    "w": 13,
+    "h": 13,
+    "count": 1,
+    "text": "on"
+   }
+  ]
+ },
+ "saved": {
+  "columnLeft": 106,
+  "columnWidth": 1068,
+  "pageHeight": 1075,
+  "items": [
+   {
+    "id": "R1",
+    "x": 0,
+    "y": 16,
+    "w": 1068,
+    "h": 34,
+    "count": 1,
+    "text": "Tab Ledger Saved 10/23/2026, 3:25:58 AM Refresh Sa"
+   },
+   {
+    "id": "R1.logo",
+    "x": 0,
+    "y": 19,
+    "w": 28,
+    "h": 28,
+    "count": 1,
+    "text": ""
+   },
+   {
+    "id": "R1.title",
+    "x": 38,
+    "y": 19,
+    "w": 109,
+    "h": 29,
+    "count": 1,
+    "text": "Tab Ledger"
+   },
+   {
+    "id": "R1.timestamp",
+    "x": 157,
+    "y": 23,
+    "w": 206,
+    "h": 20,
+    "count": 1,
+    "text": "Saved 10/23/2026, 3:25:58 AM"
+   },
+   {
+    "id": "R1.refresh",
+    "x": 741,
+    "y": 16,
+    "w": 77,
+    "h": 34,
+    "count": 1,
+    "text": "Refresh"
+   },
+   {
+    "id": "R1.save",
+    "x": 826,
+    "y": 16,
+    "w": 123,
+    "h": 34,
+    "count": 1,
+    "text": "Save snapshot"
+   },
+   {
+    "id": "R1.export",
+    "x": 957,
+    "y": 16,
+    "w": 111,
+    "h": 34,
+    "count": 1,
+    "text": "Export JSON"
+   },
+   {
+    "id": "R2",
+    "x": 0,
+    "y": 62,
+    "w": 1068,
+    "h": 54,
+    "count": 1,
+    "text": "Viewing a snapshot saved 10/23/2026, 3:25:58 AM. B"
+   },
+   {
+    "id": "R2.text",
+    "x": 14,
+    "y": 79,
+    "w": 342,
+    "h": 20,
+    "count": 1,
+    "text": "Viewing a snapshot saved 10/23/2026, 3:25:58 AM."
+   },
+   {
+    "id": "R2.back",
+    "x": 909,
+    "y": 72,
+    "w": 145,
+    "h": 34,
+    "count": 1,
+    "text": "Back to open tabs"
+   },
+   {
+    "id": "R3",
+    "x": 0,
+    "y": 129,
+    "w": 1068,
+    "h": 74,
+    "count": 1,
+    "text": "1 windows 2 tabs 1 scrolled 1 not scrolled 1 copie"
+   },
+   {
+    "id": "R3.windows",
+    "x": 0,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 windows"
+   },
+   {
+    "id": "R3.tabs",
+    "x": 179,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "2 tabs"
+   },
+   {
+    "id": "R3.scrolled",
+    "x": 359,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 scrolled"
+   },
+   {
+    "id": "R3.unscrolled",
+    "x": 538,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 not scrolled"
+   },
+   {
+    "id": "R3.copies",
+    "x": 717,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 copies"
+   },
+   {
+    "id": "R3.pastes",
+    "x": 897,
+    "y": 129,
+    "w": 171,
+    "h": 74,
+    "count": 1,
+    "text": "1 pastes"
+   },
+   {
+    "id": "R4",
+    "x": 0,
+    "y": 215,
+    "w": 1068,
+    "h": 151,
+    "count": 1,
+    "text": "Relaunch script Downloads a script that reopens th"
+   },
+   {
+    "id": "R4.title",
+    "x": 17,
+    "y": 230,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Relaunch script"
+   },
+   {
+    "id": "R4.help",
+    "x": 17,
+    "y": 257,
+    "w": 1034,
+    "h": 20,
+    "count": 1,
+    "text": "Downloads a script that reopens these windows and "
+   },
+   {
+    "id": "R4.platform-label",
+    "x": 17,
+    "y": 288,
+    "w": 288,
+    "h": 33,
+    "count": 1,
+    "text": "Platform macOS / Linux (.sh) Windows PowerShell (."
+   },
+   {
+    "id": "R4.platform",
+    "x": 80,
+    "y": 288,
+    "w": 225,
+    "h": 33,
+    "count": 1,
+    "text": "macOS / Linux (.sh) Windows PowerShell (.ps1) Wind"
+   },
+   {
+    "id": "R4.close-label",
+    "x": 317,
+    "y": 294,
+    "w": 388,
+    "h": 20,
+    "count": 1,
+    "text": "Close these windows and tabs after creating the sc"
+   },
+   {
+    "id": "R4.close",
+    "x": 321,
+    "y": 298,
+    "w": 13,
+    "h": 13,
+    "count": 1,
+    "text": "on"
+   },
+   {
+    "id": "R4.create",
+    "x": 718,
+    "y": 287,
+    "w": 176,
+    "h": 34,
+    "count": 1,
+    "text": "Create relaunch script"
+   },
+   {
+    "id": "R4.status",
+    "x": 17,
+    "y": 322,
+    "w": 1034,
+    "h": 20,
+    "count": 1,
+    "text": ""
+   },
+   {
+    "id": "R5",
+    "x": 0,
+    "y": 378,
+    "w": 1068,
+    "h": 34,
+    "count": 1,
+    "text": "All Scrolled Not scrolled Copied or pasted"
+   },
+   {
+    "id": "R5.search",
+    "x": 0,
+    "y": 378,
+    "w": 672,
+    "h": 34,
+    "count": 1,
+    "text": "Filter by title, address or summary"
+   },
+   {
+    "id": "R5.chip-all",
+    "x": 682,
+    "y": 380,
+    "w": 42,
+    "h": 30,
+    "count": 1,
+    "text": "All"
+   },
+   {
+    "id": "R5.chip-scrolled",
+    "x": 730,
+    "y": 380,
+    "w": 80,
+    "h": 30,
+    "count": 1,
+    "text": "Scrolled"
+   },
+   {
+    "id": "R5.chip-unscrolled",
+    "x": 816,
+    "y": 380,
+    "w": 106,
+    "h": 30,
+    "count": 1,
+    "text": "Not scrolled"
+   },
+   {
+    "id": "R5.chip-clipboard",
+    "x": 928,
+    "y": 380,
+    "w": 140,
+    "h": 30,
+    "count": 1,
+    "text": "Copied or pasted"
+   },
+   {
+    "id": "R6",
+    "x": 0,
+    "y": 424,
+    "w": 1068,
+    "h": 404,
+    "count": 1,
+    "text": "Window 1 2 tabs · focused · 1280×800 Solar power b"
+   },
+   {
+    "id": "R6.header",
+    "x": 1,
+    "y": 425,
+    "w": 1066,
+    "h": 43,
+    "count": 1,
+    "text": "Window 1 2 tabs · focused · 1280×800"
+   },
+   {
+    "id": "R6.title",
+    "x": 17,
+    "y": 435,
+    "w": 70,
+    "h": 22,
+    "count": 1,
+    "text": "Window 1"
+   },
+   {
+    "id": "R6.facts",
+    "x": 95,
+    "y": 437,
+    "w": 186,
+    "h": 20,
+    "count": 1,
+    "text": "2 tabs · focused · 1280×800"
+   },
+   {
+    "id": "R7",
+    "x": 1,
+    "y": 469,
+    "w": 1066,
+    "h": 203,
+    "count": 2,
+    "text": "Solar power basics localhost:8766/solar Scrolled ·"
+   },
+   {
+    "id": "R7.favicon",
+    "x": 17,
+    "y": 483,
+    "w": 16,
+    "h": 16,
+    "count": 2,
+    "text": ""
+   },
+   {
+    "id": "R7.title",
+    "x": 47,
+    "y": 481,
+    "w": 128,
+    "h": 20,
+    "count": 2,
+    "text": "Solar power basics"
+   },
+   {
+    "id": "R7.address",
+    "x": 47,
+    "y": 501,
+    "w": 1004,
+    "h": 17,
+    "count": 2,
+    "text": "localhost:8766/solar"
+   },
+   {
+    "id": "R7.badges",
+    "x": 47,
+    "y": 524,
+    "w": 1004,
+    "h": 19,
+    "count": 2,
+    "text": "Scrolled · reached 100% Copied 1× Pasted 1× 1,080 "
+   },
+   {
+    "id": "R7.badge-scroll",
+    "x": 47,
+    "y": 524,
+    "w": 154,
+    "h": 19,
+    "count": 2,
+    "text": "Scrolled · reached 100%"
+   },
+   {
+    "id": "R7.badge-copied",
+    "x": 207,
+    "y": 524,
+    "w": 73,
+    "h": 19,
+    "count": 1,
+    "text": "Copied 1×"
+   },
+   {
+    "id": "R7.badge-pasted",
+    "x": 286,
+    "y": 524,
+    "w": 71,
+    "h": 19,
+    "count": 1,
+    "text": "Pasted 1×"
+   },
+   {
+    "id": "R7.badge-words",
+    "x": 363,
+    "y": 524,
+    "w": 126,
+    "h": 19,
+    "count": 2,
+    "text": "1,080 words · 5 min"
+   },
+   {
+    "id": "R7.summary",
+    "x": 47,
+    "y": 550,
+    "w": 1004,
+    "h": 85,
+    "count": 2,
+    "text": "Description A primer on solar panels. Key sentence"
+   },
+   {
+    "id": "R7.details",
+    "x": 47,
+    "y": 641,
+    "w": 1004,
+    "h": 17,
+    "count": 2,
+    "text": "More details"
+   },
+   {
+    "id": "R8",
+    "x": 0,
+    "y": 841,
+    "w": 1068,
+    "h": 114,
+    "count": 1,
+    "text": "Saved snapshots 10/23/2026, 3:25:58 AM 1 window, 2"
+   },
+   {
+    "id": "R8.title",
+    "x": 17,
+    "y": 856,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Saved snapshots"
+   },
+   {
+    "id": "R8.item",
+    "x": 17,
+    "y": 883,
+    "w": 1034,
+    "h": 57,
+    "count": 1,
+    "text": "10/23/2026, 3:25:58 AM 1 window, 2 tabs View Reope"
+   },
+   {
+    "id": "R8.buttons",
+    "x": 623,
+    "y": 894,
+    "w": 428,
+    "h": 34,
+    "count": 1,
+    "text": "View Reopen in Chrome Script JSON Delete"
+   },
+   {
+    "id": "R8.view",
+    "x": 623,
+    "y": 894,
+    "w": 58,
+    "h": 34,
+    "count": 1,
+    "text": "View"
+   },
+   {
+    "id": "R8.reopen",
+    "x": 687,
+    "y": 894,
+    "w": 148,
+    "h": 34,
+    "count": 1,
+    "text": "Reopen in Chrome"
+   },
+   {
+    "id": "R8.script",
+    "x": 841,
+    "y": 894,
+    "w": 65,
+    "h": 34,
+    "count": 1,
+    "text": "Script"
+   },
+   {
+    "id": "R8.json",
+    "x": 912,
+    "y": 894,
+    "w": 64,
+    "h": 34,
+    "count": 1,
+    "text": "JSON"
+   },
+   {
+    "id": "R8.delete",
+    "x": 983,
+    "y": 894,
+    "w": 68,
+    "h": 34,
+    "count": 1,
+    "text": "Delete"
+   },
+   {
+    "id": "R9",
+    "x": 0,
+    "y": 967,
+    "w": 1068,
+    "h": 80,
+    "count": 1,
+    "text": "Settings Keep a short preview of the text I copy a"
+   },
+   {
+    "id": "R9.title",
+    "x": 17,
+    "y": 982,
+    "w": 1034,
+    "h": 23,
+    "count": 1,
+    "text": "Settings"
+   },
+   {
+    "id": "R9.clip-label",
+    "x": 17,
+    "y": 1009,
+    "w": 517,
+    "h": 20,
+    "count": 1,
+    "text": "Keep a short preview of the text I copy and paste "
+   },
+   {
+    "id": "R9.clip",
+    "x": 21,
+    "y": 1012,
+    "w": 13,
+    "h": 13,
+    "count": 1,
+    "text": "on"
+   }
+  ]
+ }
+}
