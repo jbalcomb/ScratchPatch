@@ -8,60 +8,60 @@
   <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
-  <header class="top">
+  <header class="top" data-ui="R1">
     <div class="brand">
-      <img src="icons/icon48.png" alt="" width="28" height="28">
-      <h1>Tab Ledger</h1>
-      <span id="captured-at" class="muted"></span>
+      <img src="icons/icon48.png" alt="" width="28" height="28" data-ui="R1.logo">
+      <h1 data-ui="R1.title">Tab Ledger</h1>
+      <span id="captured-at" class="muted" data-ui="R1.timestamp"></span>
     </div>
     <div class="actions">
-      <button id="refresh" title="Ask every tab for a fresh report">Refresh</button>
-      <button id="save">Save snapshot</button>
-      <button id="export-json">Export JSON</button>
-      <button id="ai-summarize" hidden title="Summarize pages with the AI model built into Chrome">Summarize with Chrome AI</button>
+      <button id="refresh" data-ui="R1.refresh" title="Ask every tab for a fresh report">Refresh</button>
+      <button id="save" data-ui="R1.save">Save snapshot</button>
+      <button id="export-json" data-ui="R1.export">Export JSON</button>
+      <button id="ai-summarize" data-ui="R1.ai" hidden title="Summarize pages with the AI model built into Chrome">Summarize with Chrome AI</button>
     </div>
   </header>
 
-  <div id="viewing-banner" class="banner" hidden>
-    <span id="viewing-text"></span>
-    <button id="back-to-live">Back to open tabs</button>
+  <div id="viewing-banner" class="banner" hidden data-ui="R2">
+    <span id="viewing-text" data-ui="R2.text"></span>
+    <button id="back-to-live" data-ui="R2.back">Back to open tabs</button>
   </div>
 
-  <section id="stats" class="stats" aria-label="Totals"></section>
+  <section id="stats" class="stats" aria-label="Totals" data-ui="R3"></section>
 
-  <section class="panel relaunch" aria-labelledby="relaunch-title">
-    <h2 id="relaunch-title">Relaunch script</h2>
-    <p class="muted">Downloads a script that reopens these windows and tabs in Chrome.</p>
+  <section class="panel relaunch" aria-labelledby="relaunch-title" data-ui="R4">
+    <h2 id="relaunch-title" data-ui="R4.title">Relaunch script</h2>
+    <p class="muted" data-ui="R4.help">Downloads a script that reopens these windows and tabs in Chrome.</p>
     <div class="row">
-      <label>Platform
-        <select id="platform"></select>
+      <label data-ui="R4.platform-label">Platform
+        <select id="platform" data-ui="R4.platform"></select>
       </label>
-      <label class="check"><input type="checkbox" id="close-after"> Close these windows and tabs after creating the script</label>
-      <button id="make-script" class="primary">Create relaunch script</button>
+      <label class="check" data-ui="R4.close-label"><input type="checkbox" id="close-after" data-ui="R4.close"> Close these windows and tabs after creating the script</label>
+      <button id="make-script" class="primary" data-ui="R4.create">Create relaunch script</button>
     </div>
-    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <p id="status" class="status" data-ui="R4.status" role="status" aria-live="polite"></p>
   </section>
 
-  <section class="toolbar" aria-label="Filter">
-    <input id="search" type="search" placeholder="Filter by title, address or summary">
+  <section class="toolbar" aria-label="Filter" data-ui="R5">
+    <input id="search" data-ui="R5.search" type="search" placeholder="Filter by title, address or summary">
     <div class="chips" role="radiogroup" aria-label="Show">
-      <button class="chip" data-filter="all" aria-pressed="true">All</button>
-      <button class="chip" data-filter="scrolled" aria-pressed="false">Scrolled</button>
-      <button class="chip" data-filter="unscrolled" aria-pressed="false">Not scrolled</button>
-      <button class="chip" data-filter="clipboard" aria-pressed="false">Copied or pasted</button>
+      <button class="chip" data-filter="all" data-ui="R5.chip-all" aria-pressed="true">All</button>
+      <button class="chip" data-filter="scrolled" data-ui="R5.chip-scrolled" aria-pressed="false">Scrolled</button>
+      <button class="chip" data-filter="unscrolled" data-ui="R5.chip-unscrolled" aria-pressed="false">Not scrolled</button>
+      <button class="chip" data-filter="clipboard" data-ui="R5.chip-clipboard" aria-pressed="false">Copied or pasted</button>
     </div>
   </section>
 
   <main id="windows"></main>
 
-  <section class="panel" aria-labelledby="saved-title">
-    <h2 id="saved-title">Saved snapshots</h2>
+  <section class="panel" aria-labelledby="saved-title" data-ui="R8">
+    <h2 id="saved-title" data-ui="R8.title">Saved snapshots</h2>
     <ul id="saved" class="saved"></ul>
   </section>
 
-  <section class="panel" aria-labelledby="settings-title">
-    <h2 id="settings-title">Settings</h2>
-    <label class="check"><input type="checkbox" id="record-clipboard">
+  <section class="panel" aria-labelledby="settings-title" data-ui="R9">
+    <h2 id="settings-title" data-ui="R9.title">Settings</h2>
+    <label class="check" data-ui="R9.clip-label"><input type="checkbox" id="record-clipboard" data-ui="R9.clip">
       Keep a short preview of the text I copy and paste (stays on this computer)</label>
   </section>
 

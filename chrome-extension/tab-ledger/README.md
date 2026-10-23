@@ -48,7 +48,8 @@ Chrome** directly, which also restores pinned tabs and window sizes.
 ## Develop
 
 ```bash
-npm test     # summarizer and script generator (Node 20+, no dependencies)
+npm test                         # summarizer and script generator (Node 20+, no dependencies)
+node tools/measure-layout.cjs    # positions and sizes of every data-ui element (needs playwright)
 ```
 
 | File | Role |

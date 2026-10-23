@@ -108,14 +108,15 @@ function renderStats(snapshot) {
   const tabs = allTabs(snapshot);
   const sum = (key) => tabs.reduce((n, t) => n + (t.activity?.[key] || 0), 0);
   const items = [
-    [snapshot.windows.length, 'windows'],
-    [tabs.length, 'tabs'],
-    [tabs.filter((t) => t.activity?.scrolled).length, 'scrolled'],
-    [tabs.filter((t) => t.activity && !t.activity.scrolled).length, 'not scrolled'],
-    [sum('copies') + sum('cuts'), 'copies'],
-    [sum('pastes'), 'pastes'],
+    [snapshot.windows.length, 'windows', 'windows'],
+    [tabs.length, 'tabs', 'tabs'],
+    [tabs.filter((t) => t.activity?.scrolled).length, 'scrolled', 'scrolled'],
+    [tabs.filter((t) => t.activity && !t.activity.scrolled).length, 'not scrolled', 'unscrolled'],
+    [sum('copies') + sum('cuts'), 'copies', 'copies'],
+    [sum('pastes'), 'pastes', 'pastes'],
   ];
-  $('stats').replaceChildren(...items.map(([n, label]) => el('div', { class: 'stat' }, el('b', {}, String(n)), el('span', {}, label))));
+  $('stats').replaceChildren(...items.map(([n, label, ui]) =>
+    el('div', { class: 'stat', 'data-ui': `R3.${ui}` }, el('b', {}, String(n)), el('span', {}, label))));
 }
 
 function matches(t) {
@@ -140,8 +141,9 @@ function renderWindows(snapshot) {
       w.type !== 'normal' && w.type,
       w.state !== 'normal' ? w.state : w.width && `${w.width}×${w.height}`,
     ].filter(Boolean).join(' · ');
-    return el('section', { class: 'window' },
-      el('header', {}, el('h3', {}, `Window ${i + 1}`), el('span', { class: 'muted' }, facts)),
+    return el('section', { class: 'window', 'data-ui': 'R6' },
+      el('header', { 'data-ui': 'R6.header' }, el('h3', { 'data-ui': 'R6.title' }, `Window ${i + 1}`),
+        el('span', { class: 'muted', 'data-ui': 'R6.facts' }, facts)),
       tabs.map((t) => renderTab(t)));
   }).filter(Boolean);
   $('windows').replaceChildren(...(cards.length ? cards : [el('div', { class: 'window empty' }, 'No tabs match.')]));
@@ -153,18 +155,18 @@ function renderTab(t) {
   const badges = [];
   if (a) {
     badges.push(a.scrolled
-      ? el('span', { class: 'badge good' }, `Scrolled · reached ${a.maxScrollPercent}%`)
-      : el('span', { class: 'badge warn' }, 'Not scrolled'));
-    if (a.copies || a.cuts) badges.push(el('span', { class: 'badge info' }, `Copied ${a.copies + a.cuts}×`));
-    if (a.pastes) badges.push(el('span', { class: 'badge info' }, `Pasted ${a.pastes}×`));
+      ? el('span', { class: 'badge good', 'data-ui': 'R7.badge-scroll' }, `Scrolled · reached ${a.maxScrollPercent}%`)
+      : el('span', { class: 'badge warn', 'data-ui': 'R7.badge-scroll' }, 'Not scrolled'));
+    if (a.copies || a.cuts) badges.push(el('span', { class: 'badge info', 'data-ui': 'R7.badge-copied' }, `Copied ${a.copies + a.cuts}×`));
+    if (a.pastes) badges.push(el('span', { class: 'badge info', 'data-ui': 'R7.badge-pasted' }, `Pasted ${a.pastes}×`));
   } else {
-    badges.push(el('span', { class: 'badge' }, 'No page access'));
+    badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-scroll' }, 'No page access'));
   }
-  if (t.active) badges.push(el('span', { class: 'badge' }, 'Active tab'));
-  if (t.pinned) badges.push(el('span', { class: 'badge' }, 'Pinned'));
-  if (t.audible) badges.push(el('span', { class: 'badge' }, t.muted ? 'Muted' : 'Playing audio'));
-  if (t.discarded) badges.push(el('span', { class: 'badge' }, 'Sleeping'));
-  if (p?.readingMinutes) badges.push(el('span', { class: 'badge' }, `${p.wordCount.toLocaleString()} words · ${p.readingMinutes} min`));
+  if (t.active) badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-active' }, 'Active tab'));
+  if (t.pinned) badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-pinned' }, 'Pinned'));
+  if (t.audible) badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-audio' }, t.muted ? 'Muted' : 'Playing audio'));
+  if (t.discarded) badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-sleeping' }, 'Sleeping'));
+  if (p?.readingMinutes) badges.push(el('span', { class: 'badge', 'data-ui': 'R7.badge-words' }, `${p.wordCount.toLocaleString()} words · ${p.readingMinutes} min`));
 
   const summary = [];
   if (p?.aiSummary) summary.push(el('div', { class: 'label' }, 'AI summary'), el('p', {}, p.aiSummary));
@@ -172,22 +174,22 @@ function renderTab(t) {
   if (p?.summary?.length) summary.push(el('div', { class: 'label' }, 'Key sentences'), el('p', {}, p.summary.join(' ')));
 
   const icon = t.favIconUrl && /^(https?|data):/.test(t.favIconUrl)
-    ? el('img', { class: 'favicon', src: t.favIconUrl, alt: '', onerror: (e) => e.target.replaceWith(el('div', { class: 'fallback-icon' })) })
-    : el('div', { class: 'fallback-icon' });
+    ? el('img', { class: 'favicon', 'data-ui': 'R7.favicon', src: t.favIconUrl, alt: '', onerror: (e) => e.target.replaceWith(el('div', { class: 'fallback-icon', 'data-ui': 'R7.favicon' })) })
+    : el('div', { class: 'fallback-icon', 'data-ui': 'R7.favicon' });
 
   const key = `${t.id}|${t.url}`;
   const details = el('details', { open: state.openDetails.has(key), ontoggle: (e) => {
     if (e.target.open) state.openDetails.add(key); else state.openDetails.delete(key);
-  } }, el('summary', {}, 'More details'), detailList(t));
+  } }, el('summary', { 'data-ui': 'R7.details' }, 'More details'), detailList(t));
 
-  return el('article', { class: 'tab' },
+  return el('article', { class: 'tab', 'data-ui': 'R7' },
     icon,
     el('div', { class: 'body' },
-      el('button', { class: 'link title', title: state.viewing ? 'Open this page' : 'Go to this tab', onclick: () => goTo(t) },
+      el('button', { class: 'link title', 'data-ui': 'R7.title', title: state.viewing ? 'Open this page' : 'Go to this tab', onclick: () => goTo(t) },
         t.title || t.url || '(untitled)'),
-      el('div', { class: 'url' }, hostAndPath(t.url || t.pendingUrl || '')),
-      el('div', { class: 'badges' }, badges),
-      summary.length ? el('div', { class: 'summary' }, summary) : null,
+      el('div', { class: 'url', 'data-ui': 'R7.address' }, hostAndPath(t.url || t.pendingUrl || '')),
+      el('div', { class: 'badges', 'data-ui': 'R7.badges' }, badges),
+      summary.length ? el('div', { class: 'summary', 'data-ui': 'R7.summary' }, summary) : null,
       details));
 }
 
@@ -239,16 +241,16 @@ async function renderSaved() {
   }
   $('saved').replaceChildren(...saved.map((s) => {
     const tabs = allTabs(s).length;
-    return el('li', {},
+    return el('li', { 'data-ui': 'R8.item' },
       el('div', {}, el('b', {}, s.name || when(s.capturedAt)),
         el('div', { class: 'muted' }, `${s.windows.length} window${s.windows.length === 1 ? '' : 's'}, ${tabs} tab${tabs === 1 ? '' : 's'}` +
           (s.name ? ` · ${when(s.capturedAt)}` : ''))),
-      el('div', { class: 'buttons' },
-        el('button', { onclick: () => { state.viewing = s; render(); window.scrollTo({ top: 0 }); } }, 'View'),
-        el('button', { onclick: () => restore(s) }, 'Reopen in Chrome'),
-        el('button', { onclick: () => makeScript(s, false) }, 'Script'),
-        el('button', { onclick: () => exportJson(s) }, 'JSON'),
-        el('button', { onclick: async () => {
+      el('div', { class: 'buttons', 'data-ui': 'R8.buttons' },
+        el('button', { 'data-ui': 'R8.view', onclick: () => { state.viewing = s; render(); window.scrollTo({ top: 0 }); } }, 'View'),
+        el('button', { 'data-ui': 'R8.reopen', onclick: () => restore(s) }, 'Reopen in Chrome'),
+        el('button', { 'data-ui': 'R8.script', onclick: () => makeScript(s, false) }, 'Script'),
+        el('button', { 'data-ui': 'R8.json', onclick: () => exportJson(s) }, 'JSON'),
+        el('button', { 'data-ui': 'R8.delete', onclick: async () => {
           if (!confirm('Delete this snapshot?')) return;
           await deleteSaved(s.savedId);
           if (state.viewing?.savedId === s.savedId) { state.viewing = null; render(); }
