@@ -1,4 +1,4 @@
-name: Live update
+name: TaskDeck live update
 
 # Publishes the taskdeck package as a live (over-the-air) update for installed apps.
 # Runs the tests first: nothing reaches the phone unless they pass.
@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "src/**"
-      - ".github/workflows/ota.yml"
+      - "taskdeck/src/**"
+      - ".github/workflows/taskdeck-ota.yml"
 
 permissions:
   contents: write
@@ -15,6 +15,10 @@ permissions:
 concurrency:
   group: ota-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: taskdeck
 
 jobs:
   publish:
