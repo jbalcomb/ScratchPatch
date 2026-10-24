@@ -10,6 +10,7 @@ import io
 import freetype
 
 from .layers import baseline, layer_pixels, layers_for
+from .options import DEFAULTS
 from .ttf import build_layer_font
 
 
@@ -30,17 +31,18 @@ def rendered_pixels(face, char):
     return on, partial
 
 
-def verify_style(style):
+def verify_style(style, opts=DEFAULTS):
     """Return a list of mismatch descriptions (empty when exact)."""
     problems = []
-    base = baseline(style)
-    for layer in layers_for(style):
+    base = baseline(style, opts)
+    last_char = 127 if opts.include_del else 126
+    for layer in layers_for(style, opts):
         buf = io.BytesIO()
-        build_layer_font(style, layer).save(buf)
+        build_layer_font(style, layer, opts).save(buf)
         face = freetype.Face(io.BytesIO(buf.getvalue()))
         face.set_pixel_sizes(0, style.height)
         for g in style.glyphs:
-            if g.char > 126:
+            if g.char > last_char:
                 continue
             want = {(x, y - base) for x, y in layer_pixels(g, layer)}
             got, partial = rendered_pixels(face, g.char)
@@ -50,10 +52,11 @@ def verify_style(style):
     return problems
 
 
-def verify(data):
+def verify(data, opts=DEFAULTS):
     problems = []
     for style in data.styles:
-        problems += verify_style(style)
+        if style.index in opts.styles:
+            problems += verify_style(style, opts)
     return problems
 
 

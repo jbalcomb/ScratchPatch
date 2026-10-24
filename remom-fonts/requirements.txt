@@ -1,2 +1,4 @@
 fonttools>=4.47
 freetype-py>=2.4
+numpy>=1.26
+pillow>=10

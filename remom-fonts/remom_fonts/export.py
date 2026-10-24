@@ -4,7 +4,8 @@ import json
 import os
 
 from .layers import OUTLINE_STYLES, baseline, layer_pixels, layers_for
-from .ttf import PIXEL, build_layer_font, family_name, file_stem
+from .options import DEFAULTS
+from .ttf import build_layer_font, family_name, file_stem
 from .vectorize import svg_path
 
 
@@ -12,11 +13,11 @@ def hex_rgb(rgb):
     return "#%02x%02x%02x" % rgb
 
 
-def write_fonts(data, out_dir):
+def write_fonts(data, out_dir, opts=DEFAULTS, progress=None):
     font_dir = os.path.join(out_dir, "fonts")
     os.makedirs(font_dir, exist_ok=True)
     manifest = {
-        "pixel_units": PIXEL,
+        "pixel_units": opts.pixel_units,
         "color_sets": [[hex_rgb(c) for c in data.color_set_rgb(s)] for s in range(len(data.color_sets))],
         "color_set_indices": data.color_sets,
         "palette": [hex_rgb(c) for c in data.palette],
@@ -24,22 +25,26 @@ def write_fonts(data, out_dir):
         "styles": [],
     }
     for style in data.styles:
+        if style.index not in opts.styles:
+            continue
         entry = {
             "index": style.index,
             "height": style.height,
-            "baseline": baseline(style),
+            "baseline": baseline(style, opts),
             "horizontal_spacing": style.horizontal_spacing,
             "vertical_spacing": style.vertical_spacing,
             "layers": [],
         }
-        for layer in layers_for(style):
-            font = build_layer_font(style, layer)
-            filename = file_stem(style, layer) + ".ttf"
+        for layer in layers_for(style, opts):
+            if progress:
+                progress(f"font {style.index} {layer.name}")
+            font = build_layer_font(style, layer, opts)
+            filename = file_stem(style, layer, opts) + ".ttf"
             font.save(os.path.join(font_dir, filename))
             entry["layers"].append({
                 "name": layer.name,
                 "color_index": layer.color_index,
-                "family": family_name(style, layer),
+                "family": family_name(style, layer, opts),
                 "file": "fonts/" + filename,
             })
         manifest["styles"].append(entry)
@@ -48,14 +53,17 @@ def write_fonts(data, out_dir):
     return manifest
 
 
-def write_svgs(data, out_dir, color_set=0):
-    colors = [hex_rgb(c) for c in data.color_set_rgb(color_set)]
+def write_svgs(data, out_dir, opts=DEFAULTS):
+    colors = [hex_rgb(c) for c in data.color_set_rgb(opts.svg_color_set)]
+    last_char = 127 if opts.include_del else 126
     for style in data.styles:
+        if style.index not in opts.styles:
+            continue
         d = os.path.join(out_dir, "svg", f"font{style.index}")
         os.makedirs(d, exist_ok=True)
         color_layers = [l for l in layers_for(style) if l.color_index is not None]
         for g in style.glyphs:
-            if g.char > 126:
+            if g.char > last_char:
                 continue
             paths = []
             for layer in color_layers:
@@ -64,8 +72,8 @@ def write_svgs(data, out_dir, color_set=0):
                     paths.append(f'  <path id="{layer.name}" fill="{colors[layer.color_index]}" d="{svg_path(px)}"/>')
             w = max(g.width, 1)
             svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {style.height}" '
-                   f'width="{w * 8}" height="{style.height * 8}" shape-rendering="crispEdges">\n'
-                   + "\n".join(paths) + "\n</svg>\n")
+                   f'width="{w * opts.svg_scale}" height="{style.height * opts.svg_scale}" '
+                   'shape-rendering="crispEdges">\n' + "\n".join(paths) + "\n</svg>\n")
             with open(os.path.join(d, f"{g.char:02X}.svg"), "w") as f:
                 f.write(svg)
 

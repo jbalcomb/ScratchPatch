@@ -2,7 +2,9 @@
 
 Converts the Master of Magic bitmap fonts (`FONTS.LBX`, as used by
 [ReMoM](https://github.com/jbalcomb/ReMoM)) into **layered TrueType fonts**,
-plus optional per-glyph SVGs and an HTML specimen page.
+plus optional per-glyph SVGs and an HTML specimen page, and includes
+**ReMoM Font Studio**, a Dear ImGui app for previewing text in those fonts and
+exporting it as pictures the game can use.
 
 The original glyphs store a *color index* per pixel, not a color. Each index
 becomes its own font ("layer"). Draw every layer at the same position, each in
@@ -22,7 +24,46 @@ python -m remom_fonts --lbx /path/to/FONTS.LBX -o out --svg
 
 # check every layer against the source bitmaps with FreeType
 python -m remom_fonts.verify ~/src/ReMoM/MoX/src/Init_Data/FONTS_LBX.c
+
+# every option, and presets saved by the Studio
+python -m remom_fonts --help
+python -m remom_fonts --preset my-preset.json
 ```
+
+## ReMoM Font Studio
+
+```sh
+pip install -r requirements-studio.txt
+python -m remom_fonts.studio --source ~/src/ReMoM --out out
+```
+
+Two tabs:
+
+* **Text Studio**: type text (with `{n}` `{h}` `{s}` for the normal, highlight and
+  special color sets), pick a style, color sets or your own palette colors,
+  outline style and color, and alignment and spacing. You get a zoomed,
+  pixel-exact preview, drawn the way the game's `Print_Display()` draws text.
+  **Export** writes any of:
+  * an indexed PNG (game palette, index 0 transparent);
+  * an RGBA PNG (scaled);
+  * a MoX picture `.bin` (the game's own in-memory picture layout);
+  * a C header with the same bytes.
+* **Font Converter**: every parameter that changes the converted fonts:
+  * source (ReMoM checkout, `FONTS_LBX.c`, or `FONTS.LBX` plus palette entry);
+  * output folder and styles;
+  * units per pixel, line gap, char 127;
+  * per-style baseline overrides, with a glyph sheet that shows the baseline;
+  * which layers to write, and whether edge pixels go in Shadow/Solid;
+  * font naming and version;
+  * specimen and SVG options;
+  * presets.
+
+  It also has Convert and Verify buttons, and Open in Text Studio.
+
+The layout and behavior of every control is specified in
+[docs/UE-SPEC.md](docs/UE-SPEC.md), with element IDs (TS-xx, FC-xx) to refer to
+when discussing changes. Settings are saved between runs in
+`~/.config/remom-fonts/studio.json`.
 
 Output (`out/` is ignored by git, because it is derived from the game's data):
 
@@ -109,8 +150,10 @@ for (int l = 0; l < n_layers; l++)
 ## Tests
 
 ```sh
-pip install pytest
+pip install -r requirements-studio.txt pytest
 pytest -q
 ```
+
+The Studio tests run the app headless with `xvfb-run` when it is installed, and skip themselves otherwise.
 
 The tests build small synthetic fonts in memory, so the repository holds no game data.

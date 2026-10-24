@@ -1,0 +1,3 @@
+-r requirements.txt
+imgui-bundle>=1.92
+PyOpenGL>=3.1

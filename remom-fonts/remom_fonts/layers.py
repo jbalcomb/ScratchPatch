@@ -14,6 +14,8 @@ same position, each in its own color, rebuilds the original glyph:
 from collections import Counter
 from dataclasses import dataclass
 
+from .options import DEFAULTS
+
 # Letters that sit on the baseline in every style.
 _BASELINE_LETTERS = "ABCDEFHIKLMNOPRSTUVWXZ"
 
@@ -27,13 +29,17 @@ class Layer:
     keep: object
 
 
-def layers_for(style):
+def layers_for(style, opts=DEFAULTS):
     used = Counter()
     for g in style.glyphs:
         used.update(g.pixels.values())
-    layers = [Layer(f"L{i:02d}", i, (lambda i: lambda c: c == i)(i)) for i in sorted(used)]
-    layers.append(Layer("Shadow", None, lambda c: c != 0))
-    layers.append(Layer("Solid", None, lambda c: True))
+    layers = []
+    if opts.color_layers:
+        layers += [Layer(f"L{i:02d}", i, (lambda i: lambda c: c == i)(i)) for i in sorted(used)]
+    if opts.shadow_layer:
+        layers.append(Layer("Shadow", None, lambda c, e=opts.shadow_includes_edge: e or c != 0))
+    if opts.solid_layer:
+        layers.append(Layer("Solid", None, lambda c, e=opts.solid_includes_edge: e or c != 0))
     return layers
 
 
@@ -41,12 +47,15 @@ def layer_pixels(glyph, layer):
     return {p for p, c in glyph.pixels.items() if layer.keep(c)}
 
 
-def baseline(style):
+def baseline(style, opts=DEFAULTS):
     """Rows from the top of the cell down to the baseline.
 
-    The header only stores the cell height, so take the most common bottom
-    edge of the flat-bottomed capitals.
+    The header only stores the cell height, so unless overridden take the
+    most common bottom edge of the flat-bottomed capitals.
     """
+    override = opts.baseline_for(style.index)
+    if override is not None:
+        return override
     bottoms = Counter()
     for g in style.glyphs:
         if chr(g.char) in _BASELINE_LETTERS and g.pixels:
