@@ -1,0 +1,1291 @@
+From f6286df8c2f696d2cc64579a88bc85042baa0cad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 24 Oct 2026 19:52:40 +0000
+Subject: [PATCH] Accessibility POC: speak the help title under the mouse
+ (--access)
+
+Phase 0 of doc/@AI_Plans/PRD-Accessibility.md. Additive and off by default;
+no original game function is edited.
+
+- platform/include/Platform_Speech.h, platform/speech/PFL_Speech.c:
+  Platform_Speak() for every backend. Windows loads Tolk.dll at runtime
+  (NVDA, JAWS, ... with SAPI fallback); Linux runs spd-say; macOS runs say;
+  Platform_Headless is log-only so tests can assert on what would be spoken.
+- MoX/src/Access.c: when the pointer enters a different right-click-help
+  area, speak that HELP.LBX record's title. Reads HELP.LBX itself rather than
+  through LBX_Load_Data_Static(), which shares a cached handle and is fatal
+  on error.
+- src/ReMoM.c: --access / REMOM_ACCESS=1 enables it and registers
+  Access_Frame as the frame callback (unless --scenario already owns it).
+- MoX/tests/test_Access.cpp: 7 tests against a synthetic HELP.LBX.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013EA6nEAj1LXEd4wPQN7tfH
+---
+ MoX/src/Access.c                   | 262 +++++++++++++++++++++
+ MoX/src/Access.h                   |  50 ++++
+ MoX/src/CMakeLists.txt             |   1 +
+ MoX/tests/CMakeLists.txt           |   1 +
+ MoX/tests/test_Access.cpp          | 157 +++++++++++++
+ doc/@AI_Plans/PRD-Accessibility.md | 192 +++++++++++++++
+ platform/CMakeLists.txt            |   7 +
+ platform/include/Platform_Speech.h |  55 +++++
+ platform/speech/PFL_Speech.c       | 359 +++++++++++++++++++++++++++++
+ src/ReMoM.c                        |  32 +++
+ 10 files changed, 1116 insertions(+)
+ create mode 100644 MoX/src/Access.c
+ create mode 100644 MoX/src/Access.h
+ create mode 100644 MoX/tests/test_Access.cpp
+ create mode 100644 doc/@AI_Plans/PRD-Accessibility.md
+ create mode 100644 platform/include/Platform_Speech.h
+ create mode 100644 platform/speech/PFL_Speech.c
+
+diff --git a/MoX/src/Access.c b/MoX/src/Access.c
+new file mode 100644
+index 0000000..1206281
+--- /dev/null
++++ b/MoX/src/Access.c
+@@ -0,0 +1,262 @@
++/*
++    CLAUDE: Accessibility layer -- NOT part of the original game.  See Access.h and doc/@AI_Plans/PRD-Accessibility.md.
++
++    Proof of concept: "hover to hear".  Every screen in the original registers a help list (Set_Help_List()) of
++    rectangles, each pointing at a HELP.LBX record; right-clicking inside one opens that record's help scroll.
++    Here, when the pointer moves into a different rectangle, the record's title is spoken.
++
++    HELP.LBX is read here with plain stdio, not LBX_Load_Data_Static(): that loader shares a cached file handle and
++    header buffer with the rest of the game and calls Error_Handler() (fatal) on any problem.  Reading our own copy
++    keeps this code from disturbing game state and lets a missing/odd file just mean "no speech".
++*/
++
++#include "Access.h"
++
++#include "../../platform/include/Platform_Speech.h"
++#include "../../STU/src/STU_GRAF.h"
++
++#include "Input.h"
++#include "MOX_BASE.h"
++#include "Mouse.h"
++
++#include <stdlib.h>
++#include <string.h>
++
++
++
++#define ACCESS_HELP_LBX_ENTRY      2     /* HELP.LBX entry holding the struct s_HELP_DATA records */
++#define ACCESS_HELP_TITLE_LEN     30     /* sizeof(s_HELP_DATA.title) */
++#define ACCESS_LBX_MAGIC      0xFEAD
++
++static int16_t access_enabled = ST_FALSE;
++static int16_t access_last_help_idx = ST_UNDEFINED;
++
++static char (* access_help_titles)[ACCESS_HELP_TITLE_LEN + 1] = NULL;
++static int16_t access_help_title_count = 0;
++static int16_t access_help_titles_tried = ST_FALSE;
++
++
++
++static int Access_Read_U16(FILE * file, long offset, uint16_t * value)
++{
++    uint8_t bytes[2];
++
++    if((fseek(file, offset, SEEK_SET) != 0) || (fread(bytes, 1, 2, file) != 2))
++    {
++        return 0;
++    }
++    *value = (uint16_t)(bytes[0] | (bytes[1] << 8));
++    return 1;
++}
++
++static int Access_Read_U32(FILE * file, long offset, uint32_t * value)
++{
++    uint8_t bytes[4];
++
++    if((fseek(file, offset, SEEK_SET) != 0) || (fread(bytes, 1, 4, file) != 4))
++    {
++        return 0;
++    }
++    *value = ((uint32_t)bytes[0]) | ((uint32_t)bytes[1] << 8) | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
++    return 1;
++}
++
++
++int16_t Access_Load_Help_Titles(FILE * lbx_file)
++{
++    uint16_t num_entries = 0;
++    uint16_t magic = 0;
++    uint32_t entry_start = 0;
++    uint16_t num_records = 0;
++    uint16_t record_size = 0;
++    uint16_t itr = 0;
++    int16_t len = 0;
++
++    free(access_help_titles);
++    access_help_titles = NULL;
++    access_help_title_count = 0;
++
++    if(lbx_file == NULL)
++    {
++        return 0;
++    }
++
++    /* LBX header: u16 entry count, u16 magic 0xFEAD, u16, u16, then u32 entry offsets from byte 8. */
++    if(
++        !Access_Read_U16(lbx_file, 0, &num_entries) ||
++        !Access_Read_U16(lbx_file, 2, &magic) ||
++        (magic != ACCESS_LBX_MAGIC) ||
++        (num_entries <= ACCESS_HELP_LBX_ENTRY) ||
++        !Access_Read_U32(lbx_file, (8 + (ACCESS_HELP_LBX_ENTRY * 4)), &entry_start) ||
++        /* Record entry: u16 record count, u16 record size, then the records. */
++        !Access_Read_U16(lbx_file, (long)entry_start, &num_records) ||
++        !Access_Read_U16(lbx_file, (long)(entry_start + 2), &record_size) ||
++        (record_size < ACCESS_HELP_TITLE_LEN) ||
++        (num_records == 0) ||
++        (num_records > 0x7FFF)
++    )
++    {
++        fprintf(stderr, "[access] HELP.LBX: unexpected layout; hover speech disabled.\n");
++        return 0;
++    }
++
++    access_help_titles = calloc(num_records, sizeof(*access_help_titles));
++    if(access_help_titles == NULL)
++    {
++        return 0;
++    }
++
++    for(itr = 0; itr < num_records; itr++)
++    {
++        if(
++            (fseek(lbx_file, (long)(entry_start + 4 + ((uint32_t)itr * record_size)), SEEK_SET) != 0) ||
++            (fread(access_help_titles[itr], 1, ACCESS_HELP_TITLE_LEN, lbx_file) != ACCESS_HELP_TITLE_LEN)
++        )
++        {
++            break;
++        }
++        access_help_titles[itr][ACCESS_HELP_TITLE_LEN] = '\0';
++
++        /* Titles are NUL-terminated inside a fixed 30-byte field; drop trailing blanks too. */
++        len = (int16_t)strlen(access_help_titles[itr]);
++        while((len > 0) && (access_help_titles[itr][len - 1] == ' '))
++        {
++            len--;
++            access_help_titles[itr][len] = '\0';
++        }
++    }
++
++    access_help_title_count = (int16_t)itr;
++
++    return access_help_title_count;
++}
++
++
++const char * Access_Help_Title(int16_t help_idx)
++{
++    FILE * lbx_file = NULL;
++
++    if((access_help_titles == NULL) && (access_help_titles_tried == ST_FALSE))
++    {
++        access_help_titles_tried = ST_TRUE;
++        lbx_file = STU_GRAF_Open_Asset("HELP.LBX", "rb");
++        if(lbx_file == NULL)
++        {
++            fprintf(stderr, "[access] HELP.LBX not found; hover speech disabled.\n");
++        }
++        else
++        {
++            Access_Load_Help_Titles(lbx_file);
++            fclose(lbx_file);
++        }
++    }
++
++    if((help_idx < 0) || (help_idx >= access_help_title_count))
++    {
++        return "";
++    }
++
++    return access_help_titles[help_idx];
++}
++
++
++int16_t Access_Help_Index_At(int16_t x, int16_t y)
++{
++    int16_t i = 0;
++    int16_t j = 0;
++
++    if((help_list_active == ST_FALSE) || (help_list_count <= 0) || (help_struct_pointer == NULL))
++    {
++        return ST_UNDEFINED;
++    }
++
++    /* Same record layout and hit test as Check_Help_List(): [idx, x1, y1, x2, y2], first match wins. */
++    for(i = 0; i < help_list_count; i++)
++    {
++        j = (i * 5);
++
++        if(
++            (help_struct_pointer[j + 0] != ST_UNDEFINED)
++            &&
++            (help_struct_pointer[j + 1] <= x)
++            &&
++            (help_struct_pointer[j + 3] >= x)
++            &&
++            (help_struct_pointer[j + 2] <= y)
++            &&
++            (help_struct_pointer[j + 4] >= y)
++        )
++        {
++            return help_struct_pointer[j + 0];
++        }
++    }
++
++    return ST_UNDEFINED;
++}
++
++
++void Access_Update_At(int16_t x, int16_t y)
++{
++    int16_t help_idx = 0;
++    const char * title = NULL;
++
++    if(access_enabled == ST_FALSE)
++    {
++        return;
++    }
++
++    help_idx = Access_Help_Index_At(x, y);
++
++    if(help_idx == access_last_help_idx)
++    {
++        return;
++    }
++    access_last_help_idx = help_idx;
++
++    if(help_idx == ST_UNDEFINED)
++    {
++        return;
++    }
++
++    title = Access_Help_Title(help_idx);
++    if(title[0] != '\0')
++    {
++        Platform_Speak(title, ST_TRUE);
++    }
++}
++
++
++void Access_Frame(void)
++{
++    Access_Update_At(Pointer_X(), Pointer_Y());
++}
++
++
++void Access_Startup(int16_t enable)
++{
++    access_enabled = (enable != ST_FALSE) ? ST_TRUE : ST_FALSE;
++    access_last_help_idx = ST_UNDEFINED;
++
++    if(access_enabled == ST_TRUE)
++    {
++        Platform_Speech_Startup();
++        Platform_Speak("Master of Magic. Speech on.", ST_TRUE);
++    }
++}
++
++
++int16_t Access_Enabled(void)
++{
++    return access_enabled;
++}
++
++
++void Access_Reset(void)
++{
++    free(access_help_titles);
++    access_help_titles = NULL;
++    access_help_title_count = 0;
++    access_help_titles_tried = ST_FALSE;
++    access_last_help_idx = ST_UNDEFINED;
++    access_enabled = ST_FALSE;
++}
+diff --git a/MoX/src/Access.h b/MoX/src/Access.h
+new file mode 100644
+index 0000000..0973582
+--- /dev/null
++++ b/MoX/src/Access.h
+@@ -0,0 +1,50 @@
++/*
++    CLAUDE: Accessibility layer -- NOT part of the original game.
++
++    The engine side of accessibility: decides WHAT to tell the player.  HOW it is spoken lives in the platform
++    layer (platform/include/Platform_Speech.h).  Nothing here changes original behaviour; it only reads engine
++    state, and does nothing at all unless enabled (--access or REMOM_ACCESS=1).
++
++    Proof of concept: when the mouse moves onto a different right-click-help area, speak that area's help title
++    from HELP.LBX.  See doc/@AI_Plans/PRD-Accessibility.md.
++*/
++
++#ifndef ACCESS_H
++#define ACCESS_H
++
++#include <stdint.h>
++#include <stdio.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Turn accessibility on or off.  Turning it on announces it, so a blind player knows speech works. */
++void Access_Startup(int16_t enable);
++
++int16_t Access_Enabled(void);
++
++/* Per-frame hook (Platform_Register_Frame_Callback).  Cheap: only speaks when the hovered help area changes. */
++void Access_Frame(void);
++
++/* Access_Frame() with explicit pointer coordinates (game space, 320x200).  Exposed for tests. */
++void Access_Update_At(int16_t x, int16_t y);
++
++/* HELP.LBX record index of the active help area containing (x, y), or ST_UNDEFINED.  Same hit test as Check_Help_List(). */
++int16_t Access_Help_Index_At(int16_t x, int16_t y);
++
++/* Title of a HELP.LBX record, trimmed; "" when unknown.  Loads HELP.LBX on first use. */
++const char * Access_Help_Title(int16_t help_idx);
++
++/* Read every record title from an open HELP.LBX (entry 2).  Returns the number of titles loaded, 0 on failure.
++   Replaces any titles already loaded.  Exposed so tests can feed a synthetic LBX. */
++int16_t Access_Load_Help_Titles(FILE * lbx_file);
++
++/* Drop loaded titles and reset state.  Exposed for tests. */
++void Access_Reset(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  /* ACCESS_H */
+diff --git a/MoX/src/CMakeLists.txt b/MoX/src/CMakeLists.txt
+index 5989ea7..ed6f097 100644
+--- a/MoX/src/CMakeLists.txt
++++ b/MoX/src/CMakeLists.txt
+@@ -1,5 +1,6 @@
+ 
+ set(LIBMOX_SOURCES
++    Access.c
+     AIL.c
+     Allocate.c
+     Allocate_Pool.c
+diff --git a/MoX/tests/CMakeLists.txt b/MoX/tests/CMakeLists.txt
+index f4d64ee..af318e4 100644
+--- a/MoX/tests/CMakeLists.txt
++++ b/MoX/tests/CMakeLists.txt
+@@ -4,6 +4,7 @@ include(GoogleTest)
+ # Tests run headless (no display).
+ add_executable(MOX_tests
+     MOX_tests.cpp
++    test_Access.cpp
+     test_Util.cpp
+     test_Allocate.cpp
+     test_Fonts.cpp
+diff --git a/MoX/tests/test_Access.cpp b/MoX/tests/test_Access.cpp
+new file mode 100644
+index 0000000..d9c14fa
+--- /dev/null
++++ b/MoX/tests/test_Access.cpp
+@@ -0,0 +1,157 @@
++// CLAUDE: tests for the accessibility proof of concept (MoX/src/Access.c, platform/speech/PFL_Speech.c).
++// Platform_Headless builds speech in log-only mode, so these assert on what WOULD be spoken.
++
++#include <gtest/gtest.h>
++
++#include "../src/Access.h"
++#include "../src/Input.h"
++#include "../src/MOX_BASE.h"
++#include "../../platform/include/Platform_Speech.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <vector>
++
++namespace
++{
++
++const uint16_t HELP_RECORD_SIZE = 1048;  // sizeof(struct s_HELP_DATA)
++
++void Put_U16(std::vector<uint8_t> & buffer, size_t offset, uint16_t value)
++{
++    buffer[offset + 0] = (uint8_t)(value & 0xFF);
++    buffer[offset + 1] = (uint8_t)(value >> 8);
++}
++
++void Put_U32(std::vector<uint8_t> & buffer, size_t offset, uint32_t value)
++{
++    for(int i = 0; i < 4; i++)
++    {
++        buffer[offset + i] = (uint8_t)(value >> (8 * i));
++    }
++}
++
++// Build a minimal HELP.LBX in a temp file: 3 entries, entry 2 holds s_HELP_DATA-sized records.
++FILE * Make_Help_Lbx(const std::vector<const char *> & titles, uint16_t magic = 0xFEAD)
++{
++    const uint32_t entry_start = 512;
++    const uint32_t entry_end = entry_start + 4 + ((uint32_t)titles.size() * HELP_RECORD_SIZE);
++    std::vector<uint8_t> buffer(entry_end, 0);
++
++    Put_U16(buffer, 0, 3);
++    Put_U16(buffer, 2, magic);
++    Put_U32(buffer, 8 + (0 * 4), entry_start);
++    Put_U32(buffer, 8 + (1 * 4), entry_start);
++    Put_U32(buffer, 8 + (2 * 4), entry_start);
++    Put_U32(buffer, 8 + (3 * 4), entry_end);
++    Put_U16(buffer, entry_start + 0, (uint16_t)titles.size());
++    Put_U16(buffer, entry_start + 2, HELP_RECORD_SIZE);
++    for(size_t i = 0; i < titles.size(); i++)
++    {
++        std::memcpy(&buffer[entry_start + 4 + (i * HELP_RECORD_SIZE)], titles[i], std::strlen(titles[i]));
++    }
++
++    FILE * file = std::tmpfile();
++    std::fwrite(buffer.data(), 1, buffer.size(), file);
++    std::rewind(file);
++    return file;
++}
++
++class Access_test : public ::testing::Test
++{
++protected:
++    // Two help areas, in the original [help_idx, x1, y1, x2, y2] layout.
++    int16_t help_list[2 * 5] = {
++        1,  10, 10,  50, 20,
++        2,  60, 10, 100, 20,
++    };
++
++    void SetUp() override
++    {
++        Access_Reset();
++        FILE * lbx = Make_Help_Lbx({ "UNUSED", "GOLD RESERVE   ", "MANA RESERVE" });
++        ASSERT_EQ(3, Access_Load_Help_Titles(lbx));
++        std::fclose(lbx);
++        Set_Help_List(help_list, 2);
++    }
++
++    void TearDown() override
++    {
++        Deactivate_Help_List();
++        Access_Reset();
++    }
++};
++
++}  // namespace
++
++
++TEST_F(Access_test, TitlesAreLoadedAndTrimmed)
++{
++    EXPECT_STREQ("GOLD RESERVE", Access_Help_Title(1));
++    EXPECT_STREQ("MANA RESERVE", Access_Help_Title(2));
++    EXPECT_STREQ("", Access_Help_Title(3));
++    EXPECT_STREQ("", Access_Help_Title(-1));
++}
++
++TEST_F(Access_test, BadMagicLoadsNothing)
++{
++    FILE * lbx = Make_Help_Lbx({ "A", "B", "C" }, 0x1234);
++    EXPECT_EQ(0, Access_Load_Help_Titles(lbx));
++    std::fclose(lbx);
++    EXPECT_STREQ("", Access_Help_Title(1));
++}
++
++TEST_F(Access_test, HitTestMatchesHelpRectangles)
++{
++    EXPECT_EQ(1, Access_Help_Index_At(10, 10));
++    EXPECT_EQ(1, Access_Help_Index_At(50, 20));   // edges are inclusive, as in Check_Help_List()
++    EXPECT_EQ(2, Access_Help_Index_At(80, 15));
++    EXPECT_EQ(ST_UNDEFINED, Access_Help_Index_At(55, 15));
++    EXPECT_EQ(ST_UNDEFINED, Access_Help_Index_At(10, 21));
++}
++
++TEST_F(Access_test, NoActiveHelpListMeansNoHit)
++{
++    Deactivate_Help_List();
++    EXPECT_EQ(ST_UNDEFINED, Access_Help_Index_At(10, 10));
++}
++
++TEST_F(Access_test, DisabledSpeaksNothing)
++{
++    int before = Platform_Speech_Count();
++    Access_Update_At(20, 15);
++    EXPECT_EQ(before, Platform_Speech_Count());
++}
++
++TEST_F(Access_test, SpeaksOnceWhenHoveredAreaChanges)
++{
++    Access_Startup(ST_TRUE);
++    EXPECT_STREQ("Master of Magic. Speech on.", Platform_Speech_Last());
++    int count = Platform_Speech_Count();
++
++    Access_Update_At(20, 15);
++    EXPECT_STREQ("GOLD RESERVE", Platform_Speech_Last());
++    EXPECT_EQ(count + 1, Platform_Speech_Count());
++
++    Access_Update_At(30, 12);                          // same area: silent
++    EXPECT_EQ(count + 1, Platform_Speech_Count());
++
++    Access_Update_At(80, 15);
++    EXPECT_STREQ("MANA RESERVE", Platform_Speech_Last());
++    EXPECT_EQ(count + 2, Platform_Speech_Count());
++
++    Access_Update_At(55, 15);                          // gap between areas: silent
++    EXPECT_EQ(count + 2, Platform_Speech_Count());
++
++    Access_Update_At(80, 15);                          // re-entering speaks again
++    EXPECT_EQ(count + 3, Platform_Speech_Count());
++}
++
++TEST(Platform_Speech_test, EmptyTextIsIgnored)
++{
++    int before = Platform_Speech_Count();
++    Platform_Speak(nullptr, 1);
++    Platform_Speak("", 1);
++    EXPECT_EQ(before, Platform_Speech_Count());
++}
+diff --git a/doc/@AI_Plans/PRD-Accessibility.md b/doc/@AI_Plans/PRD-Accessibility.md
+new file mode 100644
+index 0000000..094ef6a
+--- /dev/null
++++ b/doc/@AI_Plans/PRD-Accessibility.md
+@@ -0,0 +1,192 @@
++# PRD: Accessibility — blind, low-vision, deaf, limited-mobility and colorblind players
++
++## Goal
++Make ReMoM playable by people the 1994 original shuts out, starting with a community request for
++**screen reader support**. Everything is **additive and off by default**: with accessibility off, the
++game behaves exactly like the reconstruction, and nothing that is faithful to the disassembly is
++deleted or rewritten.
++
++Phased approach: ship the smallest proof of concept (POC) a blind player can try, learn from that
++player, then build out.
++
++## Who this is for
++
++| Need | What it means for Master of Magic | Size |
++|---|---|---|
++| **Blind** (screen reader) | Menus and buttons are tractable. The hard part is the **overland map, city screen and combat grid**: they have to be explorable by keyboard and described in words. | Large |
++| **Low vision** | Zoom/scale (exists, 4x), a larger cursor (hardware cursor exists), high contrast. The game is a fixed 320x200 image, so fonts can be zoomed but not re-flowed. | Small–medium |
++| **Deaf / hard of hearing** | No voice acting; little is conveyed by sound alone. Add visual cues for sounds that carry meaning, and separate music and effects volumes. | Small |
++| **Limited mobility** | The original is mouse-first. Full keyboard play, remappable keys, controller support, no drag-only actions. Turn-based play already avoids timing pressure. | Medium |
++| **Colorblind** | The **wizard banner colors** (red, green, blue, yellow, purple, brown) are the main problem. Palette filter, alternative banner colors, and/or a symbol on banners. | Small–medium |
++| **Cognitive** | Right-click help already exists everywhere. Add a turn summary, confirm before End Turn, and undo for misclicks. | Small |
++| **Photosensitivity** | Option to reduce flashing spell and screen effects. | Small |
++
++References: [Game Accessibility Guidelines](https://gameaccessibilityguidelines.com/), Microsoft
++[Xbox Accessibility Guidelines](https://learn.microsoft.com/gaming/accessibility/guidelines).
++
++## Screen readers
++On Windows the two big screen readers are **NVDA** (free, the most common among blind gamers) and
++**JAWS** (commercial). macOS has **VoiceOver**; Linux has **Orca** (which speaks through Speech
++Dispatcher). Games don't target one: they use a small library that talks to whichever is running.
++ReMoM uses **Tolk** on Windows, which supports NVDA, JAWS and others, and falls back to the Windows
++built-in voice (SAPI) when no screen reader is running.
++
++## Design principles
++1. **Two layers.** The platform layer decides **how** text is spoken (Tolk / Speech Dispatcher / `say` /
++   log-only). The engine layer decides **what** is said (help titles, focused control, map tile). The
++   game code is never aware of which screen reader is running.
++2. **Additive.** New code goes in new files (`MoX/src/Access.c`, `platform/speech/`). Original
++   functions get, at most, a one-line hook marked `/* CLAUDE */`. Faithful code is never deleted.
++3. **Off by default.** Enabled with `--access` or `REMOM_ACCESS=1`; later also an in-game option
++   stored in a **new** settings file (not `CONFIG.MOM`, whose format is the original's).
++4. **Testable headless.** `Platform_Headless` builds speech as log-only and remembers the last
++   utterance, so tests and `.hms` scenarios can assert "after X, the game said Y".
++5. **Read state, don't change it.** Accessibility code reads engine globals; it does not call
++   original loaders with side effects (e.g. it reads `HELP.LBX` itself, rather than through
++   `LBX_Load_Data_Static()`, which shares a cached handle and is fatal on error).
++
++## What already exists in the engine (verified)
++- **Help lists.** Every screen calls `Set_Help_List()` with rectangles `[help_idx, x1, y1, x2, y2]`
++  ([MoX/src/Input.c](../../MoX/src/Input.c), `Check_Help_List()`), each pointing at a
++  `HELP.LBX` entry 2 record (`struct s_HELP_DATA`: 30-char title, 1000-char text;
++  [MoX/src/Input.h](../../MoX/src/Input.h)). This is a ready-made "name and description of
++  everything on screen".
++- **Fields.** `struct s_Field` ([MoX/src/Fields.h](../../MoX/src/Fields.h)) is the list of every
++  clickable control on the current screen: rectangle, type, hotkey, help index. This is the basis for
++  keyboard focus navigation.
++- **Synthetic input.** `Platform_Warp_Mouse()` and `Platform_Set_Synthetic_Mouse_Button()`
++  ([platform/include/Platform.h](../../platform/include/Platform.h)) already let replay drive the
++  game; keyboard "activate" can reuse them, so original click handling is untouched.
++- **Per-frame hook.** `Platform_Register_Frame_Callback()` (single slot; `--scenario` uses it).
++- **Palette choke point.** `Platform_Video_Update()` converts the 8-bit frame with
++  `platform_palette_buffer` on every backend: the place for a colorblind filter.
++
++## Architecture
++
++```
++MoM (game)  ──  MoX (engine) ──────────────────────────  platform/
++                 Access.c   "what to say"                 include/Platform_Speech.h   contract
++                   reads: help lists, fields,             speech/PFL_Speech.c         "how to say it"
++                          pointer, (later) game state       Windows: Tolk.dll (runtime-loaded)
++                   calls: Platform_Speak()                  Linux:   spd-say
++                                                            macOS:   say
++                                                            headless: log only
++```
++
++---
++
++## Phase 0 — Proof of concept: "hover to hear" (this change)
++
++**What it does.** With `--access`, the game says "Master of Magic. Speech on." at startup. After
++that, whenever the mouse moves onto a different right-click-help area, the area's help **title** is
++spoken through the screen reader (e.g. "GOLD RESERVE"), interrupting the previous one.
++
++**Why this first.** It needs zero edits to original game functions, works on every screen that has
++right-click help, and proves the whole pipeline end to end (engine → platform → Tolk → NVDA). It
++gives the blind tester something real to try within days.
++
++**Files.**
++- `platform/include/Platform_Speech.h`: `Platform_Speak`, `Platform_Speech_Stop`, startup/shutdown,
++  `Platform_Speech_Last`/`Count` for tests.
++- `platform/speech/PFL_Speech.c`: shared implementation, linked into every backend; log-only in
++  `Platform_Headless`.
++- `MoX/src/Access.c/.h`: help-area hit test (same as `Check_Help_List()`), `HELP.LBX` title
++  reader, change detection, `Access_Frame()`.
++- `src/ReMoM.c`: `--access` / `REMOM_ACCESS`, registers `Access_Frame` as the frame callback.
++- `MoX/tests/test_Access.cpp`: 7 tests (synthetic `HELP.LBX`, hit test, speak-on-change).
++
++**Trying it (Windows).**
++1. Get Tolk's release ([dkager/tolk](https://github.com/dkager/tolk)), x64: copy `Tolk.dll` and
++   `nvdaControllerClient64.dll` (plus `SAAPI64.dll` for System Access, optional) next to `ReMoM.exe`.
++2. Start NVDA, then run `./ReMoM.exe --access`.
++3. Move the mouse over the main-screen buttons and status areas.
++4. Without `Tolk.dll`, the game runs normally and logs that speech is disabled.
++
++**Trying it (Linux).** Install `speech-dispatcher` (`spd-say` on `PATH`), run `./ReMoM --access`.
++`REMOM_SPEECH_LOG=1` prints each utterance to stderr on any platform.
++
++**Known limits (by design, for the POC).**
++- Mouse-driven only: a blind player still can't *aim* the mouse. This is a pipeline proof, not
++  playability. Keyboard navigation is Phase 2.
++- Titles are spoken as stored (upper case). Only the title, not the help body.
++- Screens or areas without a help list are silent.
++- `--scenario` owns the single frame-callback slot, so hover speech is off in scenario runs.
++- Windows Tolk path is compiled (MinGW cross-compile) but **not yet run on Windows with NVDA**;
++  that is the first thing to verify.
++
++**Acceptance.** On Windows with NVDA running, hovering main-screen controls speaks their help titles,
++once per change, without lag, and the game is unchanged without `--access`.
++
++**Questions for the tester after Phase 0.** Is Tolk/NVDA speech working and responsive? Should titles
++be read in normal case? Which screens matter most? What key layout do they expect (other accessible
++games they play)?
++
++---
++
++## Phase 1 — Speech foundation
++- Key to read the **full help text** of the hovered/focused item (the same text as the right-click
++  scroll), and a "repeat last" key.
++- Speak startup errors (missing game data) and the main menu, so a blind player can tell the game
++  launched.
++- Turn the single frame-callback slot into a small list, so `--access` and `--scenario` coexist
++  (and `.hms` scenarios can test speech).
++- Accessibility settings in a new options file; an options screen that is itself spoken.
++- Normal-case titles, speech rate/verbosity left to the screen reader.
++- **Acceptance:** a blind player can start the game, reach New Game, and hear help for any control.
++
++## Phase 2 — Keyboard navigation (also serves limited-mobility players)
++- A **focus model over the current fields list**: Tab / Shift-Tab (and arrows) move focus, the focused
++  field is spoken (help title, else a label derived from field type/string), Enter/Space activates
++  via `Platform_Warp_Mouse` + synthetic click. Escape = right-click/back where the original uses it.
++- Optional visible focus highlight for sighted keyboard users.
++- Remappable keys; controller support through SDL GameController mapped onto the same actions.
++- **Acceptance:** New Game through wizard creation is completable without a mouse.
++
++## Phase 3 — Screen text
++- Capture text drawn by `Print()` / `Print_Paragraph()` per frame into a "screen text" buffer
++  (one-line hooks), so dialogs, messages and reports can be read ("read screen" key, auto-read for
++  pop-up messages).
++- **Acceptance:** event messages, diplomacy text and reports are spoken.
++
++## Phase 4 — Vision: colorblind, low vision, photosensitivity
++- Palette filter in `Platform_Video_Update()` (all backends): deuteranopia/protanopia/tritanopia
++  simulations-in-reverse or alternate banner palette entries; optional banner symbols.
++- Larger cursor option, high-contrast option for text, "reduce flashing".
++- **Acceptance:** all six wizard banners distinguishable under each colorblind filter (checked with a
++  simulator and a colorblind tester).
++
++## Phase 5 — Game-state descriptions (the big one)
++- **Overland map:** keyboard tile cursor; "what's here" (terrain, special, city, stacks, owner),
++  "what's around me", jump to next unit with moves / next city / next event.
++- **City screen:** population, production, buildings, queue, all speakable and keyboard-editable.
++- **Combat:** grid cursor, unit list with stats, targets in range, spoken results.
++- **Turn summary** at start of turn.
++- Lives in `MoM/` (it needs game knowledge), reading state only.
++- **Acceptance:** a blind tester plays a full small game.
++
++## Phase 6 — Deaf / hard of hearing
++- Visual cue for meaningful sounds (spell cast, combat hit, event fanfare), separate music/effects
++  volume, optional on-screen captions for sound events.
++
++---
++
++## Testing
++- Unit tests in `MOX_tests` (headless speech log) for each announcement rule.
++- `.hms` scenarios asserting speech after scripted input (needs Phase 1's callback list).
++- Real users: the requesting community member plus at least one more blind player; a colorblind
++  tester for Phase 4. Blind 4X players can be found on audiogames.net.
++
++## Open questions
++1. Windows only for speech at first, or all three platforms? (POC supports all three; Windows is the
++   one that matters most.)
++2. Ship `Tolk.dll` in the Windows zip/installer, or document "drop it in"? (Licence: LGPLv3; dynamic
++   loading is compatible.)
++3. Key layout: copy conventions from an accessible strategy game the testers already know.
++4. How much of Phase 5 is needed before blind players can actually play — overland first, or combat
++   first (auto-combat exists)?
++
++## Risks
++- Phase 5 is large and game-specific; scope it with testers, screen by screen.
++- Fidelity rule: every hook into original code must be a one-line `/* CLAUDE */` call; review each.
++- Frame-callback ordering vs replay determinism: accessibility must stay read-only so recordings and
++  replays are unaffected.
+diff --git a/platform/CMakeLists.txt b/platform/CMakeLists.txt
+index ce9f9c8..18846f8 100644
+--- a/platform/CMakeLists.txt
++++ b/platform/CMakeLists.txt
+@@ -29,6 +29,7 @@ add_library(Platform_Headless STATIC
+     headless/headless_State.c
+     replay/Replay.c
+     metrics/PFL_Perf.c
++    speech/PFL_Speech.c
+ )
+ 
+ target_include_directories(Platform_Headless PUBLIC
+@@ -39,6 +40,8 @@ target_include_directories(Platform_Headless PRIVATE
+ )
+ 
+ target_compile_definitions(Platform_Headless PUBLIC NO_SOUND_LIBRARY)
++# Headless never speaks or starts processes; speech is only recorded/logged so tests can assert on it.
++target_compile_definitions(Platform_Headless PRIVATE PFL_SPEECH_LOG_ONLY)
+ 
+ if(MOUSE_DEBUG)
+     target_compile_definitions(Platform_Headless PUBLIC MOUSE_DEBUG)
+@@ -122,6 +125,10 @@ list(APPEND PLATFORM_SOURCES metrics/PFL_Input_Metrics.c)
+ # this file is always compiled so the runtime gate and reporter link either way.
+ list(APPEND PLATFORM_SOURCES metrics/PFL_Perf.c)
+ 
++# Accessibility: text-to-speech output (Tolk.dll at runtime on Windows, spd-say on Linux, say on macOS).
++# Backend-agnostic; also built into Platform_Headless above in log-only mode.  See PRD-Accessibility.md.
++list(APPEND PLATFORM_SOURCES speech/PFL_Speech.c)
++
+ add_library(Platform STATIC ${PLATFORM_SOURCES})
+ 
+ if(PLATFORM_DEFINES)
+diff --git a/platform/include/Platform_Speech.h b/platform/include/Platform_Speech.h
+new file mode 100644
+index 0000000..23fee6d
+--- /dev/null
++++ b/platform/include/Platform_Speech.h
+@@ -0,0 +1,55 @@
++/**
++ * Platform_Speech.h — Text-to-speech output for accessibility (screen reader / OS voice).
++ *
++ * The engine decides WHAT to say (see MoX/src/Access.c); this layer decides HOW it is spoken.
++ * No SDL or Win32 types appear here.  One shared implementation (platform/speech/PFL_Speech.c)
++ * is linked into every backend:
++ *
++ *   Windows        Tolk.dll, loaded at runtime if present: speaks through the running screen reader
++ *                  (NVDA, JAWS, ...), falling back to SAPI when none is running.  No build dependency.
++ *   Linux          spd-say (Speech Dispatcher), which is what Orca uses.
++ *   macOS          say
++ *   headless       no audio; utterances are only logged/recorded, so tests can assert on them.
++ *
++ * Every utterance is also kept as "last spoken" and, when REMOM_SPEECH_LOG is set, written to stderr.
++ *
++ * See doc/@AI_Plans/PRD-Accessibility.md.
++ */
++
++#ifndef PLATFORM_SPEECH_H
++#define PLATFORM_SPEECH_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/**
++ * Load the speech backend.  Safe to call more than once; the first call does the work.
++ * Platform_Speak() calls this itself, so calling it explicitly only moves the load cost earlier.
++ */
++void Platform_Speech_Startup(void);
++
++/** Release the speech backend.  Safe to call when Platform_Speech_Startup() never ran. */
++void Platform_Speech_Shutdown(void);
++
++/**
++ * Speak text.  When interrupt is non-zero, anything still being spoken is cut off first,
++ * which is what you want for "the thing under the cursor changed".
++ * Text is the game's own 8-bit (code page 437) text.  NULL or empty is ignored.
++ */
++void Platform_Speak(const char * text, int interrupt);
++
++/** Stop speaking immediately. */
++void Platform_Speech_Stop(void);
++
++/** The most recent text passed to Platform_Speak() ("" if none).  For tests and diagnostics. */
++const char * Platform_Speech_Last(void);
++
++/** How many times Platform_Speak() has spoken (ignored NULL/empty calls are not counted).  For tests. */
++int Platform_Speech_Count(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif  /* PLATFORM_SPEECH_H */
+diff --git a/platform/speech/PFL_Speech.c b/platform/speech/PFL_Speech.c
+new file mode 100644
+index 0000000..9f9b2c6
+--- /dev/null
++++ b/platform/speech/PFL_Speech.c
+@@ -0,0 +1,359 @@
++/**
++ * PFL_Speech.c — Text-to-speech output for accessibility.  See Platform_Speech.h.
++ *
++ * Backend-agnostic: linked into every windowed backend and into Platform_Headless.  Platform_Headless is
++ * compiled with PFL_SPEECH_LOG_ONLY, so it never makes a sound and never starts a process; it only records
++ * the last utterance (and logs it when REMOM_SPEECH_LOG is set).
++ *
++ * Proof-of-concept scope: one engine (Tolk / spd-say / say), no voice or rate settings, no queueing beyond
++ * what the OS speech service does itself.
++ */
++
++#include "Platform_Speech.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#if !defined(PFL_SPEECH_LOG_ONLY)
++#if defined(_WIN32)
++#include <windows.h>
++#else
++#include <errno.h>
++#include <signal.h>
++#include <spawn.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++extern char ** environ;
++#endif
++#endif
++
++
++
++#define SPEECH_TEXT_MAX  1024
++
++static int speech_started = 0;
++static int speech_log_enabled = 0;
++static int speech_count = 0;
++static char speech_last[SPEECH_TEXT_MAX] = "";
++
++
++
++/* ========================================================================= */
++/*  Windows: Tolk.dll (https://github.com/dkager/tolk), loaded at runtime     */
++/* ========================================================================= */
++
++#if !defined(PFL_SPEECH_LOG_ONLY) && defined(_WIN32)
++
++/* Tolk's exported C API.  Tolk uses C++ bool, which is ABI-compatible with C's unsigned char/_Bool return
++   on x64 (the only architecture ReMoM ships for Windows). */
++typedef void          (__cdecl * tolk_load_fn)(void);
++typedef void          (__cdecl * tolk_unload_fn)(void);
++typedef void          (__cdecl * tolk_try_sapi_fn)(unsigned char try_sapi);
++typedef unsigned char (__cdecl * tolk_output_fn)(const wchar_t * str, unsigned char interrupt);
++typedef unsigned char (__cdecl * tolk_silence_fn)(void);
++typedef const wchar_t * (__cdecl * tolk_detect_fn)(void);
++
++static HMODULE tolk_dll = NULL;
++static tolk_unload_fn tolk_unload = NULL;
++static tolk_output_fn tolk_output = NULL;
++static tolk_silence_fn tolk_silence = NULL;
++
++static void Speech_Backend_Startup(void)
++{
++    tolk_load_fn tolk_load = NULL;
++    tolk_try_sapi_fn tolk_try_sapi = NULL;
++    tolk_detect_fn tolk_detect = NULL;
++    const wchar_t * screen_reader = NULL;
++
++    tolk_dll = LoadLibraryA("Tolk.dll");
++    if(tolk_dll == NULL)
++    {
++        fprintf(stderr, "[speech] Tolk.dll not found next to ReMoM.exe; speech disabled (logging only).\n");
++        return;
++    }
++
++    tolk_load     = (tolk_load_fn)    GetProcAddress(tolk_dll, "Tolk_Load");
++    tolk_unload   = (tolk_unload_fn)  GetProcAddress(tolk_dll, "Tolk_Unload");
++    tolk_try_sapi = (tolk_try_sapi_fn)GetProcAddress(tolk_dll, "Tolk_TrySAPI");
++    tolk_output   = (tolk_output_fn)  GetProcAddress(tolk_dll, "Tolk_Output");
++    tolk_silence  = (tolk_silence_fn) GetProcAddress(tolk_dll, "Tolk_Silence");
++    tolk_detect   = (tolk_detect_fn)  GetProcAddress(tolk_dll, "Tolk_DetectScreenReader");
++
++    if((tolk_load == NULL) || (tolk_unload == NULL) || (tolk_output == NULL))
++    {
++        fprintf(stderr, "[speech] Tolk.dll is missing expected exports; speech disabled (logging only).\n");
++        FreeLibrary(tolk_dll);
++        tolk_dll = NULL;
++        tolk_output = NULL;
++        return;
++    }
++
++    /* Must come before Tolk_Load(): fall back to the Windows built-in voice when no screen reader runs. */
++    if(tolk_try_sapi != NULL)
++    {
++        tolk_try_sapi(1);
++    }
++
++    tolk_load();
++
++    if(tolk_detect != NULL)
++    {
++        screen_reader = tolk_detect();
++    }
++    fprintf(stderr, "[speech] Tolk loaded; screen reader: %ls\n", (screen_reader != NULL) ? screen_reader : L"(none, using SAPI)");
++}
++
++static void Speech_Backend_Shutdown(void)
++{
++    if(tolk_dll != NULL)
++    {
++        tolk_unload();
++        FreeLibrary(tolk_dll);
++        tolk_dll = NULL;
++        tolk_output = NULL;
++        tolk_silence = NULL;
++    }
++}
++
++static void Speech_Backend_Speak(const char * text, int interrupt)
++{
++    wchar_t wide_text[SPEECH_TEXT_MAX];
++
++    if(tolk_output == NULL)
++    {
++        return;
++    }
++
++    /* Game text is code page 437 (the DOS original); convert so accented and box characters survive. */
++    if(MultiByteToWideChar(437, 0, text, -1, wide_text, SPEECH_TEXT_MAX) == 0)
++    {
++        return;
++    }
++    wide_text[SPEECH_TEXT_MAX - 1] = L'\0';
++
++    tolk_output(wide_text, (unsigned char)(interrupt != 0));
++}
++
++static void Speech_Backend_Stop(void)
++{
++    if(tolk_silence != NULL)
++    {
++        tolk_silence();
++    }
++}
++
++
++
++/* ========================================================================= */
++/*  Linux / macOS: spawn the OS speech command                               */
++/* ========================================================================= */
++
++#elif !defined(PFL_SPEECH_LOG_ONLY)
++
++#if defined(__APPLE__)
++#define SPEECH_COMMAND  "say"
++#else
++#define SPEECH_COMMAND  "spd-say"
++#endif
++
++#define SPEECH_MAX_CHILDREN  32
++
++static int speech_available = 0;
++static pid_t speech_children[SPEECH_MAX_CHILDREN];
++static int speech_child_count = 0;
++static pid_t speech_last_child = 0;
++
++/* Reap finished speech processes so they do not linger as zombies. Only our own pids are waited on. */
++static void Speech_Reap_Children(void)
++{
++    int itr = 0;
++
++    while(itr < speech_child_count)
++    {
++        if(waitpid(speech_children[itr], NULL, WNOHANG) != 0)
++        {
++            speech_children[itr] = speech_children[speech_child_count - 1];
++            speech_child_count--;
++        }
++        else
++        {
++            itr++;
++        }
++    }
++}
++
++static pid_t Speech_Spawn(char * const argv[])
++{
++    pid_t pid = 0;
++    int result = 0;
++
++    Speech_Reap_Children();
++
++    if(speech_child_count >= SPEECH_MAX_CHILDREN)
++    {
++        return 0;  /* speech service is not keeping up; drop rather than pile up processes */
++    }
++
++    result = posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
++    if(result != 0)
++    {
++        fprintf(stderr, "[speech] could not run '%s' (%s); speech disabled (logging only).\n", argv[0], strerror(result));
++        speech_available = 0;
++        return 0;
++    }
++
++    speech_children[speech_child_count] = pid;
++    speech_child_count++;
++
++    return pid;
++}
++
++static void Speech_Backend_Startup(void)
++{
++    speech_available = 1;
++    fprintf(stderr, "[speech] using '%s'\n", SPEECH_COMMAND);
++}
++
++static void Speech_Backend_Stop(void)
++{
++#if defined(__APPLE__)
++    if(speech_last_child > 0)
++    {
++        kill(speech_last_child, SIGTERM);
++        speech_last_child = 0;
++    }
++#else
++    char * cancel_argv[] = { "spd-say", "-C", NULL };
++    pid_t pid = 0;
++
++    if(speech_available == 0)
++    {
++        return;
++    }
++
++    /* Wait for the cancel to be delivered, so it cannot overtake the next utterance. */
++    pid = Speech_Spawn(cancel_argv);
++    if(pid > 0)
++    {
++        waitpid(pid, NULL, 0);
++        Speech_Reap_Children();
++    }
++#endif
++}
++
++static void Speech_Backend_Shutdown(void)
++{
++    Speech_Backend_Stop();
++}
++
++static void Speech_Backend_Speak(const char * text, int interrupt)
++{
++    char * speak_argv[] = { SPEECH_COMMAND, "--", (char *)text, NULL };
++
++    if(speech_available == 0)
++    {
++        return;
++    }
++
++    if(interrupt != 0)
++    {
++        Speech_Backend_Stop();
++        if(speech_available == 0)
++        {
++            return;  /* the cancel could not run, so neither will the speak */
++        }
++    }
++
++    /* Text goes in as one argv element, never through a shell, so game text cannot be interpreted as a command. */
++    speech_last_child = Speech_Spawn(speak_argv);
++}
++
++
++
++/* ========================================================================= */
++/*  Headless: log only                                                       */
++/* ========================================================================= */
++
++#else
++
++static void Speech_Backend_Startup(void) { }
++static void Speech_Backend_Shutdown(void) { }
++static void Speech_Backend_Speak(const char * text, int interrupt) { (void)text; (void)interrupt; }
++static void Speech_Backend_Stop(void) { }
++
++#endif
++
++
++
++/* ========================================================================= */
++/*  Public API                                                               */
++/* ========================================================================= */
++
++void Platform_Speech_Startup(void)
++{
++    const char * log_env = NULL;
++
++    if(speech_started != 0)
++    {
++        return;
++    }
++    speech_started = 1;
++
++    log_env = getenv("REMOM_SPEECH_LOG");
++    speech_log_enabled = ((log_env != NULL) && (log_env[0] != '\0') && (log_env[0] != '0'));
++
++    Speech_Backend_Startup();
++}
++
++void Platform_Speech_Shutdown(void)
++{
++    if(speech_started == 0)
++    {
++        return;
++    }
++
++    Speech_Backend_Shutdown();
++    speech_started = 0;
++}
++
++void Platform_Speak(const char * text, int interrupt)
++{
++    if((text == NULL) || (text[0] == '\0'))
++    {
++        return;
++    }
++
++    Platform_Speech_Startup();
++
++    strncpy(speech_last, text, (SPEECH_TEXT_MAX - 1));
++    speech_last[SPEECH_TEXT_MAX - 1] = '\0';
++    speech_count++;
++
++    if(speech_log_enabled != 0)
++    {
++        fprintf(stderr, "[speech] %s\"%s\"\n", (interrupt != 0) ? "" : "(queued) ", speech_last);
++    }
++
++    Speech_Backend_Speak(speech_last, interrupt);
++}
++
++void Platform_Speech_Stop(void)
++{
++    if(speech_started == 0)
++    {
++        return;
++    }
++
++    Speech_Backend_Stop();
++}
++
++const char * Platform_Speech_Last(void)
++{
++    return speech_last;
++}
++
++int Platform_Speech_Count(void)
++{
++    return speech_count;
++}
+diff --git a/src/ReMoM.c b/src/ReMoM.c
+index 121191f..013efb2 100644
+--- a/src/ReMoM.c
++++ b/src/ReMoM.c
+@@ -39,6 +39,7 @@
+ #include "../STU/src/STU_TST.h"   /* CLAUDE: g_tst_patch_scenario, for --patch */
+ #include "../STU/src/STU_WRLD.h"
+ 
++#include "../MoX/src/Access.h"  /* CLAUDE: accessibility proof of concept, --access */
+ #include "../MoX/src/capture.h"
+ #include "../MoX/src/CFG.h"
+ #include "../MoX/src/DOS.h"
+@@ -72,6 +73,7 @@
+ #include "../platform/include/Platform_Perf.h"  /* Perf_Init() -- performance capture gate */
+ #include "../platform/include/Platform_Replay.h"
+ #include "../platform/include/Platform_Capture.h"
++#include "../platform/include/Platform_Speech.h"  /* CLAUDE: accessibility */
+ 
+ #include "ReMoM_Init.h"
+ #include "Artificial_Human_Player.h"  /* HeMoM_Player_Frame() */
+@@ -438,8 +440,20 @@ int main(int argc, char * argv[])
+            doc/@AI_Plans/PRD-Scripted-Demo-Capture.md. */
+         const char * capture_dir = NULL;
+         int capture_fps = 0;
++        /* CLAUDE: accessibility (doc/@AI_Plans/PRD-Accessibility.md) -- --access or REMOM_ACCESS=1. */
++        const char * access_env = getenv("REMOM_ACCESS");
++        int access_flag = ((access_env != NULL) && (access_env[0] != '\0') && (access_env[0] != '0'));
++        int frame_callback_registered = 0;
+         for(argi = 1; argi < argc; argi++)
+         {
++            if(stu_strcmp(argv[argi], "--access") == 0)
++            {
++
++                LOG_INFO(LOG_CAT_REMOM, "DEBUG: [%s, %d]: --access flag detected", __FILE__, __LINE__);
++
++                access_flag = 1;
++                continue;
++            }
+             if(stu_strcmp(argv[argi], "--capture") == 0 && (argi + 1) < argc)
+             {
+ 
+@@ -540,6 +554,7 @@ int main(int argc, char * argv[])
+                 if(HeMoM_Player_Load_Scenario(argv[argi]) == 0)
+                 {
+                     Platform_Register_Frame_Callback(HeMoM_Player_Frame);
++                    frame_callback_registered = 1;
+                 }
+             }
+         }
+@@ -555,6 +570,21 @@ int main(int argc, char * argv[])
+                 atexit(Platform_Capture_Stop);
+             }
+         }
++
++        /* CLAUDE: accessibility proof of concept: speak the help title under the pointer.  The platform has a
++           single frame-callback slot; a --scenario run already owns it, so hover speech is off for those. */
++        if(access_flag != 0)
++        {
++            Access_Startup(ST_TRUE);
++            if(frame_callback_registered == 0)
++            {
++                Platform_Register_Frame_Callback(Access_Frame);
++            }
++            else
++            {
++                LOG_INFO(LOG_CAT_REMOM, "DEBUG: [%s, %d]: --access: frame callback taken by --scenario; hover speech off", __FILE__, __LINE__);
++            }
++        }
+     }
+ 
+ // /* HACK */  #ifdef STU_DEBUG
+@@ -575,6 +605,8 @@ int main(int argc, char * argv[])
+     }
+     HeMoM_Player_Shutdown();
+ 
++    Platform_Speech_Shutdown();  /* CLAUDE: accessibility */
++
+     Shutdown_Platform();
+ 
+ #ifdef STU_DEBUG
+-- 
+2.43.0
+
