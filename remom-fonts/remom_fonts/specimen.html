@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReMoM Layered Fonts</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --panel: #ffffff; --ink: #222; --muted: #666; --line: #d8d4cc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17161a; --panel: #222126; --ink: #e8e6e3; --muted: #9a979f; --line: #36343b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end;
+              background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+              padding: 12px; margin-bottom: 16px; }
+  label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+  input[type=text] { width: min(420px, 80vw); }
+  .style { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           margin-bottom: 12px; overflow: hidden; }
+  .style header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+                  padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted);
+                  font-size: 12px; }
+  .stage { padding: 16px; overflow-x: auto; }
+  .stack { position: relative; display: inline-block; white-space: pre;
+           -webkit-font-smoothing: none; font-kerning: none; }
+  .stack > span { position: absolute; left: 0; top: 0; }
+  .stack > .sizer { position: static; visibility: hidden; }
+  .swatches { display: flex; gap: 2px; }
+  .swatches i { width: 12px; height: 12px; display: inline-block; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<h1>ReMoM layered fonts</h1>
+<div class="controls">
+  <label>Text <input type="text" id="text" value="The quick brown fox jumps over the lazy dog. 0123456789 !?"></label>
+  <label>Scale <select id="scale"></select></label>
+  <label>Color set <select id="set"></select></label>
+  <label>Outline style <select id="outline"></select></label>
+  <label>Outline color (palette index) <input type="number" id="ocolor" min="0" max="255" value="0"></label>
+  <label>Background <input type="color" id="bg" value="#5a4a3a"></label>
+  <label><span><input type="checkbox" id="solid"> single color (Solid layer)</span></label>
+</div>
+<div id="styles"></div>
+<script>
+const M = /*MANIFEST*/null;
+const $ = id => document.getElementById(id);
+
+const css = M.styles.flatMap(s => s.layers.map(l =>
+  `@font-face { font-family: "${l.family}"; src: url("${l.file}") format("truetype"); }`)).join("\n");
+document.head.insertAdjacentHTML("beforeend", `<style>${css}</style>`);
+
+for (let i = 1; i <= 8; i++) $("scale").add(new Option(i + "x", i, i === 3, i === 3));
+M.color_sets.forEach((_, i) => $("set").add(new Option(i, i)));
+Object.entries(M.outline_styles).forEach(([k, v]) => $("outline").add(new Option(`${k} ${v.name}`, k)));
+
+function span(family, color, dx, dy, scale, text) {
+  const s = document.createElement("span");
+  s.style.fontFamily = `"${family}"`;
+  s.style.color = color;
+  if (dx || dy) s.style.transform = `translate(${dx * scale}px, ${dy * scale}px)`;
+  s.textContent = text;
+  return s;
+}
+
+function render() {
+  const text = $("text").value, scale = +$("scale").value, set = +$("set").value;
+  const colors = M.color_sets[set];
+  const outlineColor = M.palette[Math.max(0, Math.min(255, +$("ocolor").value || 0))];
+  const offsets = M.outline_styles[$("outline").value].offsets;
+  const root = $("styles");
+  root.replaceChildren();
+  for (const s of M.styles) {
+    const box = document.createElement("section");
+    box.className = "style";
+    const used = s.layers.filter(l => l.color_index !== null);
+    box.innerHTML = `<header><span>Font ${s.index} — ${s.height}px cell, baseline ${s.baseline},
+      layers ${used.map(l => l.name).join(" ")}</span>
+      <span class="swatches">${used.map(l => `<i title="${l.name}" style="background:${colors[l.color_index]}"></i>`).join("")}</span></header>`;
+    const stage = document.createElement("div");
+    stage.className = "stage";
+    stage.style.background = $("bg").value;
+    const stack = document.createElement("div");
+    stack.className = "stack";
+    stack.style.fontSize = s.height * scale + "px";
+    stack.style.lineHeight = (s.height + s.vertical_spacing) * scale + "px";
+    const byName = Object.fromEntries(s.layers.map(l => [l.name, l]));
+    const sizer = span(byName.Solid.family, "transparent", 0, 0, scale, text);
+    sizer.className = "sizer";
+    stack.append(sizer);
+    for (const [dx, dy] of offsets) stack.append(span(byName.Shadow.family, outlineColor, dx, dy, scale, text));
+    if ($("solid").checked) {
+      stack.append(span(byName.Solid.family, colors[1], 0, 0, scale, text));
+    } else {
+      for (const l of used) stack.append(span(l.family, colors[l.color_index], 0, 0, scale, text));
+    }
+    stage.append(stack);
+    box.append(stage);
+    root.append(box);
+  }
+}
+for (const id of ["text", "scale", "set", "outline", "ocolor", "bg", "solid"]) $(id).addEventListener("input", render);
+document.fonts.ready.then(render);
+render();
+</script>
+</body>
+</html>

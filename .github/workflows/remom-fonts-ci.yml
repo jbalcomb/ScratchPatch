@@ -1,0 +1,26 @@
+name: remom-fonts CI
+
+on:
+  push:
+    paths:
+      - "remom-fonts/**"
+      - ".github/workflows/remom-fonts-ci.yml"
+  pull_request:
+    paths:
+      - "remom-fonts/**"
+      - ".github/workflows/remom-fonts-ci.yml"
+
+defaults:
+  run:
+    working-directory: remom-fonts
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -q
