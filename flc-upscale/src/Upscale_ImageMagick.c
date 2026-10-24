@@ -64,6 +64,7 @@ static FilterType Filter_Type(int filter)
         case UPSCALE_FILTER_BILINEAR: { return TriangleFilter; } break;
         case UPSCALE_FILTER_BICUBIC:  { return CatromFilter;   } break;  /* CubicFilter is a blurry B-spline; Catmull-Rom is what other libraries call bicubic */
         case UPSCALE_FILTER_LANCZOS:  { return LanczosFilter;  } break;
+        case UPSCALE_FILTER_AREA:     { return BoxFilter;      } break;  /* averages the covered pixels when shrinking */
         default:                      { return PointFilter;    } break;
     }
 }

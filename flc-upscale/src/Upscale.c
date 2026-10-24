@@ -68,7 +68,7 @@ int Upscale_Is_Filter_Supported(int backend, int filter)
     {
         return 0;
     }
-    if((filter < UPSCALE_FILTER_NEAREST) || (filter > UPSCALE_FILTER_SUPERRES))
+    if((filter < UPSCALE_FILTER_NEAREST) || (filter >= UPSCALE_FILTER_COUNT))
     {
         return 0;
     }
@@ -222,11 +222,131 @@ int Upscale_Indexed_To_RGBA(const struct s_UPSCALE_SOURCE * source, uint8_t * rg
 }
 
 
+static int Round_Div(int64_t numerator, int64_t denominator)
+{
+    return (int)((numerator + (denominator / 2)) / denominator);
+}
+
+int Upscale_Destination_Size(int width, int height, const struct s_UPSCALE_OPTIONS * options, int * dst_width, int * dst_height)
+{
+    int have_aspect = 0;
+    int out_width = 0;
+    int out_height = 0;
+
+    if((options == NULL) || (dst_width == NULL) || (dst_height == NULL) || (width <= 0) || (height <= 0))
+    {
+        Upscale_Set_Error("Upscale_Destination_Size: bad arguments (source %dx%d)", width, height);
+        return UPSCALE_ERR_ARGUMENT;
+    }
+    if((options->aspect_width < 0) || (options->aspect_height < 0) || ((options->aspect_width == 0) != (options->aspect_height == 0)))
+    {
+        Upscale_Set_Error("Upscale_Destination_Size: aspect %d:%d needs both sides positive, or both 0 to keep the source shape", options->aspect_width, options->aspect_height);
+        return UPSCALE_ERR_ARGUMENT;
+    }
+    have_aspect = (options->aspect_width > 0);
+
+    if((options->dst_width != 0) && (options->dst_height != 0))
+    {
+        out_width = options->dst_width;
+        out_height = options->dst_height;
+    }
+    else if(have_aspect && (options->dst_width != 0))
+    {
+        out_width = options->dst_width;
+        out_height = Round_Div((int64_t)out_width * options->aspect_height, options->aspect_width);
+    }
+    else if(have_aspect && (options->dst_height != 0))
+    {
+        out_height = options->dst_height;
+        out_width = Round_Div((int64_t)out_height * options->aspect_width, options->aspect_height);
+    }
+    else
+    {
+        if((options->scale < 1) || (options->scale > UPSCALE_MAX_SCALE))
+        {
+            Upscale_Set_Error("Upscale_Destination_Size: scale %d is outside 1 to %d", options->scale, UPSCALE_MAX_SCALE);
+            return UPSCALE_ERR_ARGUMENT;
+        }
+        if(have_aspect == 0)
+        {
+            out_width  = (options->dst_width  != 0) ? options->dst_width  : (width  * options->scale);
+            out_height = (options->dst_height != 0) ? options->dst_height : (height * options->scale);
+        }
+        else if(((int64_t)options->aspect_height * width) >= ((int64_t)height * options->aspect_width))
+        {
+            /* the destination is taller than the source: width gets exactly scale, height stretches */
+            out_width = width * options->scale;
+            out_height = Round_Div((int64_t)out_width * options->aspect_height, options->aspect_width);
+        }
+        else
+        {
+            /* the destination is wider than the source: height gets exactly scale, width stretches */
+            out_height = height * options->scale;
+            out_width = Round_Div((int64_t)out_height * options->aspect_width, options->aspect_height);
+        }
+    }
+
+    if((out_width <= 0) || (out_height <= 0) || (out_width > (width * UPSCALE_MAX_SCALE)) || (out_height > (height * UPSCALE_MAX_SCALE)))
+    {
+        Upscale_Set_Error("Upscale_Destination_Size: destination %dx%d is out of range for a %dx%d source (at most %dx per axis)", out_width, out_height, width, height, UPSCALE_MAX_SCALE);
+        return UPSCALE_ERR_ARGUMENT;
+    }
+    *dst_width = out_width;
+    *dst_height = out_height;
+    return UPSCALE_OK;
+}
+
+/* Every pixel copied factor_x times across and factor_y times down. */
+static uint8_t * Integer_Oversample(const uint8_t * rgba, int width, int height, int factor_x, int factor_y)
+{
+    uint8_t * oversampled = NULL;
+    uint8_t * dst = NULL;
+    const uint8_t * src_row = NULL;
+    size_t row_size = 0;
+    int itr_x = 0;
+    int itr_y = 0;
+    int itr_repeat = 0;
+
+    row_size = (size_t)width * factor_x * 4;
+    oversampled = (uint8_t *)malloc(row_size * height * factor_y);
+    if(oversampled == NULL)
+    {
+        return NULL;
+    }
+
+    dst = oversampled;
+    for(itr_y = 0; itr_y < height; itr_y++)
+    {
+        src_row = rgba + ((size_t)itr_y * width * 4);
+        for(itr_x = 0; itr_x < width; itr_x++)
+        {
+            for(itr_repeat = 0; itr_repeat < factor_x; itr_repeat++)
+            {
+                memcpy(dst, src_row + (itr_x * 4), 4);
+                dst += 4;
+            }
+        }
+        for(itr_repeat = 1; itr_repeat < factor_y; itr_repeat++)
+        {
+            memcpy(dst, dst - row_size, row_size);
+            dst += row_size;
+        }
+    }
+    return oversampled;
+}
+
+
 int Upscale_Image(const struct s_UPSCALE_SOURCE * source, const struct s_UPSCALE_OPTIONS * options, struct s_UPSCALE_IMAGE * result)
 {
+    struct s_UPSCALE_OPTIONS work_options;
     uint8_t * rgba = NULL;
+    uint8_t * oversampled = NULL;
     int dst_width = 0;
     int dst_height = 0;
+    int work_width = 0;
+    int work_height = 0;
+    int factor_x = 0;
+    int factor_y = 0;
     int status = 0;
 
     if(result == NULL)
@@ -251,7 +371,7 @@ int Upscale_Image(const struct s_UPSCALE_SOURCE * source, const struct s_UPSCALE
         Upscale_Set_Error("Upscale_Image: backend %s (%d) was not compiled in", Upscale_Backend_Name(options->backend), options->backend);
         return UPSCALE_ERR_NO_BACKEND;
     }
-    if((options->filter < UPSCALE_FILTER_NEAREST) || (options->filter > UPSCALE_FILTER_SUPERRES))
+    if((options->filter < UPSCALE_FILTER_NEAREST) || (options->filter >= UPSCALE_FILTER_COUNT))
     {
         Upscale_Set_Error("Upscale_Image: bad filter %d", options->filter);
         return UPSCALE_ERR_ARGUMENT;
@@ -262,17 +382,15 @@ int Upscale_Image(const struct s_UPSCALE_SOURCE * source, const struct s_UPSCALE
             (options->filter == UPSCALE_FILTER_SUPERRES) ? " (super-resolution needs OpenCV built with the dnn_superres contrib module)" : "");
         return UPSCALE_ERR_UNSUPPORTED;
     }
-    if(((options->dst_width == 0) || (options->dst_height == 0)) && ((options->scale < 1) || (options->scale > UPSCALE_MAX_SCALE)))
+    if((options->oversample != UPSCALE_OVERSAMPLE_OFF) && (options->oversample != UPSCALE_OVERSAMPLE_INTEGER))
     {
-        Upscale_Set_Error("Upscale_Image: scale %d is outside 1 to %d", options->scale, UPSCALE_MAX_SCALE);
+        Upscale_Set_Error("Upscale_Image: bad oversample mode %d", options->oversample);
         return UPSCALE_ERR_ARGUMENT;
     }
-    dst_width  = (options->dst_width  != 0) ? options->dst_width  : (source->width  * options->scale);
-    dst_height = (options->dst_height != 0) ? options->dst_height : (source->height * options->scale);
-    if((dst_width <= 0) || (dst_height <= 0) || (dst_width > (source->width * UPSCALE_MAX_SCALE)) || (dst_height > (source->height * UPSCALE_MAX_SCALE)))
+    status = Upscale_Destination_Size(source->width, source->height, options, &dst_width, &dst_height);
+    if(status != UPSCALE_OK)
     {
-        Upscale_Set_Error("Upscale_Image: bad destination size %dx%d for a %dx%d source", dst_width, dst_height, source->width, source->height);
-        return UPSCALE_ERR_ARGUMENT;
+        return status;
     }
 
     rgba = (uint8_t *)malloc((size_t)source->width * source->height * 4);
@@ -282,14 +400,38 @@ int Upscale_Image(const struct s_UPSCALE_SOURCE * source, const struct s_UPSCALE
         return UPSCALE_ERR_MEMORY;
     }
     Upscale_Indexed_To_RGBA(source, rgba);
+    work_width = source->width;
+    work_height = source->height;
+    work_options = *options;
+
+    /* super-resolution already runs the model and then shrinks to fit, so it ignores oversample */
+    if((options->oversample == UPSCALE_OVERSAMPLE_INTEGER) && (options->filter != UPSCALE_FILTER_SUPERRES))
+    {
+        factor_x = (dst_width  + source->width  - 1) / source->width;
+        factor_y = (dst_height + source->height - 1) / source->height;
+        oversampled = Integer_Oversample(rgba, source->width, source->height, factor_x, factor_y);
+        free(rgba);
+        if(oversampled == NULL)
+        {
+            Upscale_Set_Error("Upscale_Image: out of memory oversampling %dx%d by %dx%d", source->width, source->height, factor_x, factor_y);
+            return UPSCALE_ERR_MEMORY;
+        }
+        rgba = oversampled;
+        work_width = source->width * factor_x;
+        work_height = source->height * factor_y;
+        if((work_width == dst_width) && (work_height == dst_height))
+        {
+            work_options.filter = UPSCALE_FILTER_NEAREST;  /* whole-number scale on both axes: nothing left to resample */
+        }
+    }
 
     switch(options->backend)
     {
 #ifdef UPSCALE_HAVE_IMAGEMAGICK
-        case UPSCALE_BACKEND_IMAGEMAGICK: { status = Upscale_ImageMagick_Resize(rgba, source->width, source->height, options, dst_width, dst_height, result); } break;
+        case UPSCALE_BACKEND_IMAGEMAGICK: { status = Upscale_ImageMagick_Resize(rgba, work_width, work_height, &work_options, dst_width, dst_height, result); } break;
 #endif
 #ifdef UPSCALE_HAVE_OPENCV
-        case UPSCALE_BACKEND_OPENCV:      { status = Upscale_OpenCV_Resize(rgba, source->width, source->height, options, dst_width, dst_height, result);      } break;
+        case UPSCALE_BACKEND_OPENCV:      { status = Upscale_OpenCV_Resize(rgba, work_width, work_height, &work_options, dst_width, dst_height, result);      } break;
 #endif
         default:                          { status = UPSCALE_ERR_NO_BACKEND; } break;
     }

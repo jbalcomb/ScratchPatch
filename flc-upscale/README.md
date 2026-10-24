@@ -59,10 +59,46 @@ To pass any other buffer, describe it with `struct s_UPSCALE_SOURCE` and call `U
 | `BICUBIC` | `CatromFilter` (Catmull-Rom) | `INTER_CUBIC` |
 | `LANCZOS` | `LanczosFilter` | `INTER_LANCZOS4` |
 | `SUPERRES` | not available | `dnn_superres` neural model (EDSR, ESPCN, FSRCNN or LapSRN) |
+| `AREA` | `BoxFilter` | `INTER_AREA` (averages covered pixels; the shrink step for oversampling) |
 
 To use `SUPERRES`, set `superres_model_path` (for example `ESPCN_x4.pb`) and `superres_model_name` (`"espcn"`).
 It needs OpenCV built with the opencv_contrib `dnn_superres` module. Models are available from
 [opencv_contrib/modules/dnn_superres](https://github.com/opencv/opencv_contrib/tree/master/modules/dnn_superres).
+
+### Aspect ratio
+
+MoM draws 320 × 200 (16:10) for a 4:3 monitor, so each original pixel was 1.2 times taller than it was wide. Set
+`aspect_width` / `aspect_height` to the shape you want the output to have:
+
+```c
+options.scale         = 4;
+options.aspect_width  = 4;                            /* 320x200 -> 1280x960 */
+options.aspect_height = 3;
+options.oversample    = UPSCALE_OVERSAMPLE_INTEGER;
+options.filter        = UPSCALE_FILTER_AREA;          /* or BILINEAR */
+```
+
+One axis is scaled by exactly `scale`, and the other is stretched to match the aspect. The stretched axis always grows,
+never shrinks. A target taller than the source keeps the width exact (320 × 200 at 4:3 gives width × 4 and height × 4.8).
+A target wider than the source keeps the height exact. `Upscale_Destination_Size()` tells you the size without doing any
+work. If you set only one of `dst_width` / `dst_height`, the other side follows the aspect.
+
+The stretched axis needs a fractional factor such as 4.8. On its own, each filter handles that badly: nearest makes rows of
+uneven height (some 4 pixels tall, some 5), and the smooth filters blur the whole image. `UPSCALE_OVERSAMPLE_INTEGER`
+avoids both problems:
+
+1. Every pixel is copied a whole number of times on each axis, rounding each axis's factor up: × 4 across and × 5 down,
+   giving 1280 × 1000. This step does no blending.
+2. The chosen filter shrinks that to the target, here 1000 rows to 960. The width is already exact, so it is untouched.
+
+The axis with the whole-number factor stays pixel-exact. On the other axis, only rows that straddle an edge between two
+colors get blended. With whole-number factors on both axes there is nothing to shrink, so the result is exactly nearest.
+Super-resolution ignores `oversample`, because it already runs the model and then shrinks to fit.
+
+![aspect comparison](doc/aspect_4x3.png)
+
+*A circle drawn for a 4:3 monitor, at 4x. From left to right: no aspect correction (squashed), nearest at 4:3 (uneven
+rows), bilinear at 4:3 (blurred), oversample + area at 4:3.*
 
 ### Transparency
 
@@ -135,7 +171,8 @@ and ImageMagick 7 work. CMake finds MagickWand through pkg-config, and falls bac
    ```
 
 3. To upscale the whole screen, pass `video_page_buffer[n]` as a 320 × 200 `UPSCALE_LAYOUT_ROW_MAJOR` source with
-   `UPSCALE_NO_TRANSPARENCY`.
+   `UPSCALE_NO_TRANSPARENCY`. Add aspect 4:3 with oversampling (see [Aspect ratio](#aspect-ratio)) to get the shape the
+   game had on a CRT.
 
 ## Things to know
 

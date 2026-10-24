@@ -33,6 +33,7 @@ static int Interpolation(int filter)
         case UPSCALE_FILTER_BILINEAR: { return cv::INTER_LINEAR;   } break;
         case UPSCALE_FILTER_BICUBIC:  { return cv::INTER_CUBIC;    } break;
         case UPSCALE_FILTER_LANCZOS:  { return cv::INTER_LANCZOS4; } break;
+        case UPSCALE_FILTER_AREA:     { return cv::INTER_AREA;     } break;
         default:                      { return cv::INTER_NEAREST;  } break;
     }
 }

@@ -57,7 +57,21 @@ enum e_UPSCALE_FILTER
     UPSCALE_FILTER_BILINEAR = 1,
     UPSCALE_FILTER_BICUBIC  = 2,    /* Catmull-Rom on ImageMagick, INTER_CUBIC on OpenCV */
     UPSCALE_FILTER_LANCZOS  = 3,
-    UPSCALE_FILTER_SUPERRES = 4     /* OpenCV dnn_superres only (EDSR/ESPCN/FSRCNN/LapSRN model file) */
+    UPSCALE_FILTER_SUPERRES = 4,    /* OpenCV dnn_superres only (EDSR/ESPCN/FSRCNN/LapSRN model file) */
+    UPSCALE_FILTER_AREA     = 5,    /* pixel-area average (INTER_AREA on OpenCV, Box on ImageMagick); the downscaler for UPSCALE_OVERSAMPLE_INTEGER */
+    UPSCALE_FILTER_COUNT    = 6
+};
+
+/*
+    How the destination size is reached.
+    UPSCALE_OVERSAMPLE_INTEGER: first copy every pixel a whole number of times on each axis (nearest, so no blending), rounding each axis's
+    factor up, then let the filter shrink the result to the destination size. An axis whose factor is already a whole number comes out exact
+    and sharp; only the other axis is resampled, and only by shrinking. Pair it with UPSCALE_FILTER_AREA or UPSCALE_FILTER_BILINEAR.
+*/
+enum e_UPSCALE_OVERSAMPLE
+{
+    UPSCALE_OVERSAMPLE_OFF     = 0,    /* the filter scales straight from the source size */
+    UPSCALE_OVERSAMPLE_INTEGER = 1
 };
 
 /* Order of the pixels in the source buffer. */
@@ -98,11 +112,23 @@ struct s_UPSCALE_OPTIONS
     int scale;                      /* 1 to UPSCALE_MAX_SCALE; used when dst_width / dst_height are 0 */
     int dst_width;                  /* 0 means width * scale */
     int dst_height;                 /* 0 means height * scale */
+    int aspect_width;               /* with aspect_height, the shape of the destination, e.g. 4:3 for 320x200 shown on a 4:3 monitor; 0 keeps */
+    int aspect_height;              /*   the source shape. One axis is scaled by exactly scale; the other is stretched to match (see below) */
+    int oversample;                 /* e_UPSCALE_OVERSAMPLE */
     int encode_png;                 /* nonzero: also fill s_UPSCALE_IMAGE.png */
     const char * superres_model_path;   /* UPSCALE_FILTER_SUPERRES: e.g. "ESPCN_x4.pb" */
     const char * superres_model_name;   /* UPSCALE_FILTER_SUPERRES: "edsr", "espcn", "fsrcnn" or "lapsrn" */
     int superres_model_scale;           /* UPSCALE_FILTER_SUPERRES: the factor the model was trained for; 0 means scale */
 };
+
+/*
+    Destination size, when dst_width and dst_height are 0:
+        no aspect:                        width * scale  x  height * scale
+        aspect taller than the source:    width * scale  x  (width * scale) * aspect_height / aspect_width
+        aspect wider than the source:     (height * scale) * aspect_width / aspect_height  x  height * scale
+    so the stretched axis always grows, never shrinks. 320x200, scale 4, aspect 4:3 -> 1280x960: width x4 exactly, height x4.8.
+    With UPSCALE_OVERSAMPLE_INTEGER that height is first copied x5 (1000) and then shrunk to 960.
+*/
 
 struct s_UPSCALE_IMAGE
 {
@@ -128,6 +154,9 @@ void Upscale_Default_Options(struct s_UPSCALE_OPTIONS * options);
 
 /* Palette expansion only, no resampling: writes width * height * 4 bytes of RGBA (row-major) to rgba. */
 int Upscale_Indexed_To_RGBA(const struct s_UPSCALE_SOURCE * source, uint8_t * rgba);
+
+/* The destination size options give for a width x height source (see above); returns UPSCALE_OK or UPSCALE_ERR_ARGUMENT. */
+int Upscale_Destination_Size(int width, int height, const struct s_UPSCALE_OPTIONS * options, int * dst_width, int * dst_height);
 
 /* The main entry point: expand, resample with options->backend, optionally encode PNG. Free the result with Upscale_Free_Image(). */
 int Upscale_Image(const struct s_UPSCALE_SOURCE * source, const struct s_UPSCALE_OPTIONS * options, struct s_UPSCALE_IMAGE * result);

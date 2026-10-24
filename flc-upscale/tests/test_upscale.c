@@ -42,7 +42,7 @@ static uint8_t test_palette[768];
 static uint8_t test_bitmap[UPSCALE_BITMAP_HEADER_SIZE + (TEST_WIDTH * TEST_HEIGHT)];
 static uint8_t test_row_major[TEST_WIDTH * TEST_HEIGHT];
 
-static const char * filter_names[] = { "nearest", "bilinear", "bicubic", "lanczos", "superres" };
+static const char * filter_names[] = { "nearest", "bilinear", "bicubic", "lanczos", "superres", "area" };
 
 
 
@@ -226,6 +226,108 @@ static void Test_Palette_Expansion(void)
     CHECK(Upscale_Indexed_To_RGBA(&source, from_rows) == UPSCALE_ERR_ARGUMENT, "a stride shorter than a row was accepted");
 }
 
+static void Check_Size(int width, int height, int scale, int aspect_width, int aspect_height, int dst_width, int dst_height, int expected_width, int expected_height)
+{
+    struct s_UPSCALE_OPTIONS options;
+    int out_width = 0;
+    int out_height = 0;
+    int status = 0;
+
+    Upscale_Default_Options(&options);
+    options.scale = scale;
+    options.aspect_width = aspect_width;
+    options.aspect_height = aspect_height;
+    options.dst_width = dst_width;
+    options.dst_height = dst_height;
+    status = Upscale_Destination_Size(width, height, &options, &out_width, &out_height);
+    if(expected_width == 0)
+    {
+        CHECK(status == UPSCALE_ERR_ARGUMENT, "size %dx%d scale %d aspect %d:%d: expected an error, got %dx%d", width, height, scale, aspect_width, aspect_height, out_width, out_height);
+        return;
+    }
+    CHECK((status == UPSCALE_OK) && (out_width == expected_width) && (out_height == expected_height), "size %dx%d scale %d aspect %d:%d dst %dx%d: got %dx%d (status %d), expected %dx%d",
+        width, height, scale, aspect_width, aspect_height, dst_width, dst_height, out_width, out_height, status, expected_width, expected_height);
+}
+
+static void Test_Destination_Size(void)
+{
+    Check_Size(320, 200, 4, 0, 0, 0, 0, 1280, 800);     /* no aspect */
+    Check_Size(320, 200, 4, 4, 3, 0, 0, 1280, 960);     /* 4:3 is taller than 16:10: width x4, height x4.8 */
+    Check_Size(320, 200, 3, 8, 5, 0, 0, 960, 600);      /* the source's own shape */
+    Check_Size(320, 200, 2, 16, 9, 0, 0, 711, 400);     /* 16:9 is wider: height x2, width x2.22 */
+    Check_Size(100, 100, 2, 4, 3, 0, 0, 267, 200);
+    Check_Size(320, 200, 4, 4, 3, 1000, 0, 1000, 750);  /* one side given: the other follows the aspect */
+    Check_Size(320, 200, 4, 4, 3, 0, 900, 1200, 900);
+    Check_Size(320, 200, 4, 4, 0, 0, 0, 0, 0);          /* half an aspect is an error */
+    Check_Size(320, 200, 16, 1, 1, 0, 0, 0, 0);         /* height would be x25.6, past UPSCALE_MAX_SCALE */
+}
+
+/*
+    Aspect 1:1 on the 12x10 picture at scale 4: width x4 exactly (48), height x4.8 (48), reached by copying rows x5 (50) and shrinking.
+    Across, every output pixel must be an exact copy of its source pixel: groups of 4 identical columns and a hard red|transparent edge.
+    Only the vertical direction may blend.
+*/
+static void Test_Aspect_Oversample(int backend, int filter, const char * output_dir)
+{
+    struct s_UPSCALE_OPTIONS options;
+    struct s_UPSCALE_IMAGE image;
+    uint8_t expected[4];
+    const uint8_t * row = NULL;
+    char label[64];
+    char path[1024];
+    int itr_x = 0;
+    int itr_y = 0;
+    int column_mismatches = 0;
+    int soft_edges = 0;
+    int status = 0;
+
+    snprintf(label, sizeof(label), "%s/aspect-1:1-oversample-%s", Upscale_Backend_Name(backend), filter_names[filter]);
+    Upscale_Default_Options(&options);
+    options.backend = backend;
+    options.filter = filter;
+    options.scale = TEST_SCALE;
+    options.aspect_width = 1;
+    options.aspect_height = 1;
+    options.oversample = UPSCALE_OVERSAMPLE_INTEGER;
+
+    status = Upscale_Bitmap(test_bitmap, test_palette, &options, &image);
+    CHECK(status == UPSCALE_OK, "%s: returned %d: %s", label, status, Upscale_Last_Error());
+    if(status != UPSCALE_OK)
+    {
+        return;
+    }
+    CHECK((image.width == 48) && (image.height == 48), "%s: size %dx%d, expected 48x48", label, image.width, image.height);
+    Check_PNG(&image, label);
+
+    Expected_RGBA(5, 0, expected);
+    for(itr_y = 0; itr_y < image.height; itr_y++)
+    {
+        row = image.rgba + ((size_t)itr_y * image.width * 4);
+        for(itr_x = 0; itr_x < image.width; itr_x++)
+        {
+            if(memcmp(row + (itr_x * 4), row + ((itr_x / TEST_SCALE) * TEST_SCALE * 4), 4) != 0)
+            {
+                column_mismatches++;
+            }
+        }
+        /* rows 0-30 come only from red source rows (0-6 copied x5 = 0-34, shrunk by 50/48) */
+        if((itr_y <= 30) && ((memcmp(row + (23 * 4), expected, 4) != 0) || (row[(24 * 4) + 3] != 0)))
+        {
+            soft_edges++;
+        }
+    }
+    CHECK(column_mismatches == 0, "%s: %d pixels differ from the first column of their group; the exact axis was resampled", label, column_mismatches);
+    CHECK(soft_edges == 0, "%s: %d rows have a blended red|transparent edge at x 23|24", label, soft_edges);
+
+    if(output_dir != NULL)
+    {
+        snprintf(path, sizeof(path), "%s/test_%s_aspect_1x1_oversample_%s.png", output_dir, Upscale_Backend_Name(backend), filter_names[filter]);
+        CHECK(Upscale_Write_PNG_File(&image, path) == UPSCALE_OK, "%s: write %s: %s", label, path, Upscale_Last_Error());
+    }
+    Upscale_Free_Image(&image);
+    printf("ok   %s\n", label);
+}
+
 static void Test_Backend(int backend, const char * output_dir)
 {
     struct s_UPSCALE_OPTIONS options;
@@ -299,6 +401,25 @@ static void Test_Backend(int backend, const char * output_dir)
         printf("ok   %s\n", label);
     }
 
+    Test_Aspect_Oversample(backend, UPSCALE_FILTER_AREA, output_dir);
+    Test_Aspect_Oversample(backend, UPSCALE_FILTER_BILINEAR, output_dir);
+
+    /* oversample with whole-number factors on both axes leaves nothing to filter: the result is exactly nearest */
+    snprintf(label, sizeof(label), "%s/oversample-integer", Upscale_Backend_Name(backend));
+    Upscale_Default_Options(&options);
+    options.backend = backend;
+    options.filter = UPSCALE_FILTER_LANCZOS;
+    options.scale = TEST_SCALE;
+    options.oversample = UPSCALE_OVERSAMPLE_INTEGER;
+    status = Upscale_Bitmap(test_bitmap, test_palette, &options, &image);
+    CHECK(status == UPSCALE_OK, "%s: returned %d: %s", label, status, Upscale_Last_Error());
+    if(status == UPSCALE_OK)
+    {
+        Check_Nearest(&image, label);
+        Upscale_Free_Image(&image);
+        printf("ok   %s\n", label);
+    }
+
     /* UPSCALE_SUPERRES_MODEL=path/ESPCN_x4.pb (and optionally UPSCALE_SUPERRES_NAME=espcn) runs a real model */
     if((Upscale_Is_Filter_Supported(backend, UPSCALE_FILTER_SUPERRES) != 0) && (getenv("UPSCALE_SUPERRES_MODEL") != NULL))
     {
@@ -345,6 +466,8 @@ int main(int argc, char ** argv)
 
     Test_Palette_Expansion();
     printf("ok   palette expansion and layouts\n");
+    Test_Destination_Size();
+    printf("ok   destination sizes\n");
 
     Test_Backend(UPSCALE_BACKEND_IMAGEMAGICK, output_dir);
     Test_Backend(UPSCALE_BACKEND_OPENCV, output_dir);
