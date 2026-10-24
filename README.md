@@ -6,6 +6,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 |---|---|
 | [taskdeck/](taskdeck/) | TaskDeck: an Android app (Python/Flet) that runs pluggable jobs, with a command palette and pinned tiles. First real job: Daily Log → Google Sheet. |
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
+| [flc-upscale/](flc-upscale/) | FLC Upscale: a C library for ReMoM that upscales 8-bit palettized FLIC frames to 32-bit PNG with ImageMagick or OpenCV. |
 
 ## Conventions
 

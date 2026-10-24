@@ -1,0 +1,26 @@
+name: FLC Upscale CI
+
+on:
+  push:
+    paths:
+      - "flc-upscale/**"
+      - ".github/workflows/flc-upscale-ci.yml"
+  pull_request:
+    paths:
+      - "flc-upscale/**"
+      - ".github/workflows/flc-upscale-ci.yml"
+
+defaults:
+  run:
+    working-directory: flc-upscale
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmagickwand-dev libopencv-dev
+      # ON, not AUTO: a backend that silently drops out would make the tests skip it and still pass
+      - run: cmake -S . -B build -DUPSCALE_WITH_IMAGEMAGICK=ON -DUPSCALE_WITH_OPENCV=ON
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
