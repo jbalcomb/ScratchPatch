@@ -5,21 +5,48 @@ backfill, then scheduled runs that only fetch what's new.
 
 Pure Python 3.10+ standard library: no dependencies to install.
 
+## Setup
+
+1. **Make a bot** and add it to the server. In a Claude Code session in this repo, ask for it:
+   the `discord-bot` skill (`.claude/skills/discord-bot/`) handles the parts Discord allows to be
+   automated, and tells you the few clicks it doesn't.
+2. **Install the scheduled sync.** The script asks for the token, saves it to
+   `~/.config/discord-capture/token` (readable only by you), checks it against Discord, and
+   installs the job:
+
+   ```powershell
+   # Windows: a Task Scheduler task, hourly by default (-Minutes 30, -NewToken)
+   powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+   ```
+   ```bash
+   # Linux: a crontab line, hourly by default (scripts/install-linux.sh 30 [--new-token])
+   bash scripts/install-linux.sh
+   ```
+
+   Rerunning either one replaces the job. `scripts/uninstall-windows.ps1` and
+   `scripts/uninstall-linux.sh` remove it, and leave the data and the token in place.
+3. **Run the historic catch-up once**, by hand (the installer prints the exact command). It's
+   resumable, and the scheduled sync skips its turn while a backfill holds the lock.
+
+The Windows task only runs while you're logged on (a locked screen is fine), and either
+scheduler only runs while the machine is on.
+
 ## Usage
 
 ```powershell
-$env:DISCORD_BOT_TOKEN = "..."            # or set it permanently: setx DISCORD_BOT_TOKEN "..."
-$env:PYTHONPATH = "src"
-
+cd src
 python -m discord_capture channels        # what can the bot see?
 python -m discord_capture backfill -v     # everything, all the way back; safe to stop and rerun
-python -m discord_capture sync            # only new messages, for the scheduler
+python -m discord_capture sync            # only new messages (this is what the scheduler runs)
 python -m discord_capture status          # per-channel counts and backfill progress
 ```
 
 Options: `--guild ID` / `--channel ID` (repeatable) narrow the scope, `--db PATH` picks the file
-(default `data/discord.sqlite3`, git-ignored), `--min-interval S` sets the floor between requests
-(default 1 s), and `--max-pages N` caps each channel's backfill per run.
+(default `data/discord.sqlite3`; the scripts use `discord-capture/data/`, git-ignored),
+`--min-interval S` sets the floor between requests (default 1 s), `--max-pages N` caps each
+channel's backfill per run, and `--log-file PATH` appends the log to a file. The token comes from
+`DISCORD_BOT_TOKEN` if set, otherwise from `--token-file` (default `~/.config/discord-capture/token`).
+Only one capture runs against a database at a time: a second one exits right away.
 
 Tests: `python -m unittest discover -s tests` with `PYTHONPATH=src` (pytest also works).
 
@@ -52,20 +79,31 @@ globally, and an IP ban from Cloudflare after 10,000 invalid (401/403/429) reque
 
 At 1 request/s, a backfill pulls about 360,000 messages an hour.
 
-## Scheduling (Windows)
+## Later: ScyllaDB
 
-```powershell
-schtasks /Create /TN "Discord Capture sync" /SC HOURLY /TR ^
-  "cmd /c cd /d C:\develai\ScratchPatch\discord-capture && set PYTHONPATH=src && python -m discord_capture sync >> data\sync.log 2>&1"
-```
+Discord itself keeps messages in ScyllaDB (it moved from Cassandra in 2022). The plan for
+when this outgrows one SQLite file:
 
-Then open the task in Task Scheduler and set "If the task is already running: Do not start a new
-instance". That keeps a slow sync, or the backfill, from overlapping with the next run.
-`DISCORD_BOT_TOKEN` has to be set for the account the task runs as (`setx` does that).
+* **Same interface, second backend.** Capture code only calls `Store` methods (`upsert_guild`,
+  `upsert_channel`, `save_messages`, `state`, `set_state`, `commit`, `summary`). Add a
+  `ScyllaStore` with those methods, using `scylla-driver`, and pick one with `--store`.
+* **Discord's partitioning.** `messages` is keyed `PRIMARY KEY ((channel_id, bucket), id)` with
+  `CLUSTERING ORDER BY (id DESC)`. `bucket` is a fixed 10-day window computed from the snowflake
+  (`(id >> 22) // 864_000_000`), so a busy channel can't grow one partition without limit, and
+  "latest messages in a channel" reads a single partition.
+* **What carries over:** inserts in Scylla are upserts, so re-fetching a page is already safe,
+  and `commit` becomes a no-op. `summary`'s `COUNT(*)` per channel is expensive there, so keep a
+  running count in `sync_state` instead.
+* **Migration:** every row's `raw` JSON is the full Discord object, so a one-off script can
+  replay the SQLite file into Scylla.
+
+For scale: SQLite comfortably holds tens of millions of messages for one reader and one writer.
+Scylla pays off once several processes write at once, other services query the data, or the
+volume is far beyond that.
 
 ## Open questions
 
-1. **Bot or user account?** This assumes a bot. Automating a normal user account ("self-bot")
+1. **Bot or user account?** This uses a bot. Automating a normal user account ("self-bot")
    is against Discord's Terms of Service and gets accounts banned. If you can't add a bot to
    the server, you can still use Discord's own data export (Settings → Data & Privacy), but that
    only covers your own messages.
@@ -82,8 +120,8 @@ instance". That keeps a slow sync, or the backfill, from overlapping with the ne
    an old message, a deletion or a change in reaction counts is missed. If any of that matters,
    the answer is a small always-on gateway listener alongside this, or a periodic re-scan of
    recent days.
-7. **How often to sync, and where it runs.** Hourly from this PC means it only runs while the
-   PC is on. Every run currently repeats discovery, about 3 requests per server plus 1 per
+7. **How often to sync, and where it runs.** A scheduler on this PC only runs while the PC is
+   on. A small Linux box or VM that's always on is the dependable home. Every run currently repeats discovery, about 3 requests per server plus 1 per
    thread-capable channel, which is fine for a few servers.
 8. **What's it for?** Search, archiving, feeding an LLM or analytics? The answer decides
    whether we add SQLite FTS5 full-text search, an export format, or a move to Postgres later.
