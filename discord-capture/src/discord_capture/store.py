@@ -164,7 +164,9 @@ class Store:
 
     def summary(self):
         return self.db.execute(
-            "SELECT c.id, c.name, c.type, s.backfill_done, s.last_error, s.updated_at, "
-            "(SELECT COUNT(*) FROM messages m WHERE m.channel_id = c.id) AS messages "
-            "FROM channels c LEFT JOIN sync_state s ON s.channel_id = c.id ORDER BY c.guild_id, c.name"
+            "SELECT c.id, c.name, c.type, c.guild_id, g.name AS guild, s.backfill_done, s.last_error, s.updated_at, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.channel_id = c.id) AS messages, "
+            "(SELECT MAX(created_at) FROM messages m WHERE m.channel_id = c.id) AS newest_at "
+            "FROM channels c LEFT JOIN sync_state s ON s.channel_id = c.id LEFT JOIN guilds g ON g.id = c.guild_id "
+            "ORDER BY c.guild_id, c.name"
         ).fetchall()

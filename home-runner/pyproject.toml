@@ -1,0 +1,14 @@
+[project]
+name = "home-runner"
+version = "0.1.0"
+description = "Authenticated HTTP service that runs a fixed list of jobs on the workstation, for TaskDeck."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

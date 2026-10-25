@@ -1,0 +1,36 @@
+# Jobs the runner will start. A client can only name one of these and fill in its
+# parameters; it can never send a command line of its own.
+#
+#   title     shown in the app
+#   command   argv list, run without a shell. {param} is replaced by that parameter's
+#             value and {python} by the runner's own Python.
+#   cwd       working directory, relative to this file
+#   params    name = regex the whole value must match. Every parameter is required.
+#   quick     true: run at once and return the output (short, read-only commands).
+#             false (default): queue it; queued runs go one at a time, in order.
+#   timeout   seconds before the run is stopped (quick default 60; queued: none)
+
+[jobs.discord-channels]
+title = "Discord: channels and capture progress"
+cwd = "../discord-capture/src"
+command = ["{python}", "-m", "discord_capture", "status", "--json", "--db", "../data/discord.sqlite3"]
+quick = true
+
+[jobs.discord-backfill]
+title = "Discord: capture a channel's full history"
+cwd = "../discord-capture/src"
+command = ["{python}", "-m", "discord_capture", "backfill", "--channel", "{channel}",
+           "--db", "../data/discord.sqlite3", "-v"]
+params = { channel = '[0-9]{17,20}' }
+
+[jobs.discord-sync]
+title = "Discord: fetch a channel's new messages"
+cwd = "../discord-capture/src"
+command = ["{python}", "-m", "discord_capture", "sync", "--channel", "{channel}",
+           "--db", "../data/discord.sqlite3", "-v"]
+params = { channel = '[0-9]{17,20}' }
+
+[jobs.discord-sync-all]
+title = "Discord: fetch new messages in every channel"
+cwd = "../discord-capture/src"
+command = ["{python}", "-m", "discord_capture", "sync", "--db", "../data/discord.sqlite3", "-v"]

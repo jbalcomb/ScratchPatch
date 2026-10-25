@@ -11,9 +11,9 @@ scheduled task and cron job use.
 """
 
 import argparse
+import json
 import logging
 import os
-import sys
 from pathlib import Path
 
 from .capture import capture_channel, discover
@@ -38,6 +38,7 @@ def main(argv=None):
     parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_FILE,
                         help="read the bot token from here if DISCORD_BOT_TOKEN is unset (default: %(default)s)")
     parser.add_argument("--log-file", help="append the log here instead of printing it")
+    parser.add_argument("--json", action="store_true", help="status: print JSON instead of a table")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -48,6 +49,9 @@ def main(argv=None):
     store = Store(args.db)
     try:
         if args.command == "status":
+            if args.json:
+                print(json.dumps([_status_entry(row) for row in store.summary()]))
+                return 0
             for row in store.summary():
                 done = "done" if row["backfill_done"] else ("-" if row["updated_at"] is None else "partial")
                 print(f"{row['id']:>20}  {CHANNEL_TYPES.get(row['type'], row['type']):<14} "
@@ -60,8 +64,8 @@ def main(argv=None):
             return 2
         lock = _lock(Path(args.db).with_suffix(".lock"))
         if lock is None:
-            logging.warning("another capture is already running against %s; not starting", args.db)
-            return 0
+            _fail(f"Another capture is already running against {args.db}; try again when it's done.")
+            return 5
         client = Client(token, min_interval=args.min_interval)
         try:
             return _run(args, client, store)
@@ -79,6 +83,17 @@ def main(argv=None):
             lock.close()
     finally:
         store.close()
+
+
+def _status_entry(row):
+    # IDs as strings: snowflakes don't fit in a JavaScript number, and Discord sends them as strings too.
+    return {
+        "id": str(row["id"]), "name": row["name"], "type": CHANNEL_TYPES.get(row["type"], row["type"]),
+        "guild_id": str(row["guild_id"]) if row["guild_id"] is not None else None, "guild": row["guild"],
+        "messages": row["messages"], "newest_at": row["newest_at"],
+        "backfill": "done" if row["backfill_done"] else ("not started" if row["updated_at"] is None else "partial"),
+        "error": row["last_error"],
+    }
 
 
 def _token(path):
@@ -108,10 +123,9 @@ def _lock(path):
 
 
 def _fail(message):
-    # Under pythonw (the Windows scheduled task) there is no stderr; the log file has it.
+    # Logging goes to stderr, or to --log-file (which the scheduled jobs use: under
+    # pythonw there's no stderr at all).
     logging.error(message)
-    if sys.stderr:
-        print(message, file=sys.stderr)
 
 
 def _run(args, client, store):

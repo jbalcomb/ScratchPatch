@@ -104,5 +104,27 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual((state["oldest_id"], state["backfill_done"]), (201, 0))
 
 
+class StatusTests(unittest.TestCase):
+    def test_status_json_lists_channels_with_progress(self):
+        import io, os, tempfile
+        from contextlib import redirect_stdout
+        from discord_capture.cli import main
+
+        path = os.path.join(tempfile.mkdtemp(), "d.sqlite3")
+        store = Store(path)
+        store.upsert_guild({"id": "5", "name": "Home"})
+        store.upsert_channel({"id": "1", "guild_id": "5", "type": 0, "name": "general"})
+        store.save_messages("5", [msg(10), msg(11)])
+        store.set_state(1, newest_id=11, oldest_id=10, backfill_done=0)
+        store.commit()
+        store.close()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(main(["status", "--json", "--db", path]), 0)
+        [entry] = json.loads(out.getvalue())
+        self.assertEqual((entry["id"], entry["name"], entry["guild"], entry["messages"], entry["backfill"]),
+                         ("1", "general", "Home", 2, "partial"))
+
+
 if __name__ == "__main__":
     unittest.main()

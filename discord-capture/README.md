@@ -46,7 +46,10 @@ Options: `--guild ID` / `--channel ID` (repeatable) narrow the scope, `--db PATH
 `--min-interval S` sets the floor between requests (default 1 s), `--max-pages N` caps each
 channel's backfill per run, and `--log-file PATH` appends the log to a file. The token comes from
 `DISCORD_BOT_TOKEN` if set, otherwise from `--token-file` (default `~/.config/discord-capture/token`).
-Only one capture runs against a database at a time: a second one exits right away.
+Only one capture runs against a database at a time: a second one exits right away with code 5.
+
+To start captures from the phone, [Home Runner](../home-runner/) runs `backfill`/`sync` for one
+channel on request, and TaskDeck's *Discord: Capture Channel* job is the front end.
 
 Tests: `python -m unittest discover -s tests` with `PYTHONPATH=src` (pytest also works).
 

@@ -46,6 +46,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 | Job | Notes |
 |---|---|
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
+| **Home Jobs**, **Discord: Capture Channel** | Start jobs on the workstation and follow them: pick a Discord channel by name, see how much is captured, start a full-history or new-messages capture, then watch its log or cancel it. Needs [Home Runner](../home-runner/) on the workstation, reachable over Tailscale. |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
 Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:
