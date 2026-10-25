@@ -3,30 +3,38 @@
 Unpack zip, 7-Zip, RAR (and tar/gz) archives on the phone, into a folder on the phone, Google Drive or
 Dropbox, while TaskDeck stays usable for other jobs.
 
-Status: **proposal for review.** Nothing here is implemented. Open decisions are marked **DECIDE**.
+Status: **decided, not built.** Decisions are in §5; findings below are updated to match.
 
 ---
 
 ## 1. What has to be true for this to work (findings)
 
-### 1.1 Formats
+### 1.1 Formats: 7-Zip's core library
 
-| Format | How | Ships as | Notes |
-|---|---|---|---|
-| .zip | Python `zipfile` (stdlib) | live update | Deflate, bzip2, LZMA. Password (ZipCrypto) works, slow but fine. AES-encrypted zip needs `pyzipper` + `pycryptodomex` (Flet has an Android build of pycryptodomex). |
-| .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz, .gz, .bz2, .xz | Python `tarfile` / `gzip` / `bz2` / `lzma` (stdlib) | live update | |
-| .7z | **libarchive** (C library) via `libarchive-c` (pure-Python binding) | **new APK** | `py7zr` is not an option: it needs pyppmd, pybcj, inflate64 and zstd, none built for Android (checked Flet's mobile-forge recipes and PyPI). |
-| .rar (RAR4, RAR5) | **libarchive** | **new APK** | There is no Python RAR decompressor. libarchive reads most RAR4/RAR5. |
+Password-protected 7z and RAR are required, which rules out libarchive (it can't decrypt either) and
+py7zr (native dependencies not built for Android). So TaskDeck uses **7-Zip's own core library**
+(the open-source engine behind 7-Zip; LGPL, plus the unRAR clause that only forbids creating RAR files).
+It reads every format we want, with passwords:
 
-**libarchive is the one native piece.** It covers 7z and RAR (and every format above), but it is not in
-Flet's Android package set, so we build it ourselves: a mobile-forge recipe (or NDK CMake build) in CI that
-produces an Android arm64 wheel with `libarchive.so`, added to the APK like the fingerprint plugins.
-This is the biggest single task in the project.
+| Format | Password-protected |
+|---|---|
+| .zip | ZipCrypto and AES |
+| .7z | AES |
+| .rar (RAR4, RAR5) | yes (incl. encrypted file names) |
+| .tar, .gz/.tgz, .bz2, .xz | n/a |
 
-Known gaps even with libarchive: **encrypted 7z and encrypted RAR are not supported** (libarchive can list
-them but not decrypt). Multi-volume RAR/7z (`.part1.rar`, `.7z.001`): libarchive handles some cases; treat
-as "later". **DECIDE**: do you need password-protected 7z/RAR? If yes, that is a second native library
-(RARLAB's unrar source, and 7-Zip's) and much more work.
+How it is called: the library exposes C++ (COM-style) interfaces, not a C API, so we add a **small C++
+shim** with a plain C API (open archive with optional password; list entries with sizes; extract to a
+folder, one entry at a time, with progress and cancel callbacks; clear errors for wrong password /
+damaged archive). Python calls the shim through `ctypes`. 7-Zip + shim are compiled for Android arm64 with
+the NDK in the APK workflow (**new APK**).
+
+**To prove first (small test build):** how the compiled `.so` gets into Flet's APK. Plan A: package it as
+a Python wheel built with Flet's mobile-forge tooling and add it as a dependency. Plan B: a small custom Flet
+extension that ships it as a native library, located at runtime and loaded with `ctypes`.
+
+Zip/tar could also be done with Python's stdlib, but one engine for everything keeps behaviour (overwrite,
+progress, errors, safety checks) identical across formats.
 
 ### 1.2 Reaching files on the phone
 
@@ -45,9 +53,9 @@ as "later". **DECIDE**: do you need password-protected 7z/RAR? If yes, that is a
 * If you switch to another app, Android usually lets TaskDeck finish, but may stop it after a while or under
   memory pressure, and may pause network (uploads) when the screen is off. The guaranteed fix is an Android
   **foreground service** (the "TaskDeck is extracting…" notification). There is no Flet plugin for it; it would
-  be our own native plugin. **DECIDE**: accept "keep TaskDeck open or recent" for v1, or build the service.
+  be our own native plugin. **Decided:** v1 without it ("keep TaskDeck open or recent").
 * A finished/failed extraction is announced inside TaskDeck. A system notification needs a native plugin too
-  (same decision).
+  (later, with the foreground service).
 
 ### 1.4 Google Drive and Dropbox: yes, new credentials code
 
@@ -62,13 +70,15 @@ in (OAuth).
 | One-time setup by you | In the `scratchpatch` Cloud project: OAuth consent screen + an OAuth client of type "TVs and Limited Input devices". Publish the consent screen "In production" (drive.file is a non-sensitive scope, so no Google review), otherwise sign-ins expire after 7 days. | Create an app in the Dropbox App Console (Scoped access; Full Dropbox or App folder; permissions files.content.write + files.metadata.read). Copy the app key. |
 | Uploads | Resumable upload; any size. | Single call up to 150 MB, upload sessions above that. |
 
-**DECIDE (Drive):** accept `drive.file` (extract into a new folder TaskDeck creates in My Drive, or a folder
-TaskDeck created before; you can move it in Drive afterwards), or get full Drive browsing. Full browsing
-needs the restricted `drive` scope, which device sign-in doesn't allow: it means a native Google Sign-In
-plugin plus Google's security review for restricted scopes. Recommendation: `drive.file`.
+**Decided (Drive): `drive.file` now, full Drive planned.** v1 extracts into a new folder TaskDeck creates in
+My Drive (or one it created before); you move it in Drive if needed. **Planned (b):** full Drive browsing
+needs the restricted `drive` scope, which device sign-in doesn't allow: a native Google Sign-In plugin plus
+Google's security review for restricted scopes. To keep that a drop-in change, the Drive destination is
+written against the "destination" interface (list folders / make folder / upload) with the access level
+as a setting, so (b) only changes the sign-in and the folder list.
 
-**DECIDE (Dropbox):** Full Dropbox (browse anywhere) or App folder (safer; everything lands in
-`Dropbox/Apps/TaskDeck/`). Recommendation: Full Dropbox, since you want to pick destinations.
+**Decided (Dropbox): Full Dropbox** (browse and pick any folder). Dropbox app created with "Full Dropbox"
+access, permissions files.content.write + files.metadata.read.
 
 **New code (shared, not just for this job):**
 
@@ -96,7 +106,7 @@ plugin plus Google's security review for restricted scopes. Recommendation: `dri
 
 ```
 Pick archive → (quick scan: format, files, size, encrypted?) → Choose destination → Extract
-      → runs in background (progress on the job screen and on Home) → Done: Open folder / Share / Delete archive
+      → runs in background (progress on the job screen and on Home) → Done: Open folder
 ```
 
 Readiness checks (shown before Extract is allowed, like the Daily Log): All files access granted;
@@ -131,17 +141,19 @@ a 6" screen, all text fits two lines.
 │ │                    [Change…] │ │
 │ └──────────────────────────────┘ │
 │                                  │
-│ ▸ Options                        │
-│   If a file already exists:      │
-│   (•) Ask  ( ) Replace           │
-│   ( ) Skip ( ) Keep both         │
-│   Password: [__________] (only   │
-│   shown for encrypted archives)  │
+│ Password: [__________]           │
+│ (only for encrypted archives)    │
+│ Existing files are replaced.     │
 │                                  │
 │ [ Extract ]                      │
 └──────────────────────────────────┘
 ```
 
+* **Existing files are overwritten** (decided), stated on the screen so it's never a surprise. No other
+  conflict options in v1.
+* **Password**: the field appears when the quick scan finds encryption (7z/RAR with encrypted names can't be
+  listed until the password is entered: then the card says "Encrypted archive: enter the password to see
+  its contents"). Wrong password: "Wrong password." right under the field.
 * **Empty state** (no archive yet): one big **[Browse for an archive]** button and a "Recent archives" list
   (last 5, with size and date). Tapping Extract archive from the palette lands here.
 * After picking: the quick scan fills in the card (fast: reads only the archive index). If the format isn't
@@ -172,8 +184,8 @@ For cloud destinations two lines: "Unpacking…" and "Uploading to Google Drive�
 ```
 │ ✓ Extracted 412 files (2.3 GB)   │
 │   to Phone › Download › photos-2026
-│ [Open folder] [Share] [Delete archive…]
-│ 3 files skipped (already there)  │
+│ [Open folder]                    │
+│ 3 files replaced                 │
 ```
 
 **Failed:** red card with what happened and what to do ("Out of space: needs 2.3 GB, 1.1 GB free. Free up
@@ -245,9 +257,9 @@ Modelled on a normal "Save as" dialog.
   **Recent** destinations as the first chip when there are any.
 * **Not connected** cloud tab: an explainer and **[Connect Google Drive]** / **[Connect Dropbox]** (§3.6),
   then it continues browsing.
-* **Google Drive with `drive.file`:** the tab shows "My Drive" with only the folders TaskDeck created, and a
-  note: "TaskDeck can only see folders it created. New folders are made in My Drive." (If full Drive access
-  is chosen instead, it browses normally.)
+* **Google Drive (v1, `drive.file`):** the tab shows "My Drive" with only the folders TaskDeck created, and a
+  note: "TaskDeck can only see folders it created. New folders are made in My Drive." (With full access,
+  planned, it browses normally.)
 * "Will extract to" always shows the full final path; **Use this** returns to the job screen.
 
 ### 3.6 Settings → Accounts (new section)
@@ -273,22 +285,23 @@ with the fix.
 
 ---
 
-## 4. Build order (proposal)
+## 4. Build order
 
-1. Background tasks (core) + phone browser + zip/tar extraction + All files access. Works with a new APK
-   (permission plugin), zip/tar only.
-2. libarchive Android build in CI → 7z + RAR (new APK).
-3. Connected accounts + Dropbox destination (live update once the accounts code exists).
-4. Google Drive destination (needs your OAuth client setup first).
-5. Optional: foreground service + system notifications (native plugin, new APK).
+1. **Prove the packaging**: 7-Zip core + C shim compiled for Android, loaded on the phone, lists an archive
+   (test APK). Decides plan A or B in §1.1.
+2. Background tasks (core) + phone browser + All files access + extraction of every format via the shim,
+   with passwords and overwrite (new APK).
+3. Connected accounts + Dropbox destination, Full Dropbox (live update).
+4. Google Drive destination, `drive.file` (needs your OAuth client setup first; live update).
+5. Later: full Drive access (native Google Sign-In + Google review); foreground service + system
+   notifications.
 
-## 5. Decisions needed
+## 5. Decisions
 
-1. Password-protected 7z/RAR needed? (no → libarchive is enough)
-2. Leaving TaskDeck during long extractions: v1 without a foreground service OK?
-3. Google Drive: `drive.file` (TaskDeck-created folders only) OK?
-4. Dropbox: Full Dropbox or App folder?
-5. When a file already exists: default **Ask**? (or Keep both)
-6. After extracting: offer **Delete archive** (with confirmation)? Anything else (open folder, share)?
-7. Also accept archives **shared to TaskDeck** from other apps ("Open with TaskDeck")? Needs Android intent
-   filters (APK change); could ride along with step 1.
+1. Password-protected 7z/RAR: **needed** → 7-Zip core library + C shim (§1.1).
+2. Leaving TaskDeck during long extractions: **v1 without a foreground service.**
+3. Google Drive: **`drive.file` now, plan for full Drive** (§1.4).
+4. Dropbox: **Full Dropbox.**
+5. Existing files: **overwrite.**
+6. Delete archive afterwards: **no.**
+7. "Open with TaskDeck" from other apps: **no.**
