@@ -167,10 +167,8 @@ def plan(values: list[list[Any]]) -> Plan:
         notes.append("Put the rows in date order.")
     if undated and kept and notes:
         notes.append(f"Move the row{'s' * (len(undated) != 1)} without a readable date to the end.")
+    # Only what reconciling can't do itself. Empty cells are normal (days off, older entries).
     remarks = [f"Row {n} has no readable date (“{str(cells[0]).strip()}”); fix it by hand." for n, cells in undated]
-    required = [c.number - 1 for c in COLUMNS if not c.optional]
-    remarks += [f"Row {n} ({format_date(d)}) is missing values; check it by hand."
-                for d, n, cells in sorted(kept, key=lambda k: k[1]) if any(_key(i, cells[i]) == "" for i in required)]
 
     rows = [cells for _, _, cells in kept] + [cells for _, cells in undated]
     return Plan(rows, span, width, notes, remarks)

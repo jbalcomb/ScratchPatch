@@ -218,8 +218,7 @@ def test_plan_for_the_messy_sheet():
     assert [r[0] for r in plan.rows] == ["10/15/2026", "10/16/2026", "10/18/2026"]
     assert plan.rows[0] == DAY15  # the hand-typed copy is kept
     assert plan.span == 44
-    assert plan.remarks == ["Row 42 (10/18/2026) is missing values; check it by hand.",
-                            "Row 44 (10/16/2026) is missing values; check it by hand."]
+    assert plan.remarks == []  # half-empty rows are normal (days off), not something to report
 
 
 def test_plan_keeps_the_more_complete_of_two_different_rows():
@@ -408,3 +407,9 @@ def test_plan_accepts_dates_without_leading_zeros():
     assert not plan.changed  # the sheet's own date format, not a problem
     assert reconcile.plan([HEADERS, ["2026-10-03"] + DAY15[1:]]).changes == [
         "Row 2: write the date “2026-10-03” as 10/3/2026."]
+
+
+def test_tidy_sheet_with_days_off_reports_nothing():
+    days = ["9/3/2026", "9/7/2026", "09/12/2026", "10/03/2026", "10/4/2026"]
+    plan = reconcile.plan([HEADERS] + [[d, "-"] + [""] * 7 + ["-"] for d in days])
+    assert not plan.changed and plan.remarks == []

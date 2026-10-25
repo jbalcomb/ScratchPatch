@@ -92,7 +92,7 @@ phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_l
 * **Reconcile Daily Log sheet** (a second job, using the same settings) checks the tab and previews the fixes:
   removes blank rows, keeps one row per date (identical copies: the first; differing copies: the most
   complete, listing what differs), rewrites dates typed as text in another form (e.g. 2026-10-18) as M/D/YYYY, and sorts by date. Rows without a readable
-  date are kept at the end; incomplete rows are pointed out, not changed. **Apply fixes** first copies the
+  date are kept at the end and pointed out. Empty cells are left alone. **Apply fixes** first copies the
   tab to a `Backup <date time>` tab, refuses if the sheet changed since the preview, then rewrites rows 2
   onward. Formulas are kept.
 * Opening **Daily Log to Sheet** shows a "needs tidying" heads-up with a button to the reconcile job when
