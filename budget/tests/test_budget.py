@@ -31,7 +31,7 @@ def args_for(tmp_path, llm_url=None, **kw):
     rules = tmp_path / "rules.txt"
     if not rules.exists():
         rules.write_text(RULES)
-    ns = dict(db=tmp_path / "b.db", rules=rules, suggestions=tmp_path / "sugg.txt", llm_url=llm_url, llm_key=None,
+    ns = dict(db=tmp_path / "b.db", rules=rules, suggestions=tmp_path / "sugg.txt", llm_url=llm_url, llm_key=None, llm_model=None,
               folder=tmp_path / "drop", interval=0, once=True)
     ns.update(kw)
     return type("Args", (), ns)()

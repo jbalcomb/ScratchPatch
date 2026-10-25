@@ -1,6 +1,6 @@
 """Upload page for the budget drop folder, plus the watcher, in one process.
 
-    python budget/web.py                 # http://<this machine>:8090
+    python budget/web.py                 # http://<this machine>:8092
     python budget/web.py --port 8091
 
 An upload is checked (it must parse as a Bank of America export), then saved into the drop folder,
@@ -149,7 +149,7 @@ def make_handler(drop):
 def main(argv=None):
     p = argparse.ArgumentParser(description="Budget upload page + drop folder watcher")
     p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=int(os.environ.get("BUDGET_PORT", 8090)))
+    p.add_argument("--port", type=int, default=int(os.environ.get("BUDGET_PORT", 8092)))
     p.add_argument("--no-watch", action="store_true", help="serve the page only (another process watches)")
     args, rest = p.parse_known_args(argv)
     drop = os.environ.get("BUDGET_DROP", budget.DEFAULT_DROP)

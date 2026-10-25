@@ -9,7 +9,7 @@ Part of [PERSONAL_STACK_PLAN.md](../PERSONAL_STACK_PLAN.md) (first task).
 
 ```bash
 python budget/budget.py watch          # watch the drop folder; Ctrl+C to stop
-python budget/web.py                   # or: the upload page on port 8090, plus the watcher
+python budget/web.py                   # or: the upload page on port 8092, plus the watcher
 ```
 
 On Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a `.csv`).
@@ -67,8 +67,11 @@ existing categories so it reuses them.
 
 | Variable | Value |
 |---|---|
-| `BUDGET_LLM_URL` | `http://localhost:8080` on the AI Workstation itself |
-| `BUDGET_LLM_KEY` | the `--api-key` llama-server was started with (sent as `Authorization: Bearer ...`) |
+| `LLM_URL` | llama-server's address, root or full `/v1/chat/completions` URL, e.g. `http://localhost:11435` |
+| `LLM_API_KEY` | the `--api-key` llama-server was started with (sent as `Authorization: Bearer ...`) |
+| `LLM_MODEL` | optional model name |
+
+`BUDGET_LLM_URL` / `BUDGET_LLM_KEY` / `BUDGET_LLM_MODEL` override these for this project only.
 
 Keep the key out of the repo and out of chat: put it in `~/.config/secrets.env` (below).
 
@@ -86,11 +89,13 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
    ```
 
    ```
-   BUDGET_LLM_URL=http://localhost:8080
-   BUDGET_LLM_KEY=your-llama-server-key
+   LLM_URL=http://localhost:11435
+   LLM_API_KEY=your-llama-server-key
+   LLM_MODEL=your-model-name
    ```
 
-   Other projects on this machine can read the same file (one `KEY=value` per line).
+   Other projects on this machine can read the same file. Write it as plain `KEY=value`: no spaces around `=`
+   and no quotes (Docker keeps them as part of the value; watch for curly quotes pasted from a phone or doc).
 2. Start it. It restarts on its own after a crash or reboot:
 
    ```bash
@@ -105,14 +110,15 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
 
    ```bash
    sudo tailscale serve status         # see whether something already uses https:443
-   sudo tailscale serve --bg 8090      # or, if 443 is taken: sudo tailscale serve --bg --https=8443 8090
+   sudo tailscale serve --bg 8092      # or, if 443 is taken: sudo tailscale serve --bg --https=8443 8092
    ```
 
-   It prints the address, like `https://ai-workstation.tail1234.ts.net`. If it says HTTPS isn't enabled, turn on
+   It prints the address, like `https://ai-workstation.tail1234.ts.net`. The very first visit can fail with
+   `ERR_SSL_PROTOCOL_ERROR` for up to a minute while Tailscale fetches the certificate; reload. If it says HTTPS isn't enabled, turn on
    MagicDNS and HTTPS Certificates in the Tailscale admin console (DNS page) and run it again. The setting
    survives reboots. On the phone, open that address and use Chrome's menu, "Add to Home screen".
 
-The page only listens on the workstation's own `localhost:8090`; Tailscale Serve is the way in, so there is no
+The page only listens on the workstation's own `localhost:8092`; Tailscale Serve is the way in, so there is no
 firewall port to open.
 
 **After pulling new code:** `git pull && docker compose up -d --build`. Rules edits need no rebuild.
