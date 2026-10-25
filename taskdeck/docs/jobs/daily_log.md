@@ -97,7 +97,7 @@ phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_l
   (Online Hours, Onclock Hours, Miles Driven) gets "-" when one of its inputs is "-", or its calculated
   value when all inputs are there (same formulas as parsing; `record.DERIVED`). An empty calculated column
   whose input is empty isn't reported, but the empty input is: every other empty cell (except the gas
-  columns, where empty means no gas stop) is listed under "check by hand". **Apply fixes** first copies the
+  columns, where empty means no gas stop) is listed under "check by hand" as one compact line per row (`Row 2 (9/3) Missing: Dep time, Dep mi, ...`, at most two phone lines; short names from `Column.short`). **Apply fixes** first copies the
   tab to a `Backup <date time>` tab, refuses if the sheet changed since the preview, then rewrites rows 2
   onward. Formulas are kept.
 * Opening **Daily Log to Sheet** shows a "needs tidying" heads-up with a button to the reconcile job when

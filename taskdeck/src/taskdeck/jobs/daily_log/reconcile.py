@@ -11,6 +11,7 @@ all inputs are there. Any other empty cell is listed to check by hand.
 from __future__ import annotations
 
 import re
+import textwrap
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -21,6 +22,8 @@ WIDTH = max(c.number for c in COLUMNS)
 _LABELS = {c.number - 1: (c.header or c.label) for c in COLUMNS}
 _INDEX = {c.field: c.number - 1 for c in COLUMNS}
 _NAMES = {c.field: (c.header or c.label) for c in COLUMNS}
+_SHORT = {c.field: c.short or c.label for c in COLUMNS}
+LINE_CHARS = 34  # about one line of the preview's monospace text on a phone
 # Columns typed in from the log that should never be left empty (gas columns: empty = no stop).
 _INPUTS = [c.field for c in COLUMNS if c.header and not c.optional and c.field not in DERIVED]
 _GAS = ("gas_at", "gas_after")
@@ -85,7 +88,7 @@ def _is_dash(value: Any) -> bool:
 def complete_row(cells: list[Any]) -> tuple[list[Any], list[str], list[str]]:
     """Fill a row's empty calculated columns where possible.
 
-    Returns (row, what was filled, columns left empty that need checking by hand)."""
+    Returns (row, what was filled, short names of the empty cells to check by hand, in column order)."""
     cells = list(cells)
     filled_in: list[str] = []
     for target, inputs in DERIVED.items():
@@ -100,13 +103,24 @@ def complete_row(cells: list[Any]) -> tuple[list[Any], list[str], list[str]]:
         if value is not None:
             cells[_INDEX[target]] = value
             filled_in.append(f"{_NAMES[target]} → {value} (calculated)")
-    empty = [_NAMES[f] for f in _INPUTS if not _text(cells[_INDEX[f]])]
+    empty = [_SHORT[f] for f in _INPUTS if not _text(cells[_INDEX[f]])]
     gas = [_text(cells[_INDEX[f]]) for f in _GAS]
     if any(gas) and not all(gas):  # one half of a gas stop
-        empty += [_NAMES[f] for f, v in zip(_GAS, gas) if not v]
+        empty += [_SHORT[f] for f, v in zip(_GAS, gas) if not v]
     elif all(gas) and not any(_is_dash(v) for v in gas) and sheet_gas_fills(*gas) is None:
-        empty.append("matching gas stops (the two gas columns list different numbers)")
+        empty.append("a matching gas stop")  # the two gas columns list different numbers of stops
     return cells, filled_in, empty
+
+
+def missing_line(n: int, d: date, names: list[str], lines: int = 2) -> str:
+    """``Row 2 (9/3) Missing: Dep time, Dep mi, +3 more``, kept to ``lines`` lines on a phone."""
+    head = f"Row {n} ({d.month}/{d.day}) Missing: "
+    for shown in range(len(names), 0, -1):
+        rest = len(names) - shown
+        text = head + ", ".join(names[:shown]) + (f", +{rest} more" if rest else "")
+        if len(textwrap.wrap("• " + text, LINE_CHARS)) <= lines:
+            return text
+    return head + f"{len(names)} fields"
 
 
 def _cells(row: list[Any], width: int) -> list[Any]:
@@ -211,7 +225,7 @@ def plan(values: list[list[Any]]) -> Plan:
         if filled_in:
             notes.append(f"Row {n} ({format_date(d)}): " + "; ".join(filled_in) + ".")
         if empty:
-            remarks.append(f"Row {n} ({format_date(d)}): " + ", ".join(empty) + " empty.")
+            remarks.append(missing_line(n, d, empty))
         kept[idx] = (d, n, completed)
 
     in_order = [n for _, n, _ in sorted(kept, key=lambda k: k[1])]

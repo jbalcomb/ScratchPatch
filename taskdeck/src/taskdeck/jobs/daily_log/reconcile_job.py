@@ -31,7 +31,7 @@ def preview(ctx):
     plan = ctx["plan"]
     lines = [f"• {c}" for c in plan.changes] or ["Nothing to fix: one row per date, in order, no blank rows."]
     if plan.remarks:
-        lines += ["", "Check by hand (not changed). Put “-” in a cell when the value is known to be missing:"]
+        lines += ["", "Check by hand (“-” = known missing):"]
         lines += [f"• {r}" for r in plan.remarks]
     ctx.result = Result(
         title=f"{len(plan.changes)} fix{'es' * (len(plan.changes) != 1)} to apply" if plan.changed else "The sheet is tidy",
