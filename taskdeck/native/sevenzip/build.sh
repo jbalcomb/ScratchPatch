@@ -17,7 +17,11 @@ JOBS=$(nproc 2>/dev/null || echo 4)
 #    Built as a non-installed copy so this script leaves the source tree as it found it.
 WORK="$OUT/work"
 rm -rf "$WORK" && cp -r "$SRC" "$WORK"
-make -C "$WORK/CPP/7zip/Bundles/Format7zF" -f makefile.gcc -j"$JOBS" CC="$CC" CXX="$CXX" >/dev/null
+EXTRA=()
+case "$CC" in
+  *android*) EXTRA=(LIB2=-ldl) ;;  # Android's libc includes pthreads; there is no libpthread to link
+esac
+make -C "$WORK/CPP/7zip/Bundles/Format7zF" -f makefile.gcc -j"$JOBS" CC="$CC" CXX="$CXX" "${EXTRA[@]}" >/dev/null
 cp "$WORK/CPP/7zip/Bundles/Format7zF/_o/7z.so" "$OUT/lib7z.so"
 
 # 2. The shim: our sz_shim.cpp plus the 7-Zip helper sources it uses (same list as 7-Zip's
