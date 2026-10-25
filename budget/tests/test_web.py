@@ -33,6 +33,8 @@ def test_page_lists_accounts(tmp_path):
     finally:
         server.shutdown()
     assert all(f'value="{a}"' in html for a in web.ACCOUNTS)
+    assert json.dumps(web.ACCOUNT_HINTS) in html  # file-name check that warns on a mismatched account
+    assert set(web.ACCOUNT_HINTS) == set(web.ACCOUNTS)
 
 
 def test_upload_lands_in_account_folder_and_watcher_ingests_it(tmp_path):

@@ -25,6 +25,12 @@ import budget  # noqa: E402
 
 MAX_BYTES = 10 * 1024 * 1024
 ACCOUNTS = ["checking", "bills", "savings"]
+# Words in a file name that say which account it is (lowercase). Used to warn before a mismatched upload.
+ACCOUNT_HINTS = {
+    "checking": ["daily", "checking", "chk"],
+    "bills": ["bill"],
+    "savings": ["sav"],
+}
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -40,8 +46,9 @@ PAGE = """<!doctype html>
   h1 { font-size: 1.4rem; margin: 0 0 4px; }
   p { color: var(--muted); margin: 0 0 20px; }
   label { display: block; font-weight: 600; margin-bottom: 6px; }
-  select { font: inherit; padding: 8px; width: 100%; margin-bottom: 16px; background: var(--bg); color: var(--fg);
-           border: 1px solid var(--line); border-radius: 6px; }
+  select { font: inherit; font-size: 4rem; font-weight: 600; padding: 3.5rem 1rem; width: 100%;
+           margin-bottom: 16px; background: var(--bg); color: var(--fg);
+           border: 2px solid var(--line); border-radius: 10px; }
   #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 36px 16px; text-align: center; cursor: pointer; }
   #drop.over { border-color: var(--accent); }
   #log { margin-top: 20px; padding: 0; list-style: none; }
@@ -67,8 +74,25 @@ input.onchange = () => send(input.files);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
 drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); send(e.dataTransfer.files); };
+const HINTS = __HINTS__;
+// The account a file name points to, or null when it names none (or more than one).
+function guess(name) {
+  const n = name.toLowerCase();
+  const hits = Object.keys(HINTS).filter(a => HINTS[a].some(w => n.includes(w)));
+  return hits.length === 1 ? hits[0] : null;
+}
 async function send(files) {
   for (const f of files) {
+    const g = guess(f.name);
+    if (g && g !== account.value &&
+        !confirm(`"${f.name}" looks like a ${g} file, but the account selected is ${account.value}.\n\n` +
+                 `OK: upload it to ${account.value} anyway.\nCancel: skip it (then pick ${g} and drop it again).`)) {
+      const li = document.createElement('li');
+      li.className = 'bad';
+      li.textContent = f.name + ': skipped (account mismatch)';
+      log.prepend(li);
+      continue;
+    }
     const li = document.createElement('li');
     li.textContent = f.name + ': uploading...';
     log.prepend(li);
@@ -108,7 +132,8 @@ def make_handler(drop):
             if urlparse(self.path).path != "/":
                 return self.reply(404, "not found", "text/plain")
             options = "".join(f'<option value="{a}">{a}</option>' for a in ACCOUNTS)
-            self.reply(200, PAGE.replace("__OPTIONS__", options), "text/html; charset=utf-8")
+            page = PAGE.replace("__OPTIONS__", options).replace("__HINTS__", json.dumps(ACCOUNT_HINTS))
+            self.reply(200, page, "text/html; charset=utf-8")
 
         def do_POST(self):
             url = urlparse(self.path)
