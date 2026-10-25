@@ -14,11 +14,10 @@ python budget/web.py                   # or: the upload page on port 8092, plus 
 
 On Bank of America's site: account → **Download transactions** → **Microsoft Excel format** (it's a `.csv`).
 Then either open the upload page on your phone or any computer (the address is set up below), pick the account and drop the file, or
-save it straight into the drop folder. Within a few seconds the watcher stores the new rows, files the CSV under
-`drop/done/`, and categorizes everything.
+save it straight into the drop folder. The new rows are stored right away (within a few seconds for the drop
+folder), the CSV is kept under `archive/<account>/`, and everything is categorized.
 
-The page checks the file is a Bank of America export before saving it. It has no login, so keep it on the
-home network or Tailscale; don't forward the port to the internet.
+The page has no login, so keep it on the home network or Tailscale; don't forward the port to the internet.
 
 ```bash
 python budget/budget.py summary            # totals per category for the latest month
@@ -32,7 +31,9 @@ Default locations (all under `~/budget/` unless `BUDGET_HOME` is set):
 | What | Where | Override |
 |---|---|---|
 | Drop folder | `~/budget/drop/` | `--folder` or `BUDGET_DROP` |
-| Store | `~/budget/budget.db` (table `transactions`) | `--db` or `BUDGET_DB` |
+| Store | `~/budget/budget.db` (tables `transactions`, `imports`) | `--db` or `BUDGET_DB` |
+| Every uploaded file | `~/budget/archive/<account>/` (next to the store) | |
+| Backups made by undo/rebuild | `~/budget/backups/` (newest 10) | |
 | Rules | `budget/rules.txt` in this repo | `--rules` or `BUDGET_RULES` |
 | Suggestions | `budget/rules_suggested.txt`; in Docker, `~/budget/rules_suggested.txt` | `--suggestions` or `BUDGET_SUGGESTIONS` |
 
@@ -44,6 +45,31 @@ the store is skipped (matched on account, date, description, amount and running 
 purchases on the same day still both count).
 
 A file the script can't read goes to `drop/failed/` with the reason printed.
+
+## Mistakes: checks, undo, rebuild
+
+Before storing a file, two checks run. A failed check stores nothing; the page says why and asks whether to
+store it anyway, and a drop-folder file goes to `drop/failed/`.
+
+- **File name:** the page asks first if the name says another account (`daily`/`chk` = checking, `bill` = bills,
+  `sav` = savings).
+- **Running balance:** the file is refused if its transactions are already stored under another account, or if
+  it doesn't carry on from the account's stored balance. That second case also fires when days are missing
+  between two downloads; store it anyway if that's what happened.
+
+Every upload is numbered and its file is kept, so the store can always be rebuilt from the files:
+
+```bash
+python budget/budget.py imports           # every upload: number, time, account, rows, new
+python budget/budget.py undo              # take back the latest upload (or: undo 7)
+python budget/budget.py redo 7            # put an undone upload back
+python budget/budget.py rebuild --upto 6  # keep uploads up to #6 (the last good one); later ones are undone
+python budget/budget.py rebuild           # rebuild from every upload that isn't undone
+```
+
+Undo and rebuild replay the remaining files in order, so rows another upload also contained stay. Each one saves
+the previous store in `backups/` first. To force a file in from the command line:
+`budget.py ingest --force --account savings FILE`.
 
 ## Categories
 
@@ -129,6 +155,7 @@ firewall port to open.
 cd ~/ScratchPatch/budget
 docker compose exec budget python budget.py summary
 docker compose exec budget python budget.py categorize     # after editing rules.txt
+docker compose exec budget python budget.py imports        # then undo / redo / rebuild, see "Mistakes"
 ```
 
 ### From the phone

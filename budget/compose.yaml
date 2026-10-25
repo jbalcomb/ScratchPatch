@@ -15,3 +15,4 @@ services:
     volumes:
       - ${HOME}/budget:/data        # store, drop folder, rule suggestions
       - .:/config:ro                # rules.txt from this repo; edits apply on the next categorize
+      - /etc/localtime:/etc/localtime:ro  # the workstation's time zone, for upload times

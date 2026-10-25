@@ -3,8 +3,9 @@
     python budget/web.py                 # http://<this machine>:8092
     python budget/web.py --port 8091
 
-An upload is checked (it must parse as a Bank of America export), then saved into the drop folder,
-where the watcher picks it up within a few seconds. No login: keep it on the home network / Tailscale.
+An upload is checked (a Bank of America export whose running balance fits the account), archived and
+stored right away; categorizing follows in the background. The watcher still handles files saved into the
+drop folder. No login: keep it on the home network / Tailscale.
 """
 
 import argparse
@@ -15,7 +16,6 @@ import sys
 import tempfile
 import threading
 import traceback
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -97,9 +97,15 @@ async function send(files) {
     li.textContent = f.name + ': uploading...';
     log.prepend(li);
     try {
-      const r = await fetch('upload?account=' + encodeURIComponent(account.value) +
-                            '&name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
-      const j = await r.json();
+      const url = 'upload?account=' + encodeURIComponent(account.value) + '&name=' + encodeURIComponent(f.name);
+      let r = await fetch(url, { method: 'POST', body: f });
+      let j = await r.json();
+      // 409: the running balance doesn't fit this account. Ask, and only then store it anyway.
+      if (r.status === 409 && confirm(`${f.name} ${j.message}\n\n` +
+                                      `OK: store it in ${account.value} anyway.\nCancel: don't store it.`)) {
+        r = await fetch(url + '&force=1', { method: 'POST', body: f });
+        j = await r.json();
+      }
       li.className = r.ok ? 'ok' : 'bad';
       li.textContent = f.name + ': ' + j.message;
     } catch (e) {
@@ -113,8 +119,17 @@ async function send(files) {
 """
 
 
-def make_handler(drop):
-    drop = Path(drop)
+def make_handler(opts):
+    """opts: budget.py's parsed options (db, rules, suggestions, llm_*)."""
+
+    def refresh():
+        db = budget.connect(opts.db)
+        try:
+            budget.refresh(db, opts)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            db.close()
 
     class Handler(BaseHTTPRequestHandler):
         def reply(self, status, body, ctype="application/json"):
@@ -148,22 +163,27 @@ def make_handler(drop):
                 return self.message(400, "empty file, or larger than 10 MB")
             data = self.rfile.read(size)
 
-            name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(q.get("name", ["upload"])[0]).stem)[:60]
-            folder = drop if account == budget.DEFAULT_ACCOUNT else drop / account
-            folder.mkdir(parents=True, exist_ok=True)
-            # Written as .tmp and renamed, so the watcher (which only looks at *.csv) never sees half a file.
-            fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=folder)
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(q.get("name", ["upload"])[0]).stem)[:60] + ".csv"
+            force = q.get("force", [""])[0] == "1"
+            fd, tmp = tempfile.mkstemp(suffix=".csv")
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
+            db = budget.connect(opts.db)
             try:
-                rows = budget.parse_bofa_csv(tmp)
+                with budget.LOCK:
+                    imp = budget.import_file(db, tmp, account, force=force, name=name, move=True)
+            except budget.BalanceMismatch as e:
+                return self.message(409, str(e))
             except Exception as e:
-                os.unlink(tmp)
                 return self.message(400, f"not saved: {e}".replace(tmp, "file"))
-            dest = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{name}.csv"
-            os.replace(tmp, dest)
-            print(f"upload: {dest.name} ({len(rows)} rows) -> {account}", flush=True)
-            self.message(200, f"saved, {len(rows)} transactions; new ones are added to {account} within seconds")
+            finally:
+                db.close()
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            print(f"upload: {name}: {budget.describe(imp)}" + (" (balance check overridden)" if force else ""),
+                  flush=True)
+            threading.Thread(target=refresh, daemon=True).start()
+            self.message(200, f"stored as {budget.describe(imp)}")
 
         def log_message(self, *a):
             pass
@@ -178,6 +198,7 @@ def main(argv=None):
     p.add_argument("--no-watch", action="store_true", help="serve the page only (another process watches)")
     args, rest = p.parse_known_args(argv)
     drop = os.environ.get("BUDGET_DROP", budget.DEFAULT_DROP)
+    opts = budget.build_parser().parse_args(rest + ["categorize"])
 
     if not args.no_watch:
         def watch():
@@ -189,7 +210,7 @@ def main(argv=None):
                 print("watcher stopped; exiting", file=sys.stderr, flush=True)
                 os._exit(1)
         threading.Thread(target=watch, daemon=True).start()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(drop))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(opts))
     print(f"upload page on http://{args.host}:{args.port}", flush=True)
     server.serve_forever()
 
