@@ -15,13 +15,14 @@ import flet as ft
 
 from taskdeck.core import (
     Command, CommandKind, CommandRegistry, Drafts, Favorites, History, JobPlugin, JsonStore,
-    PluginRegistry, default_data_dir,
+    PluginRegistry, SecretBackend, Vault, VaultError, default_data_dir,
 )
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
 from .palette import CommandPalette
+from .vault_backend import make_backend
 
 TABS = [
     ("home", "Home", ft.Icons.HOME_OUTLINED, ft.Icons.HOME),
@@ -31,13 +32,21 @@ TABS = [
 ]
 THEMES = {"system": ft.ThemeMode.SYSTEM, "light": ft.ThemeMode.LIGHT, "dark": ft.ThemeMode.DARK}
 TILE_WIDTH = 96
+LOCK_AFTER = 5 * 60  # seconds in the background before credentials lock again
+_AUTO = object()
 
 
 class TaskDeckApp:
-    def __init__(self, page: ft.Page, registry: PluginRegistry | None = None, store: JsonStore | None = None):
+    def __init__(self, page: ft.Page, registry: PluginRegistry | None = None, store: JsonStore | None = None,
+                 vault_backend: SecretBackend | None | object = _AUTO):
         self.page = page
         self.registry = registry or PluginRegistry().discover()
         self.store = store or JsonStore(default_data_dir() / "state.json")
+        secret_fields: dict[str, set[str]] = {}
+        for p in self.registry:
+            secret_fields.setdefault(p.settings_id, set()).update(f.name for f in p.settings if f.secret)
+        self.vault = Vault(make_backend(page) if vault_backend is _AUTO else vault_backend, self.store, secret_fields)
+        self._hidden_at: float | None = None
         self.favorites = Favorites(self.store)
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
@@ -59,6 +68,7 @@ class TaskDeckApp:
         page.theme_mode = THEMES.get(self.store.get("theme", "system"), ft.ThemeMode.SYSTEM)
         page.on_keyboard_event = self.on_key
         page.on_view_pop = self.on_view_pop
+        page.on_app_lifecycle_state_change = self.on_lifecycle
 
         self.body = ft.Container(expand=True, padding=ft.Padding.symmetric(horizontal=16))
         self.nav = ft.NavigationBar(
@@ -100,10 +110,16 @@ class TaskDeckApp:
         self.push(screen)
         screen.check_ready()
         self.page.update()
+        if self.vault.needs_unlock(plugin.settings_id):
+            self.page.run_task(self.unlock, screen.recheck)
 
     def open_settings(self, job_id: str) -> None:
         plugin = self.registry.get(job_id)
-        if plugin and plugin.settings:
+        if not (plugin and plugin.settings):
+            return
+        if self.vault.needs_unlock(plugin.settings_id):  # never show (or save over) locked secrets
+            self.page.run_task(self.unlock, lambda: self.push(JobSettingsScreen(self, plugin)))
+        else:
             self.push(JobSettingsScreen(self, plugin))
 
     def push(self, screen) -> None:
@@ -140,15 +156,96 @@ class TaskDeckApp:
 
     # ---- job settings -------------------------------------------------------------
 
-    def _settings_key(self, job_id: str) -> str:
+    def _settings_id(self, job_id: str) -> str:
         plugin = self.registry.get(job_id)
-        return f"settings:{plugin.settings_id if plugin else job_id}"
+        return plugin.settings_id if plugin else job_id
 
     def job_settings(self, job_id: str) -> dict[str, Any]:
-        return dict(self.store.get(self._settings_key(job_id), {}))
+        """Stored settings plus, when unlocked, the job's credentials from the vault."""
+        sid = self._settings_id(job_id)
+        values = dict(self.store.get(f"settings:{sid}", {}))
+        if self.vault.protects(sid):
+            for name in self.vault.secret_fields[sid]:
+                values.pop(name, None)  # a copy from before the vault is moved into it on unlock
+            values.update(self.vault.secrets_for(sid))
+        return values
 
     def save_job_settings(self, job_id: str, values: dict[str, Any]) -> None:
-        self.store.set(self._settings_key(job_id), values)
+        sid = self._settings_id(job_id)
+        plain, secret = self.vault.split(sid, values)
+        self.store.set(f"settings:{sid}", plain)
+        ops = self.vault.stage(sid, secret)
+        if ops:
+            self.page.run_task(self._persist_secrets, ops)
+
+    async def _persist_secrets(self, ops) -> None:
+        try:
+            await self.vault.persist(ops)
+        except Exception as exc:
+            self.toast(f"Couldn't save your credentials securely: {exc}")
+
+    # ---- credentials vault ------------------------------------------------------------
+
+    async def unlock(self, then=None) -> bool:
+        """Ask for the fingerprint; on success run ``then`` (e.g. re-check the open job)."""
+        try:
+            await self.vault.unlock()
+        except VaultError as exc:
+            self.toast(str(exc))
+            return False
+        if self.vault.lost:
+            self.vault.lost = []
+            self.toast("Android erased your saved credentials (the phone's fingerprints changed). "
+                       "Enter them again in the job's settings.")
+        if then:
+            then()
+        self.render()
+        self.page.update()
+        return True
+
+    def lock_credentials(self) -> None:
+        if not self.vault.available or not self.vault.unlocked:
+            return
+        self.vault.lock()
+        while self.stack and isinstance(self.stack[-1], JobSettingsScreen):  # don't leave secrets on screen
+            self.page.views.pop()
+            self.stack.pop()
+        top = self.top_job_screen
+        if top:
+            top.check_ready()
+        self.render()
+        self.page.update()
+        self.toast("Credentials locked")
+
+    def on_lifecycle(self, e) -> None:
+        if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
+            self._hidden_at = self._hidden_at or time.time()
+        elif e.state in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):
+            away = time.time() - self._hidden_at if self._hidden_at else 0
+            self._hidden_at = None
+            if away > LOCK_AFTER and self.vault.available and self.vault.unlocked:
+                self.lock_credentials()
+                top = self.top_job_screen
+                if top and self.vault.needs_unlock(top.plugin.settings_id):
+                    self.page.run_task(self.unlock, top.recheck)
+
+    def credentials_section(self) -> list[ft.Control]:
+        if not self.vault.available:
+            protected = [p for p in self.registry if any(f.secret for f in p.settings)]
+            if not protected:
+                return []
+            return [section_title("Credentials"),
+                    ft.Text("Saved in the app's settings file. Install the latest APK to protect them with your "
+                            "fingerprint.", color=ft.Colors.ON_SURFACE_VARIANT)]
+        state = "Unlocked" if self.vault.unlocked else "Locked"
+        button = (ft.OutlinedButton("Lock now", icon=ft.Icons.LOCK, on_click=lambda e: self.lock_credentials())
+                  if self.vault.unlocked else
+                  ft.FilledTonalButton("Unlock", icon=ft.Icons.FINGERPRINT, on_click=lambda e: self.page.run_task(self.unlock)))
+        return [section_title("Credentials"),
+                ft.Text(f"{state}. API keys and the Google key are encrypted by Android and need your fingerprint "
+                        f"(or phone PIN) after each app start, and again after {LOCK_AFTER // 60} minutes away.",
+                        color=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Row([button])]
 
     # ---- rendering ----------------------------------------------------------------
 
@@ -335,6 +432,7 @@ class TaskDeckApp:
                 *([section_title("Job settings")] if configurable else []),
                 *[ft.ListTile(leading=ft.Icon(plugin_icon(p)), title=ft.Text(p.title), trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
                               on_click=lambda e, pid=p.id: self.open_settings(pid)) for p in configurable],
+                *self.credentials_section(),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
                 *self.updates_section(),
@@ -483,6 +581,12 @@ class TaskDeckApp:
             c.add(Command("app:update", "Check for app updates", self.check_updates, icon="SYSTEM_UPDATE",
                           keywords=("upgrade", "version", "ota", "reload")))
         c.add(Command("history:clear", "Clear run history", self.clear_history, icon="DELETE_SWEEP", keywords=("reset",)))
+        c.add(Command("vault:lock", "Lock credentials", self.lock_credentials, icon="LOCK",
+                      keywords=("fingerprint", "security", "keys", "secrets"),
+                      when=lambda: self.vault.available and self.vault.unlocked))
+        c.add(Command("vault:unlock", "Unlock credentials", lambda: self.page.run_task(self.unlock), icon="FINGERPRINT",
+                      keywords=("fingerprint", "security", "keys", "secrets"),
+                      when=lambda: self.vault.available and not self.vault.unlocked))
 
     # ---- keyboard -----------------------------------------------------------------
 

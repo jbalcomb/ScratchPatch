@@ -71,14 +71,15 @@ that can cover this) makes it paid usage, which isn't used that way.
 
 ## Security note
 
-With the current setup, the service-account key is stored as plain JSON in TaskDeck's private app storage on
-the phone (`state.json` in TaskDeck's private app storage). Anyone who can read that storage (a rooted phone,
-a backup) can edit any sheet shared with that service account. Share only this one sheet with it, and delete
-the downloaded `.json` from the phone after importing it. The Gemini API key is stored the same way.
+The service-account key, the Gemini key and the AI Workstation key are kept in TaskDeck's **credentials
+vault** (see [../CREDENTIALS.md](../CREDENTIALS.md)): Android's encrypted storage, whose key lives in the
+phone's keystore and is only released after your fingerprint or phone PIN. They are not in `state.json`.
+Still, the service-account key can edit any sheet shared with it: share only this one sheet with it, and
+delete the downloaded `.json` from the phone after importing it.
 
 The AI Workstation only parses; it never touches the sheet. The planned next step is **Google sign-in on the
 phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_log/sheets.py` as another
-`SheetBackend` (`header_row()` + `append(row)`). The job, the preview and the header check don't change.
+`SheetBackend` (`rows()`, `write()`, `backup()`). The job, the preview and the header check don't change.
 
 ## One row per date, no gaps
 

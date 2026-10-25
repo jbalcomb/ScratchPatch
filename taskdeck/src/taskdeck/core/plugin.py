@@ -101,8 +101,9 @@ class Problem:
     """Something that would make the job fail, found before it runs.
 
     ``blocking`` problems disable the run button. ``fix`` names where to fix it:
-    "settings" adds an "Open settings" button, "recheck" only "Check again", and
-    "job:<id>" a button that opens that job (e.g. a clean-up job).
+    "settings" adds an "Open settings" button, "recheck" only "Check again",
+    "unlock" an "Unlock" (fingerprint) button, and "job:<id>" a button that opens
+    that job (e.g. a clean-up job).
     """
 
     message: str

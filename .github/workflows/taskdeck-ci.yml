@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "flet==1.0.4" "rsa>=4.9" certifi pytest
+      - run: pip install "flet==1.0.4" "rsa>=4.9" certifi pytest "flet-secure-storage==1.0.4" "flet-local-auth==1.0.4"
       - run: pytest -q
 
   plugin-review:

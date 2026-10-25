@@ -4,10 +4,11 @@ from .pipeline import Cancelled, Context, Pipeline, Result, RunReport, Stage, St
 from .plugin import (
     CommitOutcome, Field, FieldKind, JobPlugin, NeedsConfirmation, PluginRegistry, Problem, QuickAction, SettingsAction,
 )
+from .secrets import SecretBackend, Vault, VaultError
 from .storage import JsonStore, default_data_dir
 
 __all__ = [
     "Cancelled", "Command", "CommitOutcome", "CommandKind", "CommandRegistry", "Context", "Drafts", "Favorites", "Field",
     "FieldKind", "History", "JobPlugin", "JsonStore", "NeedsConfirmation", "Pipeline", "PluginRegistry", "Problem", "QuickAction",
-    "Result", "RunReport", "SettingsAction", "Stage", "Step", "StepError", "default_data_dir", "fuzzy_score", "step",
+    "Result", "RunReport", "SecretBackend", "SettingsAction", "Stage", "Step", "StepError", "Vault", "VaultError", "default_data_dir", "fuzzy_score", "step",
 ]
