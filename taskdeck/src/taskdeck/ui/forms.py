@@ -26,6 +26,12 @@ class FieldControl:
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )
+        if field.kind == FieldKind.FILE:
+            self.control = ft.Column(
+                [self.input, ft.Row([ft.TextButton("Browse…", icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])],
+                spacing=4,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            )
         if field.importable:
             self.control = ft.Column(
                 [self.input, ft.Row([
@@ -49,6 +55,14 @@ class FieldControl:
         text = await ft.Clipboard().get()
         if text:
             self.input.value = text
+            self.input.update()
+            if self._on_change:
+                self._on_change(None)
+
+    async def _browse(self, e) -> None:
+        files = await ft.FilePicker().pick_files(dialog_title=f"Choose {self.field.label}")
+        if files and files[0].path:
+            self.input.value = files[0].path
             self.input.update()
             if self._on_change:
                 self._on_change(None)

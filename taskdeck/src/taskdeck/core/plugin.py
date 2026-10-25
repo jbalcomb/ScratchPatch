@@ -27,6 +27,7 @@ class FieldKind(str, Enum):
     NUMBER = "number"
     CHOICE = "choice"
     TOGGLE = "toggle"
+    FILE = "file"  # a path on the device, with a Browse button
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,10 @@ class Field:
         choices = tuple(choices)
         kw.setdefault("default", choices[0] if choices else None)
         return cls(name, label, FieldKind.CHOICE, choices=choices, **kw)
+
+    @classmethod
+    def file(cls, name: str, label: str, **kw: Any) -> "Field":
+        return cls(name, label, FieldKind.FILE, **kw)
 
     @classmethod
     def toggle(cls, name: str, label: str, **kw: Any) -> "Field":

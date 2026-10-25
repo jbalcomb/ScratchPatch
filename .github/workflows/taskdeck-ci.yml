@@ -25,7 +25,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "flet==1.0.4" "rsa>=4.9" certifi pytest "flet-secure-storage==1.0.4" "flet-local-auth==1.0.4"
+      - name: Cache the 7-Zip engine (Linux build, for the archive tests)
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: /tmp/7z-linux
+          key: 7z-linux-${{ hashFiles('taskdeck/native/sevenzip/**') }}
+      - name: Build the 7-Zip engine
+        if: steps.engine.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$(cat native/sevenzip/7ZIP_VERSION)" https://github.com/ip7z/7zip.git /tmp/7zip
+          native/sevenzip/build.sh /tmp/7zip /tmp/7z-linux
       - run: pytest -q
+        env:
+          TASKDECK_7Z_DIR: /tmp/7z-linux
 
   plugin-review:
     runs-on: ubuntu-latest
