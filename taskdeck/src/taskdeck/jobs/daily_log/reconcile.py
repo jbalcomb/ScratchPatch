@@ -1,7 +1,11 @@
-"""Keeping the sheet tidy: one row per date, no blank rows, in date order.
+"""Keeping the sheet tidy: one row per date, no blank rows, in date order, complete rows.
 
 Pure functions over the sheet's values (row 1 = headers). :func:`find_date` is used
 when saving a new row; :func:`plan` works out what "Reconcile sheet" would change.
+
+Empty cells: "-" means a value is known to be missing, which is fine. A calculated column
+(:data:`record.DERIVED`) that is empty gets "-" if one of its inputs is "-", or its value if
+all inputs are there. Any other empty cell is listed to check by hand.
 """
 
 from __future__ import annotations
@@ -11,10 +15,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from .record import COLUMNS
+from .record import COLUMNS, DERIVED, calculate, sheet_gas_fills
 
 WIDTH = max(c.number for c in COLUMNS)
 _LABELS = {c.number - 1: (c.header or c.label) for c in COLUMNS}
+_INDEX = {c.field: c.number - 1 for c in COLUMNS}
+_NAMES = {c.field: (c.header or c.label) for c in COLUMNS}
+# Columns typed in from the log that should never be left empty (gas columns: empty = no stop).
+_INPUTS = [c.field for c in COLUMNS if c.header and not c.optional and c.field not in DERIVED]
+_GAS = ("gas_at", "gas_after")
 
 
 def parse_date(value: Any) -> date | None:
@@ -63,6 +72,41 @@ def _key(i: int, value: Any) -> Any:
     if re.fullmatch(r"\d{1,2}:\d{2}", text):
         return text.zfill(5)
     return text.lower()
+
+
+def _text(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _is_dash(value: Any) -> bool:
+    return _text(value) in ("-", "—")
+
+
+def complete_row(cells: list[Any]) -> tuple[list[Any], list[str], list[str]]:
+    """Fill a row's empty calculated columns where possible.
+
+    Returns (row, what was filled, columns left empty that need checking by hand)."""
+    cells = list(cells)
+    filled_in: list[str] = []
+    for target, inputs in DERIVED.items():
+        if _text(cells[_INDEX[target]]):
+            continue
+        sources = inputs + (_GAS if target == "miles_driven" else ())
+        if any(_is_dash(cells[_INDEX[f]]) for f in sources):
+            cells[_INDEX[target]] = "-"
+            filled_in.append(f"{_NAMES[target]} → - (an input is “-”)")
+            continue
+        value = calculate(target, {f: cells[_INDEX[f]] for f in sources})
+        if value is not None:
+            cells[_INDEX[target]] = value
+            filled_in.append(f"{_NAMES[target]} → {value} (calculated)")
+    empty = [_NAMES[f] for f in _INPUTS if not _text(cells[_INDEX[f]])]
+    gas = [_text(cells[_INDEX[f]]) for f in _GAS]
+    if any(gas) and not all(gas):  # one half of a gas stop
+        empty += [_NAMES[f] for f, v in zip(_GAS, gas) if not v]
+    elif all(gas) and not any(_is_dash(v) for v in gas) and sheet_gas_fills(*gas) is None:
+        empty.append("matching gas stops (the two gas columns list different numbers)")
+    return cells, filled_in, empty
 
 
 def _cells(row: list[Any], width: int) -> list[Any]:
@@ -161,14 +205,22 @@ def plan(values: list[list[Any]]) -> Plan:
             best = [format_date(d)] + best[1:]
         kept.append((d, best_n, best))
 
+    remarks: list[str] = []
+    for idx, (d, n, cells) in sorted(enumerate(kept), key=lambda item: item[1][1]):  # in sheet order
+        completed, filled_in, empty = complete_row(cells)
+        if filled_in:
+            notes.append(f"Row {n} ({format_date(d)}): " + "; ".join(filled_in) + ".")
+        if empty:
+            remarks.append(f"Row {n} ({format_date(d)}): " + ", ".join(empty) + " empty.")
+        kept[idx] = (d, n, completed)
+
     in_order = [n for _, n, _ in sorted(kept, key=lambda k: k[1])]
     kept.sort(key=lambda k: (k[0], k[1]))
     if [n for _, n, _ in kept] != in_order:
         notes.append("Put the rows in date order.")
     if undated and kept and notes:
         notes.append(f"Move the row{'s' * (len(undated) != 1)} without a readable date to the end.")
-    # Only what reconciling can't do itself. Empty cells are normal (days off, older entries).
-    remarks = [f"Row {n} has no readable date (“{str(cells[0]).strip()}”); fix it by hand." for n, cells in undated]
+    remarks += [f"Row {n} has no readable date (“{str(cells[0]).strip()}”); fix it by hand." for n, cells in undated]
 
     rows = [cells for _, _, cells in kept] + [cells for _, cells in undated]
     return Plan(rows, span, width, notes, remarks)

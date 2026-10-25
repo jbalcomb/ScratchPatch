@@ -92,7 +92,12 @@ phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_l
 * **Reconcile Daily Log sheet** (a second job, using the same settings) checks the tab and previews the fixes:
   removes blank rows, keeps one row per date (identical copies: the first; differing copies: the most
   complete, listing what differs), rewrites dates typed as text in another form (e.g. 2026-10-18) as M/D/YYYY, and sorts by date. Rows without a readable
-  date are kept at the end and pointed out. Empty cells are left alone. **Apply fixes** first copies the
+  date are kept at the end and pointed out.
+* **Empty cells**: "-" means the value is known to be missing, which is fine. An empty calculated column
+  (Online Hours, Onclock Hours, Miles Driven) gets "-" when one of its inputs is "-", or its calculated
+  value when all inputs are there (same formulas as parsing; `record.DERIVED`). An empty calculated column
+  whose input is empty isn't reported, but the empty input is: every other empty cell (except the gas
+  columns, where empty means no gas stop) is listed under "check by hand". **Apply fixes** first copies the
   tab to a `Backup <date time>` tab, refuses if the sheet changed since the preview, then rewrites rows 2
   onward. Formulas are kept.
 * Opening **Daily Log to Sheet** shows a "needs tidying" heads-up with a button to the reconcile job when
