@@ -13,8 +13,9 @@ Lifecycle:
 * :meth:`Vault.lock` (on request, or after the app sat in the background) forgets them;
   the next unlock asks for the fingerprint again.
 
-If the backend is unavailable (desktop, tests, or an APK built before the vault existed)
-secrets stay in the JSON store exactly as before.
+The vault is optional and off by default (Settings → Credentials → Fingerprint lock). Off,
+or without a backend (desktop, tests, an APK built before the vault existed), secrets stay
+in the JSON store exactly as before.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any, Protocol
 from .storage import JsonStore
 
 KEYS_MARKER = "vault:keys"  # which secrets the vault should hold, to notice if Android erased them
+ENABLED = "vault:enabled"  # the user's choice; unset = off, unless the vault already holds secrets
 
 
 class VaultError(Exception):
@@ -55,8 +57,19 @@ class Vault:
         self.lost: list[str] = []  # secrets Android erased (e.g. a new fingerprint was added)
 
     @property
-    def available(self) -> bool:
+    def supported(self) -> bool:
+        """This app build can keep a vault (the Android plugins are installed)."""
         return self.backend is not None
+
+    @property
+    def enabled(self) -> bool:
+        # Default off, but never strand secrets already moved into the vault before the switch existed.
+        return bool(self.store.get(ENABLED, bool(self.store.get(KEYS_MARKER))))
+
+    @property
+    def available(self) -> bool:
+        """The vault is in use: supported and switched on."""
+        return self.supported and self.enabled
 
     @property
     def unlocked(self) -> bool:
@@ -141,6 +154,37 @@ class Vault:
     def lock(self) -> None:
         if self.available:
             self._cache = None
+
+    async def enable(self) -> None:
+        """Switch the fingerprint lock on: unlock (fingerprint), which moves the secrets in."""
+        if not self.supported:
+            raise VaultError("This needs the latest APK (the fingerprint lock is built into the app).")
+        if self.available:
+            return
+        self._cache = None
+        self.store.set(ENABLED, True)
+        try:
+            await self.unlock("Turn on the fingerprint lock")
+        except VaultError:
+            self.store.set(ENABLED, False)
+            raise
+
+    async def disable(self) -> None:
+        """Switch it off: after the fingerprint, move every secret back into the JSON store."""
+        if not self.available:
+            self.store.set(ENABLED, False)
+            return
+        await self.unlock("Turn off the fingerprint lock")
+        for settings_id in self.secret_fields:  # plain copy first, then remove from the vault
+            secrets = self.secrets_for(settings_id)
+            if secrets:
+                stored = self.store.get(f"settings:{settings_id}", {})
+                self.store.set(f"settings:{settings_id}", {**(stored if isinstance(stored, dict) else {}), **secrets})
+        for key in list(self._cache or {}):
+            await self.backend.delete(key)
+        self._cache = None
+        self.store.set(KEYS_MARKER, [])
+        self.store.set(ENABLED, False)
 
     async def _migrate_plaintext(self) -> None:
         """Move secrets written before the vault existed out of state.json (vault first, then delete)."""

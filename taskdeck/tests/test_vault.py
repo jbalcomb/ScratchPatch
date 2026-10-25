@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from taskdeck.core import JsonStore, Vault, VaultError
-from taskdeck.core.secrets import KEYS_MARKER
+from taskdeck.core.secrets import ENABLED, KEYS_MARKER
 
 SECRETS = {"daily_log": {"fallback_api_key", "service_account_json", "llm_api_key"}}
 
@@ -42,8 +42,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def vault(tmp_path, backend):
-    return Vault(backend, JsonStore(tmp_path / "state.json"), SECRETS)
+def vault(tmp_path, backend, enabled=True):
+    store = JsonStore(tmp_path / "state.json")
+    store.set(ENABLED, enabled)
+    return Vault(backend, store, SECRETS)
 
 
 def test_without_a_keystore_everything_stays_plain(tmp_path):
@@ -148,8 +150,10 @@ class FakePage:
 def app_factory(tmp_path):
     from taskdeck.ui.app import TaskDeckApp
 
-    def make(backend):
-        app = TaskDeckApp(FakePage(), store=JsonStore(tmp_path / "state.json"), vault_backend=backend)
+    def make(backend, enabled=True):
+        store = JsonStore(tmp_path / "state.json")
+        store.set(ENABLED, enabled)
+        app = TaskDeckApp(FakePage(), store=store, vault_backend=backend)
         app.toasts = []
         app.toast = app.toasts.append
         return app
@@ -269,3 +273,67 @@ def test_android_backend_refused_fingerprint(monkeypatch):
                                                                       _taskdeck_opened=True), flet_local_auth)
     with pytest.raises(VaultError, match="phone with its PIN"):
         run(backend.load_all("why"))
+
+
+# ---- the on/off switch -------------------------------------------------------------------------
+
+def test_off_by_default(tmp_path):
+    ks = FakeKeystore()
+    v = Vault(ks, JsonStore(tmp_path / "state.json"), SECRETS)
+    assert v.supported and not v.enabled and not v.available and not v.needs_unlock("daily_log")
+    assert v.split("daily_log", {"fallback_api_key": "k"}) == ({"fallback_api_key": "k"}, {})
+
+
+def test_stays_on_when_the_vault_already_holds_secrets(tmp_path):
+    store = JsonStore(tmp_path / "state.json")
+    store.set(KEYS_MARKER, ["settings:daily_log:fallback_api_key"])  # moved in before the switch existed
+    assert Vault(FakeKeystore(), store, SECRETS).available
+
+
+def test_turning_on_moves_secrets_in_and_off_moves_them_back(tmp_path):
+    ks = FakeKeystore()
+    v = vault(tmp_path, ks, enabled=False)
+    v.store.set("settings:daily_log", {"sheet_id": "S", "fallback_api_key": "gem"})
+    run(v.enable())
+    assert v.available and ks.prompts == 1
+    assert ks.data == {"settings:daily_log:fallback_api_key": "gem"} and v.store.get("settings:daily_log") == {"sheet_id": "S"}
+    v.lock()
+    run(v.disable())
+    assert ks.prompts == 2  # turning it off needs the fingerprint too
+    assert not v.available and ks.data == {}
+    assert v.store.get("settings:daily_log") == {"sheet_id": "S", "fallback_api_key": "gem"}
+    assert v.store.get(KEYS_MARKER) == []
+
+
+def test_turning_on_refused_stays_off(tmp_path):
+    v = vault(tmp_path, FakeKeystore(refuse=RuntimeError("User canceled")), enabled=False)
+    v.store.set("settings:daily_log", {"fallback_api_key": "gem"})
+    with pytest.raises(VaultError, match="cancelled"):
+        run(v.enable())
+    assert not v.available and v.store.get("settings:daily_log") == {"fallback_api_key": "gem"}
+
+
+def test_turning_off_refused_stays_on(tmp_path):
+    ks = FakeKeystore({"settings:daily_log:fallback_api_key": "gem"})
+    v = vault(tmp_path, ks)
+    ks.refuse = RuntimeError("User canceled")
+    with pytest.raises(VaultError):
+        run(v.disable())
+    assert v.available and ks.data  # nothing moved
+
+
+def test_cannot_turn_on_without_the_plugins(tmp_path):
+    with pytest.raises(VaultError, match="latest APK"):
+        run(vault(tmp_path, None, enabled=False).enable())
+
+
+def test_settings_switch(app_factory):
+    ks = FakeKeystore()
+    app = app_factory(ks, enabled=False)
+    app.save_job_settings("daily_log", {"fallback_api_key": "gem"})
+    assert app.store.get("settings:daily_log") == {"fallback_api_key": "gem"} and ks.prompts == 0
+    run(app.set_fingerprint_lock(True))
+    assert app.vault.available and app.toasts[-1] == "Fingerprint lock on"
+    assert ks.data == {"settings:daily_log:fallback_api_key": "gem"}
+    run(app.set_fingerprint_lock(False))
+    assert not app.vault.available and app.job_settings("daily_log")["fallback_api_key"] == "gem"

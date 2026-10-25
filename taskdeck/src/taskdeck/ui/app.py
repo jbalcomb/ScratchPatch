@@ -230,22 +230,39 @@ class TaskDeckApp:
                     self.page.run_task(self.unlock, top.recheck)
 
     def credentials_section(self) -> list[ft.Control]:
-        if not self.vault.available:
-            protected = [p for p in self.registry if any(f.secret for f in p.settings)]
-            if not protected:
-                return []
-            return [section_title("Credentials"),
-                    ft.Text("Saved in the app's settings file. Install the latest APK to protect them with your "
-                            "fingerprint.", color=ft.Colors.ON_SURFACE_VARIANT)]
-        state = "Unlocked" if self.vault.unlocked else "Locked"
-        button = (ft.OutlinedButton("Lock now", icon=ft.Icons.LOCK, on_click=lambda e: self.lock_credentials())
-                  if self.vault.unlocked else
-                  ft.FilledTonalButton("Unlock", icon=ft.Icons.FINGERPRINT, on_click=lambda e: self.page.run_task(self.unlock)))
-        return [section_title("Credentials"),
-                ft.Text(f"{state}. API keys and the Google key are encrypted by Android and need your fingerprint "
-                        f"(or phone PIN) after each app start, and again after {LOCK_AFTER // 60} minutes away.",
-                        color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Row([button])]
+        if not any(f.secret for p in self.registry for f in p.settings):
+            return []
+        v = self.vault
+        switch = ft.Switch(label="Fingerprint lock", value=v.available, disabled=not v.supported,
+                           on_change=lambda e: self.page.run_task(self.set_fingerprint_lock, e.control.value))
+        if not v.supported:
+            note = "Install the latest APK to protect your API keys and Google key with your fingerprint."
+        elif not v.available:
+            note = "Off. API keys and the Google key are kept in the app's own settings file."
+        else:
+            note = (f"{'Unlocked' if v.unlocked else 'Locked'}. API keys and the Google key are encrypted by Android "
+                    f"and need your fingerprint (or phone PIN) after each app start, and after "
+                    f"{LOCK_AFTER // 60} minutes away.")
+        controls = [section_title("Credentials"), switch, ft.Text(note, color=ft.Colors.ON_SURFACE_VARIANT)]
+        if v.available:
+            controls.append(ft.Row([
+                ft.OutlinedButton("Lock now", icon=ft.Icons.LOCK, on_click=lambda e: self.lock_credentials())
+                if v.unlocked else
+                ft.FilledTonalButton("Unlock", icon=ft.Icons.FINGERPRINT, on_click=lambda e: self.page.run_task(self.unlock))]))
+        return controls
+
+    async def set_fingerprint_lock(self, on: bool) -> None:
+        try:
+            await (self.vault.enable() if on else self.vault.disable())
+        except VaultError as exc:
+            self.toast(str(exc))
+        else:
+            self.toast("Fingerprint lock on" if on else "Fingerprint lock off")
+        top = self.top_job_screen
+        if top:
+            top.check_ready()
+        self.render()  # the switch shows what actually happened
+        self.page.update()
 
     # ---- rendering ----------------------------------------------------------------
 

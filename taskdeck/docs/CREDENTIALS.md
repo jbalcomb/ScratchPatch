@@ -1,7 +1,12 @@
 # Credentials vault
 
 Every job setting marked `secret=True` (API keys, the Google service-account key, ...) is a credential.
-TaskDeck keeps credentials out of `state.json` and in a vault that your **fingerprint** unlocks.
+TaskDeck can keep credentials out of `state.json` in a vault that your **fingerprint** unlocks.
+
+**Optional, off by default**: Settings → Credentials → **Fingerprint lock**. Turning it on asks for the
+fingerprint and moves the credentials in; turning it off asks for the fingerprint too and moves them back
+into `state.json`. Exception to the default: if the vault already holds credentials (moved in before the
+switch existed), it stays on until switched off.
 
 ## How it works
 
