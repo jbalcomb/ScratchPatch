@@ -42,8 +42,13 @@ jobs:
           native/sevenzip/build.sh /tmp/7zip /tmp/7z-android "$TC/aarch64-linux-android24-clang" "$TC/aarch64-linux-android24-clang++"
           file /tmp/7z-android/*.so | tee arch.txt
           test "$(grep -c 'ARM aarch64' arch.txt)" = 2
-          "$TC/llvm-readelf" -d /tmp/7z-android/lib7zshim.so | grep NEEDED
-          ! "$TC/llvm-readelf" -d /tmp/7z-android/lib7zshim.so | grep -q "libc++_shared"
+          for lib in lib7z.so lib7zshim.so; do
+            echo "$lib needs:"; "$TC/llvm-readelf" -d "/tmp/7z-android/$lib" | grep NEEDED
+            # Only Android system libraries: the app doesn't ship libc++_shared.so
+            if "$TC/llvm-readelf" -d "/tmp/7z-android/$lib" | grep NEEDED | grep -vqE "\[(libc|libm|libdl|liblog)\.so\]"; then
+              echo "::error::$lib needs a library that isn't part of Android"; exit 1
+            fi
+          done
       - name: Build the wheel
         run: |
           cp /tmp/7z-android/lib7z.so /tmp/7z-android/lib7zshim.so native/sevenzip/package/taskdeck_sevenzip/

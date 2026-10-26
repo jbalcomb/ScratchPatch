@@ -21,7 +21,9 @@ EXTRA=()
 case "$CC" in
   *android*) EXTRA=(LIB2=-ldl) ;;  # Android's libc includes pthreads; there is no libpthread to link
 esac
-make -C "$WORK/CPP/7zip/Bundles/Format7zF" -f makefile.gcc -j"$JOBS" CC="$CC" CXX="$CXX" "${EXTRA[@]}" >/dev/null
+# The C++ runtime is linked in statically: Android apps don't ship libc++_shared.so by default.
+make -C "$WORK/CPP/7zip/Bundles/Format7zF" -f makefile.gcc -j"$JOBS" CC="$CC" CXX="$CXX" \
+  LDFLAGS_STATIC_3=-static-libstdc++ "${EXTRA[@]}" >/dev/null
 cp "$WORK/CPP/7zip/Bundles/Format7zF/_o/7z.so" "$OUT/lib7z.so"
 
 # 2. The shim: our sz_shim.cpp plus the 7-Zip helper sources it uses (same list as 7-Zip's
