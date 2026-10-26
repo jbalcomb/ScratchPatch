@@ -7,7 +7,7 @@ See docs/jobs/extract_archive_SPEC.md.
 
 from pathlib import Path
 
-from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, Task, step
+from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Stage, StepError, Task, step
 from taskdeck.shared import archive, steps
 
 from . import logic
@@ -34,11 +34,6 @@ def extract(ctx):
     ctx["message"] = logic.extract(task, Path(ctx["archive"]), ctx["dest"], ctx.get("password") or None)
 
 
-@step(Stage.PRESENT)
-def report(ctx):
-    ctx.result = Result(title="Extracted", text=ctx["message"])
-
-
 class ExtractArchive(JobPlugin):
     id = "extract_archive"
     title = "Extract archive"
@@ -58,7 +53,7 @@ class ExtractArchive(JobPlugin):
         return [Problem(problem, fix="recheck")] if problem else []
 
     def build_pipeline(self):
-        return Pipeline([steps.require("archive"), check, extract, report])
+        return Pipeline([steps.require("archive"), check, extract, steps.present_text("message", title="Extracted")])
 
     def make_screen(self, app):
         from .screen import ExtractScreen  # the UI needs flet; the logic above doesn't
