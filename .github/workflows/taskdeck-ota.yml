@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ota-${{ github.ref }}
+  group: taskdeck-ota  # one at a time across branches: main and the TaskDeck branch publish to the same release
   cancel-in-progress: true
 
 defaults:

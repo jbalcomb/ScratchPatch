@@ -18,7 +18,7 @@ permissions:
 
 # A newer push cancels an older build, so the release always holds the newest APK.
 concurrency:
-  group: android-apk-${{ github.ref }}
+  group: taskdeck-android-apk  # one at a time across branches (same release)
   cancel-in-progress: true
 
 defaults:
