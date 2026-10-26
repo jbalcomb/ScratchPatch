@@ -66,9 +66,8 @@ class ArchiveTest(JobPlugin):
     run_label = "Open"
 
     def check_ready(self, settings):
-        if archive.available():
-            return []
-        return [Problem("The 7-Zip engine isn't in this app version. Install the latest APK.", fix="recheck")]
+        problem = archive.load_problem()
+        return [Problem(problem, fix="recheck")] if problem else []
 
     def build_pipeline(self):
         return Pipeline([steps.require("path"), open_archive, report])

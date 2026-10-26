@@ -164,3 +164,19 @@ def test_engine_check_job(tmp_path, monkeypatch):
     assert files_under(tmp_path / "extract-test" / "headers-encrypted") == CONTENT
     bad = archive_test.PLUGIN.run({"path": str(FIX / "headers-encrypted.7z"), "password": "nope"})
     assert not bad.ok and bad.error == "Wrong password."
+
+
+def test_android_library_locations(monkeypatch):
+    monkeypatch.delenv("TASKDECK_7Z_DIR", raising=False)
+    monkeypatch.setenv("ANDROID_NATIVE_LIBRARY_DIR", "/data/app/x/lib/arm64")
+    monkeypatch.setenv("ANDROID_APK_NATIVE_PREFIX", "/data/app/x/base.apk!/lib/arm64-v8a/")
+    found = archive._candidates("lib7zshim.so")
+    assert found[-3:] == ["/data/app/x/lib/arm64/lib7zshim.so", "/data/app/x/base.apk!/lib/arm64-v8a/lib7zshim.so",
+                          "lib7zshim.so"]
+
+
+def test_load_problem_explains(monkeypatch):
+    monkeypatch.setattr(archive, "_engine", None)
+    monkeypatch.setattr(archive, "_candidates", lambda name: ["/nonexistent/" + name])
+    problem = archive.load_problem()
+    assert problem.startswith("The archive engine isn't installed") and "/nonexistent/lib7zshim.so" in problem

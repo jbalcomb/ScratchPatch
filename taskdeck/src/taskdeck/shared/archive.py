@@ -4,8 +4,11 @@ The native part is two libraries built from 7-Zip's source plus our C shim
 (``native/sevenzip``): ``lib7z.so`` (7-Zip's archive library) and ``lib7zshim.so`` (a
 plain C API over it). They ship in the ``taskdeck_sevenzip`` package, which the APK
 build installs; on Android the build moves them next to the app's other native
-libraries, where they load by name. Elsewhere (tests, desktop) set ``TASKDECK_7Z_DIR``
-to the folder holding them.
+libraries. Python on Android turns a bare library name into "./name", so they are loaded
+by full location, the way Flet's own loader does: the app's native-library folder
+(``ANDROID_NATIVE_LIBRARY_DIR``) or the path inside the installed APK
+(``ANDROID_APK_NATIVE_PREFIX``, e.g. ``.../base.apk!/lib/arm64-v8a/``). Elsewhere (tests,
+desktop) set ``TASKDECK_7Z_DIR`` to the folder holding them.
 
 Plain ``.tar``/``.tgz``/``.tar.gz``/``.tar.bz2``/``.tar.xz`` go through Python's ``tarfile``
 instead: 7-Zip opens the compressed layer and the tar inside separately.
@@ -45,9 +48,10 @@ Progress = Callable[[int, int], bool]  # (done bytes, total bytes) -> True to ca
 
 
 class ArchiveError(Exception):
-    def __init__(self, code: int, entry: str = ""):
+    def __init__(self, code: int, entry: str = "", detail: str = ""):
         self.code = code
         self.entry = entry
+        self.detail = detail  # technical reason (e.g. why the engine didn't load), for diagnosis
         message = MESSAGES.get(code, f"Archive error {code}.")
         if entry and code in (E_DATA, E_WRONG_PASSWORD, E_WRITE, E_UNSAFE_PATH, E_UNSUPPORTED_METHOD):
             message += f" ({entry})"
@@ -78,7 +82,14 @@ def _candidates(name: str) -> list[str]:
         out.append(str(Path(taskdeck_sevenzip.__file__).parent / name))
     except ImportError:
         pass
-    out.append(name)  # Android: the build moved it next to the app's native libraries
+    # Android: the build moved the libraries next to the app's other native libraries.
+    native_dir = os.environ.get("ANDROID_NATIVE_LIBRARY_DIR")
+    if native_dir:
+        out.append(f"{native_dir}/{name}")
+    apk_prefix = os.environ.get("ANDROID_APK_NATIVE_PREFIX")
+    if apk_prefix:
+        out.append(apk_prefix + name)
+    out.append(name)
     return out
 
 
@@ -89,14 +100,15 @@ def engine() -> ctypes.CDLL:
         if _engine is not None:
             return _engine
         shim = None
+        tried = []
         for path in _candidates("lib7zshim.so"):
             try:
                 shim = ctypes.CDLL(path)
                 break
-            except OSError:
-                continue
+            except OSError as exc:
+                tried.append(f"{path}: {exc}")
         if shim is None:
-            raise ArchiveError(E_LOAD)
+            raise ArchiveError(E_LOAD, detail="\n".join(tried))
         shim.sz_load.argtypes = [ctypes.c_char_p]
         shim.sz_version.restype = ctypes.c_char_p
         shim.sz_load_error.restype = ctypes.c_char_p
@@ -112,18 +124,27 @@ def engine() -> ctypes.CDLL:
         shim.sz_item.restype = ctypes.c_uint32
         shim.sz_extract.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, _PROGRESS, ctypes.c_void_p,
                                     ctypes.c_char_p, ctypes.c_uint32]
-        if not any(shim.sz_load(p.encode()) == OK for p in _candidates("lib7z.so")):
-            raise ArchiveError(E_LOAD)
+        for path in _candidates("lib7z.so"):
+            if shim.sz_load(path.encode()) == OK:
+                break
+            tried.append(f"{path}: {(shim.sz_load_error() or b'').decode(errors='replace')}")
+        else:
+            raise ArchiveError(E_LOAD, detail="\n".join(tried))
         _engine = shim
         return shim
 
 
 def available() -> bool:
+    return load_problem() is None
+
+
+def load_problem() -> str | None:
+    """None if the engine loads, else why not (message plus the loader's details)."""
     try:
         engine()
-        return True
-    except ArchiveError:
-        return False
+        return None
+    except ArchiveError as exc:
+        return f"{exc}\n{exc.detail}".strip()
 
 
 def version() -> str:
