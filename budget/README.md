@@ -109,7 +109,7 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
 1. Clone the repo, and create the data folder and the secrets file (readable only by you):
 
    ```bash
-   git clone -b ccr-860724ba-1ahp18 https://github.com/jbalcomb/ScratchPatch.git ~/ScratchPatch   # branch until merged
+   git clone https://github.com/jbalcomb/ScratchPatch.git ~/ScratchPatch
    mkdir -p ~/budget ~/.config && touch ~/.config/secrets.env && chmod 600 ~/.config/secrets.env
    nano ~/.config/secrets.env
    ```

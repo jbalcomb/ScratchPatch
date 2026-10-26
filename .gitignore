@@ -6,7 +6,3 @@ build/
 dist/
 *.egg-info/
 reports/
-
-# budget: personal data stays local
-budget/rules_suggested.txt
-*.db
