@@ -11,7 +11,7 @@ dependencies = [
     "flet-secure-storage==1.0.4",  # credentials vault: Android keystore, unlocked by fingerprint
     "flet-local-auth==1.0.4",      # fingerprint prompt when unlocking again after a lock
     # 7-Zip's archive library + TaskDeck's C shim for Android arm64 (built by the "TaskDeck 7-Zip engine" workflow)
-    "taskdeck-sevenzip @ https://github.com/jbalcomb/ScratchPatch/releases/download/taskdeck-sevenzip/taskdeck_sevenzip-26.5.0-py3-none-any.whl",
+    "taskdeck-sevenzip @ https://github.com/jbalcomb/ScratchPatch/releases/download/taskdeck-sevenzip/taskdeck_sevenzip-26.5.1-py3-none-any.whl",
 ]
 
 [dependency-groups]
