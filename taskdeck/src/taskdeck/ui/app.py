@@ -22,6 +22,7 @@ from taskdeck.core.tasks import DONE
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
+from . import accounts
 from .palette import CommandPalette
 from .vault_backend import make_backend
 
@@ -46,6 +47,7 @@ class TaskDeckApp:
         secret_fields: dict[str, set[str]] = {}
         for p in self.registry:
             secret_fields.setdefault(p.settings_id, set()).update(f.name for f in p.settings if f.secret)
+        secret_fields.update(accounts.SECRET_FIELDS)  # connected accounts' secrets are credentials too
         self.vault = Vault(make_backend(page) if vault_backend is _AUTO else vault_backend, self.store, secret_fields)
         self._hidden_at: float | None = None
         self.favorites = Favorites(self.store)
@@ -54,6 +56,7 @@ class TaskDeckApp:
         run_thread = getattr(page, "run_thread", None)
         self.tasks = TaskManager(start_thread=run_thread)
         self.tasks.listeners.append(self.on_task)
+        self.google = accounts.GoogleAccount(self)
         self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
         if not self.store.get("initialized"):
@@ -347,13 +350,14 @@ class TaskDeckApp:
 
     def _housekeeping(self) -> None:
         """One-time clean-ups of things older versions left behind (in the background)."""
-        test_copy = self.store.path.parent / "extract-test"  # the old 7-Zip engine check's test extractions
-        if test_copy.exists():
-            import shutil
-            import threading
+        import shutil
+        import threading
 
-            threading.Thread(target=shutil.rmtree, args=(test_copy,), kwargs={"ignore_errors": True},
-                             daemon=True).start()
+        for leftover in (self.store.path.parent / "extract-test",  # the old 7-Zip engine check's test extractions
+                         self.temp_dir):  # scratch space from an interrupted run
+            if leftover.exists():
+                threading.Thread(target=shutil.rmtree, args=(leftover,), kwargs={"ignore_errors": True},
+                                 daemon=True).start()
 
     def tile(self, plugin: JobPlugin) -> ft.Control:
         """A Windows-11-style pinned tile: icon over label; long-press for options."""
@@ -492,6 +496,8 @@ class TaskDeckApp:
                 *([section_title("Job settings")] if configurable else []),
                 *[ft.ListTile(leading=ft.Icon(plugin_icon(p)), title=ft.Text(p.title), trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
                               on_click=lambda e, pid=p.id: self.open_settings(pid)) for p in configurable],
+                section_title("Accounts"),
+                *self.google.settings_rows(),
                 *self.credentials_section(),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
@@ -590,6 +596,14 @@ class TaskDeckApp:
 
     def copy(self, text: str) -> None:
         self.page.run_task(self.copy_async, text)
+
+    def open_url(self, url: str) -> None:
+        self.page.run_task(ft.UrlLauncher().launch_url, url)
+
+    @property
+    def temp_dir(self):
+        """Scratch space inside TaskDeck's storage (e.g. unpacking before an upload); emptied at start."""
+        return self.store.path.parent / "tmp"
 
     # ---- commands -----------------------------------------------------------------
 

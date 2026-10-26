@@ -59,7 +59,7 @@ any extra native code on the phone.
 1. TaskDeck → **Settings** tab → **Accounts** → **Google Drive** → **Set up**.
 2. Paste the **Client ID** and **Client secret** (the Paste buttons help). They are kept with your other
    credentials on the phone, never in the repository.
-3. Tap **Connect**. TaskDeck shows a short code (like `BQKD-WXTL`) with **Copy code** and **Open
+3. Tap **Save and connect**. TaskDeck shows a short code (like `BQKD-WXTL`) with **Copy code** and **Open
    google.com/device**.
 4. On google.com/device (phone or desktop), enter the code, pick your Google account, approve.
 5. TaskDeck notices by itself and shows **Connected as you@gmail.com**.

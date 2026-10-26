@@ -14,6 +14,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -77,6 +78,14 @@ class _HTTPSHandler(urllib.request.HTTPSHandler):
 _OPENER = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler(context=_SSL))
 
 
+def _network_error(exc: Exception, url: str, timeout: float) -> HttpError:
+    reason = getattr(exc, "reason", exc)
+    host = urllib.parse.urlsplit(url).netloc or url
+    if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
+        return HttpError(f"{host} didn't answer within {timeout:g} s", timed_out=True)
+    return HttpError(f"Can't reach {host}: {reason}")
+
+
 def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str] | None = None,
             headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
     """Send a request and decode a JSON response (or return text if it isn't JSON)."""
@@ -96,15 +105,50 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         body = exc.read().decode("utf-8", errors="replace")
         raise HttpError(f"HTTP {exc.code}: {_error_detail(body) or exc.reason}", exc.code, body) from None
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
-        reason = getattr(exc, "reason", exc)
-        host = urllib.parse.urlsplit(url).netloc or url
-        if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(reason):
-            raise HttpError(f"{host} didn't answer within {timeout:g} s", timed_out=True) from None
-        raise HttpError(f"Can't reach {host}: {reason}") from None
+        raise _network_error(exc, url, timeout) from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         return raw
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # hand 3xx back to the caller (e.g. Google's "308 Resume Incomplete")
+
+
+_RAW_OPENER = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler(context=_SSL), _NoRedirect())
+
+
+@dataclass
+class Response:
+    status: int
+    headers: dict[str, str]  # lower-case names
+    body: bytes
+
+    def json(self) -> Any:
+        try:
+            return json.loads(self.body.decode("utf-8", errors="replace") or "null")
+        except json.JSONDecodeError:
+            return None
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+
+def send(method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
+         timeout: float = 60) -> Response:
+    """One request; any HTTP status comes back as a Response (no raising, no redirects followed).
+    Network failures raise HttpError, like :func:`request`."""
+    req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    try:
+        with _RAW_OPENER.open(req, timeout=timeout) as resp:
+            return Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
+    except urllib.error.HTTPError as exc:
+        return Response(exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b"")
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
+        raise _network_error(exc, url, timeout) from None
 
 
 def reachable(url: str, timeout: float = 3) -> bool:

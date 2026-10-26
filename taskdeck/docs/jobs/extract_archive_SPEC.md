@@ -3,8 +3,8 @@
 Unpack zip, 7-Zip, RAR (and tar/gz) archives on the phone, into a folder on the phone, Google Drive or
 Dropbox, while TaskDeck stays usable for other jobs.
 
-Status: **steps 1–2 built** (7-Zip engine; phone extraction with browser, destination picker, background
-progress). Steps 3–4 (Dropbox, Google Drive) not started. Decisions are in §5.
+Status: **steps 1, 2 and 4 built** (7-Zip engine; phone extraction; Google Drive destination with
+sign-in, waiting for its first real sign-in). Step 3 (Dropbox) not started. Decisions are in §5.
 
 ---
 

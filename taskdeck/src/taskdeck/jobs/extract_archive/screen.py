@@ -10,6 +10,7 @@ import flet as ft
 from taskdeck.core import Task
 from taskdeck.core.tasks import CANCELLED, DONE, FAILED
 from taskdeck.shared import files
+from taskdeck.shared.gdrive import ROOT, DriveLocation
 from taskdeck.ui import file_access
 from taskdeck.ui.common import plugin_icon, screen_view, section_title
 from taskdeck.ui.file_browser import FileBrowser
@@ -131,21 +132,37 @@ class ExtractScreen:
                                 new_folder_name=self.name if self.name is not None else
                                 files.archive_stem(self.archive.name))
 
-    def set_destination(self, parent: Path, name: str | None) -> None:
+    def set_destination(self, parent: "Path | DriveLocation", name: str | None) -> None:
         self.parent, self.name = parent, name
         self.render()
 
     # ---- extracting ----------------------------------------------------------------------------
 
+    @property
+    def to_drive(self) -> bool:
+        return isinstance(self.parent, DriveLocation)
+
     def destination(self) -> Path:
         return self.parent / self.name if self.name else self.parent
+
+    def destination_text(self) -> str:
+        if self.to_drive:
+            return self.parent.display(self.name) + ("/" if self.name else "")
+        return files.display_path(self.destination()) + ("/" if self.name else "")
 
     def extract(self, e=None) -> None:
         if not self.scan or self.task or self.problems():
             return
-        path, dest, password = self.archive, self.destination(), self.password.value or None
-        self.task = self.app.tasks.start(f"Extracting {path.name}", self.plugin.id,
-                                         lambda t: logic.extract(t, path, dest, password), result=dest)
+        path, password = self.archive, self.password.value or None
+        if self.to_drive:
+            drive, location, name, temp = self.app.google.drive(), self.parent, self.name, self.app.temp_dir
+            self.task = self.app.tasks.start(
+                f"Extracting {path.name} to Google Drive", self.plugin.id,
+                lambda t: logic.extract_to_drive(t, path, password, drive, location, name, temp), result=location)
+        else:
+            dest = self.destination()
+            self.task = self.app.tasks.start(f"Extracting {path.name}", self.plugin.id,
+                                             lambda t: logic.extract(t, path, dest, password), result=dest)
         self.render()
 
     def cancel(self, e=None) -> None:
@@ -159,7 +176,8 @@ class ExtractScreen:
 
         self.app.page.show_dialog(ft.AlertDialog(
             title=ft.Text("Stop extracting?"),
-            content=ft.Text(f"Files already extracted stay in {files.display_path(task.result)}."),
+            content=ft.Text("Files already uploaded stay in Google Drive." if isinstance(task.result, DriveLocation)
+                            else f"Files already extracted stay in {files.display_path(task.result)}."),
             actions=[ft.TextButton("Keep extracting", on_click=lambda e: self.app.page.pop_dialog()),
                      ft.FilledButton("Stop", on_click=stop)]))
 
@@ -180,7 +198,9 @@ class ExtractScreen:
             return []
         if self.scan.names_hidden and not self.scan.error and self.password.value:
             return ["Tap “Unlock” to check the password."]
-        return logic.problems(self.scan, self.parent, self.name, self.password.value or "")
+        google = self.app.google
+        return logic.problems(self.scan, self.parent, self.name, self.password.value or "",
+                              drive_connected=google.connected and not google.locked, temp_root=self.app.temp_dir)
 
     # ---- rendering ------------------------------------------------------------------------------
 
@@ -262,11 +282,16 @@ class ExtractScreen:
         if not self.archive or not self.parent:
             self.dest_box.controls = [ft.Text("Choose an archive first.", color=ft.Colors.ON_SURFACE_VARIANT)]
             return
-        target = files.display_path(self.destination()) + ("/" if self.name else "")
-        note = "new folder" if self.name and not self.destination().exists() else \
-            "existing folder" if self.name else "straight into this folder"
+        if self.to_drive:
+            icon = ft.Icons.ADD_TO_DRIVE
+            note = ("a folder named after the archive (reused if it exists)" if self.name else "straight into this folder") \
+                + " · unpacked on the phone first, then uploaded"
+        else:
+            icon = ft.Icons.FOLDER_OUTLINED
+            note = "new folder" if self.name and not self.destination().exists() else \
+                "existing folder" if self.name else "straight into this folder"
         self.dest_box.controls = [ft.Card(ft.Container(ft.Column([
-            ft.Row([ft.Icon(ft.Icons.FOLDER_OUTLINED), ft.Text(target, expand=True, selectable=True)]),
+            ft.Row([ft.Icon(icon), ft.Text(self.destination_text(), expand=True, selectable=True)]),
             ft.Text(note, size=13, color=ft.Colors.ON_SURFACE_VARIANT),
             ft.Row([ft.TextButton("Change…", icon=ft.Icons.EDIT_LOCATION_ALT_OUTLINED, on_click=self.change_destination)],
                    alignment=ft.MainAxisAlignment.END),
@@ -279,9 +304,13 @@ class ExtractScreen:
             return
         if t.running:
             pct = f" {t.fraction * 100:.0f}%" if t.fraction is not None else ""
-            lines = [ft.Text(f"Extracting…{pct}", weight=ft.FontWeight.W_600),
+            done, total = t.done, t.total
+            if isinstance(t.result, DriveLocation):  # the bar covers unpacking + uploading; the size, this phase
+                total //= 2
+                done = done - total if done > total else done
+            lines = [ft.Text(f"{t.detail or 'Extracting…'}{pct}", weight=ft.FontWeight.W_600),
                      ft.ProgressBar(value=t.fraction),
-                     ft.Text(f"{files.human_size(t.done)} of {files.human_size(t.total)}" if t.total else "Starting…")]
+                     ft.Text(f"{files.human_size(done)} of {files.human_size(total)}" if t.total else "Starting…")]
             eta = t.eta()
             if eta is not None:
                 lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(), color=ft.Colors.ON_SURFACE_VARIANT))
@@ -298,6 +327,11 @@ class ExtractScreen:
         if t.status == DONE and isinstance(t.result, Path):
             buttons.insert(0, ft.FilledTonalButton("Show files", icon=ft.Icons.FOLDER_OPEN,
                                                    on_click=lambda e: FileBrowser.show(self.app, t.result, self.set_archive)))
+        elif t.status == DONE and isinstance(t.result, DriveLocation):
+            fid = t.result.folder_id
+            url = "https://drive.google.com/drive/my-drive" if fid == ROOT else f"https://drive.google.com/drive/folders/{fid}"
+            buttons.insert(0, ft.FilledTonalButton("Open in Drive", icon=ft.Icons.OPEN_IN_NEW,
+                                                   on_click=lambda e: self.app.open_url(url)))
         self.progress_box.controls = [ft.Container(ft.Column([
             ft.Row([ft.Icon(icon), ft.Text(t.message, expand=True, selectable=True)]),
             ft.Row(buttons, wrap=True),

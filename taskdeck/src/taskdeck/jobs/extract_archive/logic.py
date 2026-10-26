@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from taskdeck.core import Cancelled, Task
-from taskdeck.shared import archive, files
+from taskdeck.shared import archive, files, gdrive, google_oauth, http
+from taskdeck.shared.gdrive import DriveLocation
 
 
 @dataclass
@@ -62,8 +64,11 @@ def default_destination(path: Path) -> tuple[Path, str]:
     return path.parent, files.archive_stem(path.name)
 
 
-def problems(s: Scan, parent: Path, name: str | None, password: str) -> list[str]:
+def problems(s: Scan, parent: "Path | DriveLocation", name: str | None, password: str,
+             drive_connected: bool = False, temp_root: Path | None = None) -> list[str]:
     """What would stop the extraction, checked before starting."""
+    if isinstance(parent, DriveLocation):
+        return drive_problems(s, name, password, drive_connected, temp_root)
     out = []
     if s.error:
         out.append(s.error)
@@ -104,3 +109,85 @@ def extract(task: Task, path: Path, dest: Path, password: str | None) -> str:
             raise Cancelled(f"Stopped. Files already extracted stay in {files.display_path(dest)}.") from None
         raise RuntimeError(str(exc)) from None
     return f"Extracted {count:,} file{'s' * (count != 1)} ({files.human_size(task.total)}) to {files.display_path(dest)}"
+
+
+# ---- Google Drive ------------------------------------------------------------------------------
+
+def drive_problems(s: Scan, name: str | None, password: str, connected: bool, temp_root: Path | None) -> list[str]:
+    out = []
+    if s.error:
+        out.append(s.error)
+    if s.encrypted and not password:
+        out.append("Enter the archive's password.")
+    if name is not None and (err := files.valid_folder_name(name)):
+        out.append(err)
+    if not connected:
+        out.append("Connect Google Drive first (Settings → Accounts).")
+    if s.unpacked and temp_root is not None:
+        free = files.free_space(temp_root)
+        if s.unpacked > free:
+            out.append(f"Not enough space on the phone to unpack before uploading: needs "
+                       f"{files.human_size(s.unpacked)}, {files.human_size(free)} free.")
+    return out
+
+
+def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive.DriveClient,
+                     location: DriveLocation, name: str | None, temp_root: Path) -> str:
+    """Unpack into a temporary folder on the phone, upload everything, delete the temporary copy.
+
+    Same-named files in Drive are replaced and same-named folders reused, like extracting on the phone."""
+    temp = temp_root / f"task-{task.id}-{os.getpid()}"
+    count = sent = 0
+    target = location.display(name)
+    try:
+        with archive.Archive(path, password or None) as a:
+            total = sum(e.size for e in a.entries() if not e.is_dir)
+            task.detail = "Unpacking…"
+            task.report(0, total * 2)  # first half: unpacking; second half: uploading
+            a.extract(temp, progress=lambda done, _t: (task.report(done), task.cancel_requested)[1],
+                      password=password or None)
+        task.detail = "Uploading to Google Drive…"
+        task.report(total)
+        root_id = location.folder_id
+        if name:
+            existing, _ = drive.children(root_id)
+            root_id = existing.get(name) or drive.create_folder(name, root_id).id
+            task.result = location.child(gdrive.Folder(root_id, name))  # "Open in Drive" goes straight there
+        folder_ids = {Path("."): root_id}
+        for dirpath, dirnames, filenames in os.walk(temp):
+            dirnames.sort()
+            here = Path(dirpath).relative_to(temp)
+            parent_id = folder_ids[here]
+            sub_folders, sub_files = drive.children(parent_id)
+            for d in dirnames:
+                folder_ids[here / d] = sub_folders.get(d) or drive.create_folder(d, parent_id).id
+            for f in sorted(filenames):
+                local = Path(dirpath) / f
+                size, base = local.stat().st_size, sent
+
+                def progress(n: int, base=base) -> bool:
+                    task.report(total + base + n)
+                    return task.cancel_requested
+
+                drive.upload(local, parent_id, f, progress=progress, replace=sub_files.get(f))
+                local.unlink()  # free the space as we go
+                sent += size
+                count += 1
+                if task.cancel_requested:
+                    raise gdrive.UploadCancelled()
+    except archive.ArchiveError as exc:
+        if exc.code == archive.E_CANCELLED:
+            raise Cancelled("Stopped before uploading anything.") from None
+        raise RuntimeError(str(exc)) from None
+    except gdrive.UploadCancelled:
+        raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
+    except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
+        done = f" {_were_uploaded(count)} before that." if count else ""
+        raise RuntimeError(f"{exc}{done}") from None
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+    return f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+
+
+def _were_uploaded(count: int) -> str:
+    return "1 file was uploaded" if count == 1 else f"{count:,} files were uploaded"

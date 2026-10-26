@@ -5,7 +5,8 @@ Two modes:
 * ``FileBrowser.pick_file``: choose a file (archives only unless "Show all files").
 * ``FileBrowser.pick_folder``: choose where to put something, like a "Save as" dialog:
   optional new folder name, location chips, folder list, New folder, and a fixed
-  "Will extract to:" bar with Cancel / Use this.
+  "Will extract to:" bar with Cancel / Use this. Its "Google Drive" chip browses the
+  Drive folders TaskDeck created (``gdrive.DriveLocation``).
 
 It reads real paths, so it needs file access (``file_access``); without it the list says
 so instead of failing.
@@ -19,7 +20,8 @@ from typing import TYPE_CHECKING, Callable
 
 import flet as ft
 
-from taskdeck.shared import files
+from taskdeck.shared import files, gdrive
+from taskdeck.shared.gdrive import DriveLocation
 
 from .common import icon_for
 
@@ -36,6 +38,13 @@ class FileBrowser:
         self.mode = mode
         self.on_done = on_done
         self.locations = files.locations()
+        # Google Drive (destination picker only): the trail of folders from My Drive, or None on the phone
+        self.drive_trail: list[DriveLocation] | None = None
+        self.drive_folders: list[gdrive.Folder] | None = None  # None while loading
+        self.drive_error = ""
+        if isinstance(start, DriveLocation):
+            self.drive_trail = [DriveLocation()] + ([start] if start.folder_id != gdrive.ROOT else [])
+            start = None
         self.folder = self._start_folder(start)
         self.show_all = ft.Switch(label="Show all files", value=False, on_change=lambda e: self.refresh())
         self.chips = ft.Row(wrap=True, spacing=8)
@@ -97,10 +106,13 @@ class FileBrowser:
         app.push(browser)
 
     @classmethod
-    def pick_folder(cls, app: "TaskDeckApp", on_pick: Callable[[Path, str | None], None], start: Path | None,
+    def pick_folder(cls, app: "TaskDeckApp", on_pick: Callable[..., None], start: "Path | DriveLocation | None",
                     new_folder_name: str | None) -> None:
-        """on_pick(parent folder, new folder name or None)."""
-        app.push(cls(app, FOLDER, "Extract to", start, on_pick, new_folder_name))
+        """on_pick(parent folder (a Path, or a DriveLocation), new folder name or None)."""
+        browser = cls(app, FOLDER, "Extract to", start, on_pick, new_folder_name)
+        app.push(browser)
+        if browser.drive_trail is not None:
+            browser._load_drive()
 
     def _start_folder(self, start: Path | None) -> Path:
         if start and start.is_dir():
@@ -109,14 +121,21 @@ class FileBrowser:
 
     # ---- rendering ----------------------------------------------------------------------
 
+    @property
+    def in_drive(self) -> bool:
+        return self.drive_trail is not None
+
     def refresh(self, update: bool = True) -> None:
         self.chips.controls = [
             ft.Chip(label=ft.Text(loc.label), leading=ft.Icon(icon_for(loc.icon), size=18),
-                    selected=self._within(loc.path), on_click=lambda e, p=loc.path: self.go(p))
+                    selected=not self.in_drive and self._within(loc.path), on_click=lambda e, p=loc.path: self.go(p))
             for loc in self.locations
         ]
-        self.crumbs.controls = self._breadcrumb()
-        self.list.controls = self._items()
+        if self.mode == FOLDER and getattr(self.app, "google", None) is not None:
+            self.chips.controls.append(ft.Chip(label=ft.Text("Google Drive"), leading=ft.Icon(ft.Icons.ADD_TO_DRIVE, size=18),
+                                               selected=self.in_drive, on_click=lambda e: self.go_drive()))
+        self.crumbs.controls = self._drive_breadcrumb() if self.in_drive else self._breadcrumb()
+        self.list.controls = self._drive_items() if self.in_drive else self._items()
         if self.mode == FOLDER:
             self._update_target(update=False)
         if update:
@@ -195,8 +214,80 @@ class FileBrowser:
     # ---- actions ------------------------------------------------------------------------
 
     def go(self, folder: Path) -> None:
+        self.drive_trail = None
         self.folder = folder
         self.refresh()
+
+    # ---- Google Drive --------------------------------------------------------------------
+
+    def go_drive(self, trail: list[DriveLocation] | None = None) -> None:
+        self.drive_trail = trail or [DriveLocation()]
+        self._load_drive()
+
+    def _load_drive(self) -> None:
+        account = self.app.google
+        self.drive_folders, self.drive_error = None, ""
+        self.refresh()
+        if account.locked or not account.connected:
+            return
+        here = self.drive_trail[-1]
+
+        def work():
+            try:
+                folders = account.drive().list_folders(here.folder_id)
+                error = ""
+            except Exception as exc:  # shown in the list; network, sign-in and API errors alike
+                folders, error = [], str(exc)
+            if self.drive_trail and self.drive_trail[-1] == here:
+                self.drive_folders, self.drive_error = folders, error
+                self.refresh(update=False)
+                self.app.page.schedule_update()
+
+        self.app.page.run_thread(work)
+
+    def _drive_breadcrumb(self) -> list[ft.Control]:
+        out: list[ft.Control] = []
+        for i, loc in enumerate(self.drive_trail):
+            if i:
+                out.append(ft.Text("›", color=ft.Colors.ON_SURFACE_VARIANT))
+            last = i == len(self.drive_trail) - 1
+            out.append(ft.TextButton(loc.names[-1], disabled=last,
+                                     on_click=None if last else lambda e, i=i: self.go_drive(self.drive_trail[: i + 1]),
+                                     style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=6))))
+        return out
+
+    def _drive_items(self) -> list[ft.Control]:
+        account = self.app.google
+        if account.locked:
+            return [self._message(ft.Icons.LOCK_OUTLINE, "Your credentials are locked.", "Unlock to use Google Drive."),
+                    ft.Row([ft.FilledButton("Unlock", icon=ft.Icons.FINGERPRINT,
+                                            on_click=lambda e: self.app.page.run_task(self.app.unlock, self._load_drive))],
+                           alignment=ft.MainAxisAlignment.CENTER)]
+        if not account.connected:
+            hint = "Sign in once; TaskDeck then saves extracted files into your Drive." if account.configured else \
+                "First create TaskDeck's Google sign-in client (see the setup guide)."
+            return [self._message(ft.Icons.ADD_TO_DRIVE, "Google Drive isn't connected.", hint),
+                    ft.Row([ft.FilledButton("Connect Google Drive", icon=ft.Icons.LINK,
+                                            on_click=lambda e: account.connect(self._load_drive))],
+                           alignment=ft.MainAxisAlignment.CENTER)]
+        if self.drive_folders is None:
+            return [ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2), ft.Text("Loading your Drive…")],
+                           alignment=ft.MainAxisAlignment.CENTER)]
+        if self.drive_error:
+            return [self._message(ft.Icons.ERROR_OUTLINE, "Couldn't open Google Drive.", self.drive_error),
+                    ft.Row([ft.TextButton("Try again", icon=ft.Icons.REFRESH, on_click=lambda e: self._load_drive())],
+                           alignment=ft.MainAxisAlignment.CENTER)]
+        rows: list[ft.Control] = [ft.Text("TaskDeck can only see folders it created in your Drive.", size=13,
+                                          color=ft.Colors.ON_SURFACE_VARIANT)]
+        here = self.drive_trail[-1]
+        rows += [ft.ListTile(leading=ft.Icon(ft.Icons.FOLDER), title=ft.Text(f.name, max_lines=2),
+                             trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
+                             on_click=lambda e, f=f: self.go_drive([*self.drive_trail, here.child(f)]))
+                 for f in self.drive_folders]
+        if not self.drive_folders:
+            rows.append(self._message(ft.Icons.FOLDER_OPEN, "No TaskDeck folders here yet.",
+                                      "Extracting creates one, named after the archive."))
+        return rows
 
     def _pick(self, path: Path) -> None:
         self.app.back()
@@ -212,13 +303,17 @@ class FileBrowser:
         note = ""
         if problem:
             note = problem
-        elif name and (self.folder / name).exists():
+        elif name and self._exists(name):
             note = f"“{name}” already exists here: files go into it and replace any with the same name."
         self.name_note.value = note
         self.name_note.color = ft.Colors.ERROR if problem else ft.Colors.ON_SURFACE_VARIANT
-        self.use_button.disabled = bool(problem)
-        target = self.folder / name if name else self.folder
-        self.target.value = files.display_path(target) + ("/" if name else "")
+        drive_ready = not self.in_drive or (self.app.google.connected and not self.app.google.locked)
+        self.use_button.disabled = bool(problem) or not drive_ready
+        if self.in_drive:
+            self.target.value = self.drive_trail[-1].display(name) + ("/" if name else "")
+        else:
+            target = self.folder / name if name else self.folder
+            self.target.value = files.display_path(target) + ("/" if name else "")
         if update:
             self.app.page.update()
 
@@ -227,7 +322,25 @@ class FileBrowser:
         if name is not None and files.valid_folder_name(name):
             return
         self.app.back()
-        self.on_done(self.folder, name)
+        self.on_done(self.drive_trail[-1] if self.in_drive else self.folder, name)
+
+    def _exists(self, name: str) -> bool:
+        if self.in_drive:
+            return any(f.name == name for f in self.drive_folders or [])
+        return (self.folder / name).exists()
+
+    def _create_drive_folder(self, name: str) -> None:
+        here = self.drive_trail[-1]
+
+        def work():
+            try:
+                folder = self.app.google.drive().create_folder(name, here.folder_id)
+            except Exception as exc:
+                self.app.toast(f"Couldn't create the folder: {exc}")
+                return
+            self.go_drive([*self.drive_trail, here.child(folder)])
+
+        self.app.page.run_thread(work)
 
     def _ask_new_folder(self) -> None:
         field = ft.TextField(label="Folder name", autofocus=True, text_size=16)
@@ -236,8 +349,12 @@ class FileBrowser:
         def create(e=None):
             name = (field.value or "").strip()
             problem = files.valid_folder_name(name)
-            if not problem and (self.folder / name).exists():
+            if not problem and self._exists(name):
                 problem = "That folder already exists."
+            if not problem and self.in_drive:
+                self.app.page.pop_dialog()
+                self._create_drive_folder(name)
+                return
             if problem:
                 error.value = problem
                 self.app.page.update()

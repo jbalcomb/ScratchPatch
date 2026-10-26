@@ -30,6 +30,7 @@ class Task:
     done: int = 0
     total: int = 0
     message: str = ""  # result or error, for the user
+    detail: str = ""  # what it's doing right now, e.g. "Uploading to Google Drive…"
     result: Any = None  # anything the job wants to keep (e.g. the destination folder)
     started: float = field(default_factory=time.time)
     finished: float | None = None
