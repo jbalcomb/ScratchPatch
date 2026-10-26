@@ -1,12 +1,17 @@
-name: Android APK
+name: TaskDeck Android APK
 
 on:
   workflow_dispatch:
   push:
+    # Only these branches publish to the phone; any other branch (a project that merged main,
+    # an old copy of TaskDeck) must never replace what is installed.
+    branches:
+      - main
+      - claude/android-job-interface-app-q20urc
     paths:
-      - "src/**"
-      - "pyproject.toml"
-      - ".github/workflows/android.yml"
+      - "taskdeck/src/**"
+      - "taskdeck/pyproject.toml"
+      - ".github/workflows/taskdeck-android.yml"
 
 permissions:
   contents: write  # publish the APK to the "taskdeck-latest" release
@@ -15,6 +20,10 @@ permissions:
 concurrency:
   group: android-apk-${{ github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: taskdeck
 
 jobs:
   apk:
@@ -46,7 +55,7 @@ jobs:
         # --yes lets flet install the matching Flutter and Android SDKs.
         # Signed with the permanent key in android/ so each APK installs over the previous one.
         env:
-          FLET_ANDROID_SIGNING_KEY_STORE: ${{ github.workspace }}/android/taskdeck-release.jks
+          FLET_ANDROID_SIGNING_KEY_STORE: ${{ github.workspace }}/taskdeck/android/taskdeck-release.jks
           FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           FLET_ANDROID_SIGNING_KEY_ALIAS: taskdeck
@@ -60,7 +69,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: taskdeck-apk
-          path: TaskDeck.apk
+          path: taskdeck/TaskDeck.apk
           if-no-files-found: error
       - name: Publish to the "latest" release (stable download link)
         env:
