@@ -6,9 +6,10 @@ from .plugin import (
 )
 from .secrets import SecretBackend, Vault, VaultError
 from .storage import JsonStore, default_data_dir
+from .tasks import Task, TaskManager
 
 __all__ = [
     "Cancelled", "Command", "CommitOutcome", "CommandKind", "CommandRegistry", "Context", "Drafts", "Favorites", "Field",
     "FieldKind", "History", "JobPlugin", "JsonStore", "NeedsConfirmation", "Pipeline", "PluginRegistry", "Problem", "QuickAction",
-    "Result", "RunReport", "SecretBackend", "SettingsAction", "Stage", "Step", "StepError", "Vault", "VaultError", "default_data_dir", "fuzzy_score", "step",
+    "Result", "RunReport", "SecretBackend", "SettingsAction", "Stage", "Step", "StepError", "Task", "TaskManager", "Vault", "VaultError", "default_data_dir", "fuzzy_score", "step",
 ]

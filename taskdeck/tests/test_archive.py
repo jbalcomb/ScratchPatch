@@ -152,20 +152,6 @@ def test_wrong_password_names_the_file(tmp_path):
     assert "(d.txt)" in str(info.value)
 
 
-@needs_engine
-def test_engine_check_job(tmp_path, monkeypatch):
-    from taskdeck.jobs import archive_test
-
-    monkeypatch.setattr(archive_test, "default_data_dir", lambda: tmp_path)
-    report = archive_test.PLUGIN.run({"path": str(FIX / "headers-encrypted.7z"), "password": "Secret1", "extract": True})
-    assert report.ok, report.error
-    rows = dict(report.result.rows)
-    assert rows["Format"] == "7z" and rows["Files"] == "3 (+2 folders)" and rows["Encrypted"] == "3 of 3 files"
-    assert files_under(tmp_path / "extract-test" / "headers-encrypted") == CONTENT
-    bad = archive_test.PLUGIN.run({"path": str(FIX / "headers-encrypted.7z"), "password": "nope"})
-    assert not bad.ok and bad.error == "Wrong password."
-
-
 def test_android_library_locations(monkeypatch):
     monkeypatch.delenv("TASKDECK_7Z_DIR", raising=False)
     monkeypatch.setenv("ANDROID_NATIVE_LIBRARY_DIR", "/data/app/x/lib/arm64")

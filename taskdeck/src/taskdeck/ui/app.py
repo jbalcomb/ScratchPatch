@@ -15,8 +15,9 @@ import flet as ft
 
 from taskdeck.core import (
     Command, CommandKind, CommandRegistry, Drafts, Favorites, History, JobPlugin, JsonStore,
-    PluginRegistry, SecretBackend, Vault, VaultError, default_data_dir,
+    PluginRegistry, SecretBackend, Task, TaskManager, Vault, VaultError, default_data_dir,
 )
+from taskdeck.core.tasks import DONE
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
@@ -50,6 +51,10 @@ class TaskDeckApp:
         self.favorites = Favorites(self.store)
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
+        run_thread = getattr(page, "run_thread", None)
+        self.tasks = TaskManager(start_thread=run_thread)
+        self.tasks.listeners.append(self.on_task)
+        self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
         if not self.store.get("initialized"):
             for pid in ("unit_convert", "text_stats", "json_format"):  # sensible first-run pins
@@ -106,7 +111,8 @@ class TaskDeckApp:
         if plugin is None:
             self.toast(f"Job {job_id!r} is not installed")
             return
-        screen = JobScreen(self, plugin, preset)
+        make_screen = getattr(plugin, "make_screen", None)
+        screen = make_screen(self) if make_screen else JobScreen(self, plugin, preset)
         self.push(screen)
         screen.check_ready()
         self.page.update()
@@ -302,6 +308,7 @@ class TaskDeckApp:
             [
                 ft.Container(height=8),
                 self.search_pill(),
+                *self.running_strip(),
                 section_title("Pinned", ft.TextButton("All jobs  ›", on_click=lambda e: self.go("jobs"))),
                 tiles,
                 section_title("Recent"),
@@ -311,6 +318,42 @@ class TaskDeckApp:
             spacing=14,
             expand=True,
         )
+
+    def running_strip(self) -> list[ft.Control]:
+        """One line per background task while it runs; tap to open its job."""
+        out = []
+        for t in self.tasks.running():
+            pct = f" · {t.fraction * 100:.0f}%" if t.fraction is not None else ""
+            out.append(ft.Container(
+                ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2, value=t.fraction),
+                        ft.Text(f"{t.title}{pct}", expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Icon(ft.Icons.CHEVRON_RIGHT)]),
+                bgcolor=ft.Colors.SECONDARY_CONTAINER, border_radius=12, padding=12,
+                on_click=lambda e, j=t.job_id: self.open_job(j)))
+        return out
+
+    def on_task(self, task: Task) -> None:
+        """Background task changed (worker thread): refresh Home, announce the end."""
+        if not self.stack and self.tab == "home":
+            self.render()
+        if not task.running:
+            top = self.stack[-1] if self.stack else None
+            if getattr(getattr(top, "plugin", None), "id", None) != task.job_id:  # its screen isn't showing it
+                self.toast(task.message if task.status == DONE else f"{task.title}: {task.message}")
+        try:
+            self.page.schedule_update()
+        except Exception:
+            pass
+
+    def _housekeeping(self) -> None:
+        """One-time clean-ups of things older versions left behind (in the background)."""
+        test_copy = self.store.path.parent / "extract-test"  # the old 7-Zip engine check's test extractions
+        if test_copy.exists():
+            import shutil
+            import threading
+
+            threading.Thread(target=shutil.rmtree, args=(test_copy,), kwargs={"ignore_errors": True},
+                             daemon=True).start()
 
     def tile(self, plugin: JobPlugin) -> ft.Control:
         """A Windows-11-style pinned tile: icon over label; long-press for options."""
