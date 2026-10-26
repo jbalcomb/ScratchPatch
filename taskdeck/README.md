@@ -45,6 +45,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 
 | Job | Notes |
 |---|---|
+| **Extract archive** | Unpack zip, 7z, RAR, tar and gz (password-protected too) into a folder on the phone, in the background. Needs the APK with file access. [docs/jobs/extract_archive_SPEC.md](docs/jobs/extract_archive_SPEC.md). |
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
@@ -60,6 +61,11 @@ python tools/new_job.py word_freq "Word Frequency" --category Text
 This creates `src/taskdeck/jobs/word_freq/__init__.py`. Fill in the fields and steps, add tags, then run
 `python -m taskdeck.review`. The job appears in All jobs and the palette automatically. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the plugin contract.
+
+Saving to Google Drive needs a one-time setup: [docs/GOOGLE_DRIVE_SETUP.md](docs/GOOGLE_DRIVE_SETUP.md).
+
+Credentials (settings marked `secret=True`) are kept in a vault your fingerprint unlocks: see
+[docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 
 ## Layout
 

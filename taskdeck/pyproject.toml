@@ -8,6 +8,11 @@ dependencies = [
     "flet==1.0.4",
     "rsa>=4.9",      # pure-Python RSA for Google service-account auth on Android
     "certifi",       # CA bundle: Python on Android has no system certificates
+    "flet-secure-storage==1.0.4",  # credentials vault: Android keystore, unlocked by fingerprint
+    "flet-local-auth==1.0.4",      # fingerprint prompt when unlocking again after a lock
+    "flet-permission-handler==1.0.4",  # "All files access", to open archives and extract anywhere
+    # 7-Zip's archive library + TaskDeck's C shim for Android arm64 (built by the "TaskDeck 7-Zip engine" workflow)
+    "taskdeck-sevenzip @ https://github.com/jbalcomb/ScratchPatch/releases/download/taskdeck-sevenzip/taskdeck_sevenzip-26.5.1-py3-none-any.whl",
 ]
 
 [dependency-groups]
@@ -32,6 +37,8 @@ path = "src"
 
 [tool.flet.android.permission]
 "android.permission.INTERNET" = true  # AI model on the home network, Google Sheets
+"android.permission.USE_BIOMETRIC" = true  # fingerprint unlocks the credentials vault
+"android.permission.MANAGE_EXTERNAL_STORAGE" = true  # Extract Archive: read and write files anywhere
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

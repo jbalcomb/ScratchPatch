@@ -27,6 +27,7 @@ class FieldKind(str, Enum):
     NUMBER = "number"
     CHOICE = "choice"
     TOGGLE = "toggle"
+    FILE = "file"  # a path on the device, with a Browse button
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,10 @@ class Field:
         choices = tuple(choices)
         kw.setdefault("default", choices[0] if choices else None)
         return cls(name, label, FieldKind.CHOICE, choices=choices, **kw)
+
+    @classmethod
+    def file(cls, name: str, label: str, **kw: Any) -> "Field":
+        return cls(name, label, FieldKind.FILE, **kw)
 
     @classmethod
     def toggle(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -101,8 +106,9 @@ class Problem:
     """Something that would make the job fail, found before it runs.
 
     ``blocking`` problems disable the run button. ``fix`` names where to fix it:
-    "settings" adds an "Open settings" button, "recheck" only "Check again", and
-    "job:<id>" a button that opens that job (e.g. a clean-up job).
+    "settings" adds an "Open settings" button, "recheck" only "Check again",
+    "unlock" an "Unlock" (fingerprint) button, and "job:<id>" a button that opens
+    that job (e.g. a clean-up job).
     """
 
     message: str

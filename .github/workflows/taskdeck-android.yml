@@ -18,7 +18,7 @@ permissions:
 
 # A newer push cancels an older build, so the release always holds the newest APK.
 concurrency:
-  group: android-apk-${{ github.ref }}
+  group: taskdeck-android-apk  # one at a time across branches (same release)
   cancel-in-progress: true
 
 defaults:
@@ -66,6 +66,21 @@ jobs:
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)apksigner"
           "$APKSIGNER" verify --print-certs TaskDeck.apk | tee certs.txt
           grep -q "SHA-256 digest: 677bc5706571701ae751f22c6b3566fbe1dc3d66221a98e18a54c563f4f6e4e6" certs.txt
+      - name: Verify the fingerprint vault made it into the APK
+        run: |
+          AAPT="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)aapt"
+          "$AAPT" dump permissions TaskDeck.apk | tee perms.txt
+          grep -q "android.permission.USE_BIOMETRIC" perms.txt
+          grep -q "android.permission.MANAGE_EXTERNAL_STORAGE" perms.txt
+          unzip -p TaskDeck.apk 'classes*.dex' > all.dex
+          grep -aq "com/it_nomads/fluttersecurestorage" all.dex || { echo "::error::flet-secure-storage missing from the APK"; exit 1; }
+          grep -aq "io/flutter/plugins/localauth" all.dex || { echo "::error::flet-local-auth missing from the APK"; exit 1; }
+          grep -aq "com/baseflow/permissionhandler" all.dex || { echo "::error::flet-permission-handler missing from the APK"; exit 1; }
+      - name: Verify the 7-Zip engine made it into the APK
+        run: |
+          unzip -l TaskDeck.apk | tee apk.txt | grep "lib/arm64-v8a/lib7z" || true
+          grep -q "lib/arm64-v8a/lib7z.so" apk.txt || { echo "::error::lib7z.so missing from the APK"; exit 1; }
+          grep -q "lib/arm64-v8a/lib7zshim.so" apk.txt || { echo "::error::lib7zshim.so missing from the APK"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: taskdeck-apk

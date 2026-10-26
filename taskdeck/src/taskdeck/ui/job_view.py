@@ -101,6 +101,12 @@ class JobScreen:
 
     def check_ready(self) -> None:
         """Run the job's checks: offline ones now, network ones in the background."""
+        vault = getattr(self.app, "vault", None)
+        if vault and vault.needs_unlock(self.plugin.settings_id):
+            self.problems = [Problem("Your saved credentials are locked. Unlock them with your fingerprint.", fix="unlock")]
+            self.checking = False
+            self._render_readiness()
+            return
         settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
         self.problems = self.plugin.check_ready(settings)
         has_online = type(self.plugin).check_ready_online is not JobPlugin.check_ready_online
@@ -131,6 +137,9 @@ class JobScreen:
         blocking = [p for p in self.problems if p.blocking]
         title = "Before you can run this job:" if blocking else "Heads up:"
         buttons = []
+        if any(p.fix == "unlock" for p in self.problems):
+            buttons.append(ft.FilledButton("Unlock", icon=ft.Icons.FINGERPRINT,
+                                           on_click=lambda e: self.app.page.run_task(self.app.unlock, self.recheck)))
         if any(p.fix == "settings" for p in self.problems) and self.plugin.settings:
             buttons.append(ft.FilledTonalButton("Open settings", icon=ft.Icons.TUNE,
                                                 on_click=lambda e: self.app.open_settings(self.plugin.id)))

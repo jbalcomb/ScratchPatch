@@ -71,14 +71,15 @@ that can cover this) makes it paid usage, which isn't used that way.
 
 ## Security note
 
-With the current setup, the service-account key is stored as plain JSON in TaskDeck's private app storage on
-the phone (`state.json` in TaskDeck's private app storage). Anyone who can read that storage (a rooted phone,
-a backup) can edit any sheet shared with that service account. Share only this one sheet with it, and delete
-the downloaded `.json` from the phone after importing it. The Gemini API key is stored the same way.
+The service-account key, the Gemini key and the AI Workstation key are kept in TaskDeck's **credentials
+vault** (see [../CREDENTIALS.md](../CREDENTIALS.md)): Android's encrypted storage, whose key lives in the
+phone's keystore and is only released after your fingerprint or phone PIN. They are not in `state.json`.
+Still, the service-account key can edit any sheet shared with it: share only this one sheet with it, and
+delete the downloaded `.json` from the phone after importing it.
 
 The AI Workstation only parses; it never touches the sheet. The planned next step is **Google sign-in on the
 phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_log/sheets.py` as another
-`SheetBackend` (`header_row()` + `append(row)`). The job, the preview and the header check don't change.
+`SheetBackend` (`rows()`, `write()`, `backup()`). The job, the preview and the header check don't change.
 
 ## One row per date, no gaps
 
@@ -91,7 +92,12 @@ phone (OAuth)**, which removes the service-account key. It goes in `jobs/daily_l
 * **Reconcile Daily Log sheet** (a second job, using the same settings) checks the tab and previews the fixes:
   removes blank rows, keeps one row per date (identical copies: the first; differing copies: the most
   complete, listing what differs), rewrites dates typed as text in another form (e.g. 2026-10-18) as M/D/YYYY, and sorts by date. Rows without a readable
-  date are kept at the end; incomplete rows are pointed out, not changed. **Apply fixes** first copies the
+  date are kept at the end and pointed out.
+* **Empty cells**: "-" means the value is known to be missing, which is fine. An empty calculated column
+  (Online Hours, Onclock Hours, Miles Driven) gets "-" when one of its inputs is "-", or its calculated
+  value when all inputs are there (same formulas as parsing; `record.DERIVED`). An empty calculated column
+  whose input is empty isn't reported, but the empty input is: every other empty cell (except the gas
+  columns, where empty means no gas stop) is listed under "check by hand" as one compact line per row (`Row 2 (9/3) Missing: Dep time, Dep mi, ...`, at most two phone lines; short names from `Column.short`). **Apply fixes** first copies the
   tab to a `Backup <date time>` tab, refuses if the sheet changed since the preview, then rewrites rows 2
   onward. Formulas are kept.
 * Opening **Daily Log to Sheet** shows a "needs tidying" heads-up with a button to the reconcile job when
