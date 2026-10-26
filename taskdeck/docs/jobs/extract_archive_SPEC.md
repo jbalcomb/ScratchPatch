@@ -71,6 +71,8 @@ in (OAuth).
 | One-time setup by you | In the `scratchpatch` Cloud project: OAuth consent screen + an OAuth client of type "TVs and Limited Input devices". Publish the consent screen "In production" (drive.file is a non-sensitive scope, so no Google review), otherwise sign-ins expire after 7 days. | Create an app in the Dropbox App Console (Scoped access; Full Dropbox or App folder; permissions files.content.write + files.metadata.read). Copy the app key. |
 | Uploads | Resumable upload; any size. | Single call up to 150 MB, upload sessions above that. |
 
+One-time Google Cloud setup: [../GOOGLE_DRIVE_SETUP.md](../GOOGLE_DRIVE_SETUP.md).
+
 **Decided (Drive): `drive.file` now, full Drive planned.** v1 extracts into a new folder TaskDeck creates in
 My Drive (or one it created before); you move it in Drive if needed. **Planned (b):** full Drive browsing
 needs the restricted `drive` scope, which device sign-in doesn't allow: a native Google Sign-In plugin plus
