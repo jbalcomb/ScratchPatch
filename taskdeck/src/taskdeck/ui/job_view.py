@@ -245,7 +245,7 @@ class JobScreen:
             self.steps_list.controls = [
                 self._step_row(st, "ok" if j < i else "run" if j == i else "") for j, st in enumerate(steps)
             ]
-            self.app.page.schedule_update()
+            self.app.page.update()
 
         settings = self.app.job_settings(self.plugin.id)
         report = await asyncio.to_thread(self.plugin.run, raw, on_progress, self.ctx, settings)

@@ -344,7 +344,7 @@ class TaskDeckApp:
             if getattr(getattr(top, "plugin", None), "id", None) != task.job_id:  # its screen isn't showing it
                 self.toast(task.message if task.status == DONE else f"{task.title}: {task.message}")
         try:
-            self.page.schedule_update()
+            self.page.update()
         except Exception:
             pass
 

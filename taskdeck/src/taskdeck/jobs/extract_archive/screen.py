@@ -187,7 +187,7 @@ class ExtractScreen:
         self.task = task
         self.render(update=False)
         try:
-            self.app.page.schedule_update()
+            self.app.page.update()
         except Exception:
             pass
 
