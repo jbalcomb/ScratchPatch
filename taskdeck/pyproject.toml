@@ -40,7 +40,7 @@ path = "src"
 dependencies = ["taskdeck-background"]
 
 [tool.flet.android.dev_packages]
-taskdeck-background = "../native/background"  # relative to [tool.flet.app] path
+taskdeck-background = "native/background"  # relative to this folder (where flet build runs)
 
 [tool.flet.android.permission]
 "android.permission.INTERNET" = true  # AI model on the home network, Google Sheets
