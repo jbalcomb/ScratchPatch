@@ -110,7 +110,13 @@ class GoogleAccount:
                 open_link.on_click = lambda e: self.app.open_url(code.verification_url)
                 status.value = "Waiting for you to approve…"
                 self.app.page.schedule_update()
-                tokens = google_oauth.wait(v["client_id"], v["client_secret"], code, cancelled.is_set)
+                def offline(now_offline: bool) -> None:
+                    status.value = ("No connection right now. Still waiting; it carries on when the phone is back "
+                                    "online." if now_offline else "Waiting for you to approve…")
+                    self.app.page.schedule_update()
+
+                tokens = google_oauth.wait(v["client_id"], v["client_secret"], code, cancelled.is_set,
+                                           on_offline=offline)
             except (google_oauth.OAuthError, Exception) as exc:  # network errors read the same to the user
                 if not cancelled.is_set():
                     status.value = str(exc)

@@ -90,15 +90,30 @@ def email_from_id_token(id_token: str) -> str:
 
 
 def wait(client_id: str, client_secret: str, code: DeviceCode, cancelled: Callable[[], bool] = lambda: False,
-         sleep: Callable[[float], None] = time.sleep) -> Tokens | None:
-    """Poll until the user approves. None if cancelled. Raises OAuthError on refusal/expiry."""
+         sleep: Callable[[float], None] = time.sleep,
+         on_offline: Callable[[bool], None] = lambda offline: None) -> Tokens | None:
+    """Poll until the user approves. None if cancelled. Raises OAuthError on refusal/expiry.
+
+    Network trouble doesn't end the wait: approving happens in a browser, and while TaskDeck is
+    in the background Android may cut its network (DNS lookups fail with "Errno 7"). It keeps
+    asking until the code expires; on_offline(True/False) reports when it can't get through."""
     interval = code.interval
     while time.time() < code.expires_at:
         if cancelled():
             return None
-        status, data = _post(TOKEN_URL, {"client_id": client_id, "client_secret": client_secret,
-                                         "device_code": code.device_code,
-                                         "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
+        try:
+            status, data = _post(TOKEN_URL, {"client_id": client_id, "client_secret": client_secret,
+                                             "device_code": code.device_code,
+                                             "grant_type": "urn:ietf:params:oauth:grant-type:device_code"})
+        except http.HttpError:
+            on_offline(True)
+            sleep(interval)
+            continue
+        if status >= 500:  # Google hiccup: same as no connection
+            on_offline(True)
+            sleep(interval)
+            continue
+        on_offline(False)
         if status == 200 and "access_token" in data:
             return Tokens(data["access_token"], time.time() + float(data.get("expires_in", 3600)),
                           data.get("refresh_token", ""), email_from_id_token(data.get("id_token", "")))

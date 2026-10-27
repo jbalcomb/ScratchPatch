@@ -346,3 +346,23 @@ def test_screen_extracts_to_drive(tmp_path, monkeypatch):
     assert screen.task.status == DONE, screen.task.message
     plain = next(i for i, it in fake.items.items() if it["name"] == "plain")
     assert fake.tree(plain) == CONTENT
+
+
+def test_device_flow_survives_network_loss(monkeypatch):
+    """Approving happens in a browser; meanwhile TaskDeck's network can drop (DNS: Errno 7)."""
+    code = google_oauth.DeviceCode("DEV", "X", "u", 9e18, 0)
+    answers = [http.HttpError("Can't reach oauth2.googleapis.com: [Errno 7] No address associated with hostname"),
+               resp(503, b"unavailable"),
+               resp(428, {"error": "authorization_pending"}),
+               resp(200, {"access_token": "AT", "refresh_token": "RT", "id_token": id_token("j@x")})]
+
+    def send(*a):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(http, "send", send)
+    offline = []
+    tokens = google_oauth.wait("CID", "S", code, sleep=lambda s: None, on_offline=offline.append)
+    assert tokens.refresh_token == "RT" and offline == [True, True, False, False]

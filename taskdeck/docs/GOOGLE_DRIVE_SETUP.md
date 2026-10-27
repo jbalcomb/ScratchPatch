@@ -91,5 +91,6 @@ Files TaskDeck already uploaded stay in your Drive.
 | `invalid_client` | Client ID or secret mistyped, or the client isn't the "TVs and Limited Input devices" type. Re-paste them. |
 | `access_denied` | You chose Cancel on the approval page, or your account isn't allowed (consent screen still in Testing without you as a test user). Publish the app (step 2.5) and connect again. |
 | "Google Drive API has not been used in project …" | Step 1 not done (or done in another project). |
+| "No connection right now. Still waiting…" while you approve | Normal: Android limits TaskDeck's network while you're in the browser. Come back to TaskDeck; it finishes by itself. (Older versions showed "Can't reach oauth2.googleapis.com [Errno 7]" and gave up: tap Connect again.) |
 | Asked to sign in again after a week | The consent screen is still in **Testing**. Publish it (step 2.5). |
 | Upload stops when the phone is locked | Keep TaskDeck open while uploading (see "Using it"). |
