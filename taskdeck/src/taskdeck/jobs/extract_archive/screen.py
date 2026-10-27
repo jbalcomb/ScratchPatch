@@ -316,6 +316,9 @@ class ExtractScreen:
                 if eta is not None:
                     lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(),
                                          color=ft.Colors.ON_SURFACE_VARIANT))
+            if t.note and not t.cancel_requested:
+                lines.append(ft.Row([ft.Icon(ft.Icons.CLOUD_OFF, size=18, color=ft.Colors.ERROR),
+                                     ft.Text(t.note, expand=True, color=ft.Colors.ERROR)]))
             if t.cancel_requested:
                 lines.append(ft.Text("Stopping…", color=ft.Colors.ON_SURFACE_VARIANT))
             lines += [ft.Row([ft.OutlinedButton("Cancel", icon=ft.Icons.STOP, on_click=self.cancel,

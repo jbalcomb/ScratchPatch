@@ -54,6 +54,7 @@ class Task:
     done: int = 0
     total: int = 0
     message: str = ""  # result or error, for the user
+    note: str = ""  # a passing state while running, e.g. "Paused: no connection"
     phases: list[Phase] = field(default_factory=list)  # optional stages, each shown with its own bar
     result: Any = None  # anything the job wants to keep (e.g. the destination folder)
     started: float = field(default_factory=time.time)
@@ -94,6 +95,12 @@ class Task:
                 phase.done = done
         self.report(sum(p.done for p in self.phases))
 
+    def set_note(self, note: str) -> None:
+        if note != self.note:
+            self.note = note
+            if self._manager:
+                self._manager._notify(self)
+
     @property
     def current_phase(self) -> Phase | None:
         return next((p for p in self.phases if not p.complete), None)
@@ -131,6 +138,7 @@ class TaskManager:
                 task.message = str(exc) or type(exc).__name__
                 task.status = FAILED
             task.finished = time.time()
+            task.note = ""
             self._notify(task)
 
         self._start(run)

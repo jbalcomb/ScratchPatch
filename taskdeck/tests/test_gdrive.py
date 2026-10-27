@@ -229,6 +229,44 @@ def test_upload_cancel_and_errors(tmp_path):
         client(full).create_folder("x")
 
 
+def test_upload_waits_through_long_network_loss(tmp_path):
+    """Switching apps cuts the network: with keep_waiting the upload pauses, then carries on."""
+    fake = FakeDrive()
+    fake.faults = [("PUT", "network")] * 40  # the piece and many status checks fail
+    f = tmp_path / "big.bin"
+    f.write_bytes(b"w" * 600_000)
+    states, sleeps = [], []
+    d = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=sleeps.append, chunk=256 * 1024,
+                           keep_waiting=lambda: True, on_offline=states.append)
+    fid = d.upload(f, "root")
+    assert fake.items[fid]["data"] == b"w" * 600_000
+    assert states == [True, False] and max(sleeps) == gdrive.OFFLINE_RETRY_MAX
+    # without it, the old behaviour: give up after a few tries
+    fake.faults = [("PUT", "network")] * 40
+    with pytest.raises(gdrive.DriveError, match="Lost the connection"):
+        client(fake).upload(f, "root")
+
+
+def test_waiting_offline_stops_on_cancel_and_covers_api_calls(tmp_path):
+    fake = FakeDrive()
+    fake.faults = [("POST", "network")] * 10
+    states, cancel = [], []
+    d = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=lambda s: cancel.append(1),
+                           keep_waiting=lambda: len(cancel) < 3, on_offline=states.append)
+    with pytest.raises(gdrive.UploadCancelled):
+        d.create_folder("x")
+    assert states == [True]
+
+    def token():  # refreshing the sign-in needs the network too
+        if fake.faults:
+            fake.faults.pop()
+            raise http.HttpError("Can't reach oauth2.googleapis.com")
+        return "AT"
+    fake.faults = [("x", "network")] * 3
+    d = gdrive.DriveClient(token, send=fake.send, sleep=lambda s: None, keep_waiting=lambda: True)
+    assert d.create_folder("y").name == "y"
+
+
 # ---- extracting to Drive ------------------------------------------------------------------------------
 
 def run_inline():
@@ -279,6 +317,15 @@ def test_extract_to_drive_cancel_and_failure(tmp_path):
 
     t = tm.start("x", "j", cancel_after_first_file)
     assert t.status == CANCELLED and t.message == "Stopped. 1 file was uploaded to Google Drive › My Drive › P."
+
+    paused = FakeDrive()
+    paused.faults = [("PUT", "network")] * 6
+    notes = []
+    tm.listeners.append(lambda task: notes.append(task.note))
+    t = tm.start("x", "j", lambda t: logic.extract_to_drive(t, FIX / "plain.7z", None, client(paused),
+                                                           DriveLocation(), "Q", tmp_path / "tmp"))
+    assert t.status == DONE and logic.PAUSED in notes and t.note == ""
+    tm.listeners.clear()
 
     broken = FakeDrive()
     broken.faults = [("POST", 404)]  # the chosen folder disappeared

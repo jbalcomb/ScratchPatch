@@ -131,6 +131,9 @@ def drive_problems(s: Scan, name: str | None, password: str, connected: bool, te
     return out
 
 
+PAUSED = "Paused: no connection. Open TaskDeck to continue."
+
+
 def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive.DriveClient,
                      location: DriveLocation, name: str | None, temp_root: Path) -> str:
     """Unpack into a temporary folder on the phone, upload everything, delete the temporary copy.
@@ -138,6 +141,9 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     Same-named files in Drive are replaced and same-named folders reused, like extracting on the phone."""
     temp = temp_root / f"task-{task.id}-{os.getpid()}"
     count = sent = 0
+    # Android cuts the network of apps in the background: wait for it instead of failing.
+    drive.keep_waiting = lambda: not task.cancel_requested
+    drive.on_offline = lambda offline: task.set_note(PAUSED if offline else "")
     target = location.display(name)
     try:
         with archive.Archive(path, password or None) as a:

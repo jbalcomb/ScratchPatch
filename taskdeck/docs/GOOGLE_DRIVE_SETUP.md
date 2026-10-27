@@ -73,8 +73,9 @@ Extract Archive → **Extract to** → **Change…** → **Google Drive** tab �
 keep the default new folder named after the archive → **Use this** → **Extract**.
 
 TaskDeck unpacks into a temporary folder on the phone, uploads the files, and deletes the temporary copy as
-it goes. So the phone needs free space for the unpacked files, and the upload needs TaskDeck to stay open
-(Android may pause network access for apps in the background).
+it goes. So the phone needs free space for the unpacked files. Android cuts the network of apps in the
+background, so if you switch apps the upload **pauses** ("Paused: no connection") and carries on from where it
+stopped when you come back to TaskDeck.
 
 ## Disconnecting
 
@@ -93,4 +94,4 @@ Files TaskDeck already uploaded stay in your Drive.
 | "Google Drive API has not been used in project …" | Step 1 not done (or done in another project). |
 | "No connection right now. Still waiting…" while you approve | Normal: Android limits TaskDeck's network while you're in the browser. Come back to TaskDeck; it finishes by itself. (Older versions showed "Can't reach oauth2.googleapis.com [Errno 7]" and gave up: tap Connect again.) |
 | Asked to sign in again after a week | The consent screen is still in **Testing**. Publish it (step 2.5). |
-| Upload stops when the phone is locked | Keep TaskDeck open while uploading (see "Using it"). |
+| "Paused: no connection" while uploading | TaskDeck is in the background, or the phone is offline. Open TaskDeck; the upload continues by itself. (Older versions failed with "Lost the connection to Google Drive while uploading.") |

@@ -77,31 +77,66 @@ def _explain(resp: http.Response, what: str) -> DriveError:
                       resp.status)
 
 
+OFFLINE_RETRY_MAX = 15  # seconds between tries while waiting for the network to come back
+
+
 class DriveClient:
+    """``keep_waiting`` turns network loss into a pause: instead of giving up after a few tries,
+    requests are retried (every few seconds) for as long as keep_waiting() is True, and
+    ``on_offline(True/False)`` reports when that starts and ends. Android cuts the network of apps
+    in the background, so without it switching apps mid-upload ended the upload."""
+
     def __init__(self, token: Callable[[], str], send: Callable[..., http.Response] = http.send,
-                 sleep: Callable[[float], None] = time.sleep, chunk: int = CHUNK):
+                 sleep: Callable[[float], None] = time.sleep, chunk: int = CHUNK,
+                 keep_waiting: Callable[[], bool] | None = None,
+                 on_offline: Callable[[bool], None] | None = None):
         self.token = token
         self.send = send
         self.sleep = sleep
         self.chunk = chunk
+        self.keep_waiting = keep_waiting
+        self.on_offline = on_offline or (lambda offline: None)
+        self._offline = False
+
+    def _wait_offline(self, attempt: int) -> bool:
+        """The network is down: pause and say so. False = stop trying (raise the error)."""
+        if self.keep_waiting is None:
+            if attempt >= RETRIES - 1:
+                return False
+            self.sleep(min(2 ** attempt, 30))
+            return True
+        if not self.keep_waiting():
+            raise UploadCancelled()
+        if not self._offline:
+            self._offline = True
+            self.on_offline(True)
+        self.sleep(min(2 ** min(attempt, 4), OFFLINE_RETRY_MAX))
+        return True
+
+    def _online(self) -> None:
+        if self._offline:
+            self._offline = False
+            self.on_offline(False)
 
     def _call(self, method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
               timeout: float = 60) -> http.Response:
         """One API call with the access token; retries rate limits, server errors and network hiccups."""
-        for attempt in range(RETRIES):
-            hdrs = {"Authorization": f"Bearer {self.token()}", **(headers or {})}
+        attempt = 0
+        while True:
             try:
+                hdrs = {"Authorization": f"Bearer {self.token()}", **(headers or {})}  # refreshing needs the network too
                 resp = self.send(method, url, body, hdrs, timeout)
             except http.HttpError:
-                if attempt == RETRIES - 1:
+                if not self._wait_offline(attempt):
                     raise
-            else:
-                if resp.status not in (429, 500, 502, 503, 504):
-                    return resp
-                if attempt == RETRIES - 1:
-                    return resp
-            self.sleep(min(2 ** attempt, 30))
-        raise AssertionError("unreachable")
+                attempt += 1
+                continue
+            self._online()
+            if resp.status in (429, 500, 502, 503, 504) and attempt < RETRIES - 1:
+                self.sleep(min(2 ** attempt, 30))
+                attempt += 1
+                continue
+            return resp
 
     # ---- folders ------------------------------------------------------------------------
 
@@ -171,9 +206,11 @@ class DriveClient:
                     resp = self.send("PUT", session, piece, {"Content-Length": str(len(piece)),
                                                              "Content-Range": content_range}, 120)
                 except http.HttpError:
-                    failures += 1
+                    if self.keep_waiting is None:  # when waiting, a dropped network is a pause, not a failure
+                        failures += 1
                     offset = self._resume_offset(session, size)  # connection dropped: ask Google what arrived
                     continue
+                self._online()
                 if resp.status in (200, 201):
                     if progress:
                         progress(size)
@@ -207,17 +244,22 @@ class DriveClient:
 
     def _resume_offset(self, session: str, size: int) -> int:
         """Ask how much of an interrupted upload Google has (retrying while the network is down)."""
-        for attempt in range(RETRIES):
+        attempt, server_errors = 0, 0
+        while server_errors < RETRIES:
             try:
                 resp = self.send("PUT", session, b"", {"Content-Length": "0", "Content-Range": f"bytes */{size}"}, 60)
             except http.HttpError:
-                self.sleep(min(2 ** attempt, 30))
+                if not self._wait_offline(attempt):
+                    break
+                attempt += 1
                 continue
+            self._online()
             if resp.status == 308:
                 return _range_end(resp.headers.get("range")) + 1
             if resp.status in (200, 201):
                 return size
-            self.sleep(min(2 ** attempt, 30))
+            self.sleep(min(2 ** server_errors, 30))
+            server_errors += 1
         raise DriveError("Lost the connection to Google Drive while uploading.")
 
 
