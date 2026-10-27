@@ -73,9 +73,10 @@ Extract Archive → **Extract to** → **Change…** → **Google Drive** tab �
 keep the default new folder named after the archive → **Use this** → **Extract**.
 
 TaskDeck unpacks into a temporary folder on the phone, uploads the files, and deletes the temporary copy as
-it goes. So the phone needs free space for the unpacked files. Android cuts the network of apps in the
-background, so if you switch apps the upload **pauses** ("Paused: no connection") and carries on from where it
-stopped when you come back to TaskDeck.
+it goes. So the phone needs free space for the unpacked files. While it works, TaskDeck shows a notification
+with the progress and keeps going when you use other apps (allow notifications and "unrestricted" battery when
+asked, or later in Settings → Background work). If the connection still drops, the upload **pauses**
+("Paused: no connection") and carries on from where it stopped.
 
 ## Disconnecting
 

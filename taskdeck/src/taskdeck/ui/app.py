@@ -23,6 +23,7 @@ from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
 from . import accounts
+from .background import BackgroundKeeper
 from .palette import CommandPalette
 from .vault_backend import make_backend
 
@@ -56,6 +57,8 @@ class TaskDeckApp:
         run_thread = getattr(page, "run_thread", None)
         self.tasks = TaskManager(start_thread=run_thread)
         self.tasks.listeners.append(self.on_task)
+        self.background = BackgroundKeeper(self)  # foreground service while tasks run (APK with the extension)
+        self.tasks.listeners.append(self.background.on_task)
         self.google = accounts.GoogleAccount(self)
         self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
@@ -225,6 +228,11 @@ class TaskDeckApp:
         self.render()
         self.page.update()
         self.toast("Credentials locked")
+
+    @property
+    def hidden(self) -> bool:
+        """TaskDeck isn't on screen (another app, or the phone is locked)."""
+        return self._hidden_at is not None
 
     def on_lifecycle(self, e) -> None:
         if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
@@ -499,6 +507,7 @@ class TaskDeckApp:
                 section_title("Accounts"),
                 *self.google.settings_rows(),
                 *self.credentials_section(),
+                *([section_title("Background work"), *self.background.settings_rows()] if self.background.enabled else []),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
                 *self.updates_section(),

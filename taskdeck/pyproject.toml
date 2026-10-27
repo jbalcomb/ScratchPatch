@@ -35,6 +35,13 @@ copyright = "Copyright (C) 2026"
 [tool.flet.app]
 path = "src"
 
+# Android-only: TaskDeck's own extension in native/background (foreground service while tasks run).
+[tool.flet.android]
+dependencies = ["taskdeck-background"]
+
+[tool.flet.android.dev_packages]
+taskdeck-background = "../native/background"  # relative to [tool.flet.app] path
+
 [tool.flet.android.permission]
 "android.permission.INTERNET" = true  # AI model on the home network, Google Sheets
 "android.permission.USE_BIOMETRIC" = true  # fingerprint unlocks the credentials vault
