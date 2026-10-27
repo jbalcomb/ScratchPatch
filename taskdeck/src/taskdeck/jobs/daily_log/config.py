@@ -1,6 +1,6 @@
 """Settings shared by the Daily Log jobs (stored once, under the Daily Log job)."""
 
-from taskdeck.core import Field
+from taskdeck.core import WIFI_ONLY, Field
 from taskdeck.shared.llm import GEMINI_URL
 
 DEFAULT_SHEET_ID = "1RemIJ0pmrN-zj58cpeHd4Jas2ix2ss3aTef14_zEkec"
@@ -25,4 +25,5 @@ SETTINGS = (
     Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True, required=True,
                help="Tap Paste after copying the whole .json key text, or Import the file. Share the sheet with the key's "
                     "client_email as Editor."),
+    WIFI_ONLY,
 )

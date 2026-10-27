@@ -18,12 +18,16 @@ from taskdeck.core import (
     PluginRegistry, SecretBackend, Task, TaskManager, Vault, VaultError, default_data_dir,
 )
 from taskdeck.core.tasks import DONE
+from taskdeck.core.trace import TraceStore
+from taskdeck.shared import http
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
 from . import accounts
 from .background import BackgroundKeeper
+from .diagnostics import DiagnosticsSync
+from .network import NetworkMonitor
 from .palette import CommandPalette
 from .vault_backend import make_backend
 
@@ -55,10 +59,15 @@ class TaskDeckApp:
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
         run_thread = getattr(page, "run_thread", None)
-        self.tasks = TaskManager(start_thread=run_thread)
+        traces = TraceStore(self.store.path.parent / "diagnostics")  # one trace file per task, for analysis
+        self.tasks = TaskManager(start_thread=run_thread, traces=traces,
+                                 around=lambda task: http.scope(trace=task.trace))  # every request is recorded
         self.tasks.listeners.append(self.on_task)
         self.background = BackgroundKeeper(self)  # foreground service while tasks run (APK with the extension)
         self.tasks.listeners.append(self.background.on_task)
+        self.diagnostics = DiagnosticsSync(self, traces)  # traces are copied to Google Drive as they grow
+        self.tasks.listeners.append(self.diagnostics.on_task)
+        self.network = NetworkMonitor(self)  # Wi-Fi or mobile data, for the jobs' Wi-Fi-only setting
         self.google = accounts.GoogleAccount(self)
         self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
@@ -80,6 +89,9 @@ class TaskDeckApp:
         page.on_keyboard_event = self.on_key
         page.on_view_pop = self.on_view_pop
         page.on_app_lifecycle_state_change = self.on_lifecycle
+        if getattr(page, "run_task", None):
+            page.run_task(self.network.start)
+        self.diagnostics.sync_soon()  # anything a closed or killed app didn't get to upload
 
         self.body = ft.Container(expand=True, padding=ft.Padding.symmetric(horizontal=16))
         self.nav = ft.NavigationBar(
@@ -235,6 +247,7 @@ class TaskDeckApp:
         return self._hidden_at is not None
 
     def on_lifecycle(self, e) -> None:
+        self.tasks.log_running("app", state=getattr(e.state, "value", str(e.state)))
         if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
             self._hidden_at = self._hidden_at or time.time()
         elif e.state in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):

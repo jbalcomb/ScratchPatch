@@ -156,9 +156,14 @@ class ExtractScreen:
         path, password = self.archive, self.password.value or None
         if self.to_drive:
             drive, location, name, temp = self.app.google.drive(), self.parent, self.name, self.app.temp_dir
-            self.task = self.app.tasks.start(
-                f"Extracting {path.name} to Google Drive", self.plugin.id,
-                lambda t: logic.extract_to_drive(t, path, password, drive, location, name, temp), result=location)
+            network, settings_id = self.app.network, self.plugin.settings_id
+
+            def work(t):
+                with network.scope(settings_id, lambda: t.cancel_requested, t.set_note):  # Wi-Fi only
+                    return logic.extract_to_drive(t, path, password, drive, location, name, temp)
+
+            self.task = self.app.tasks.start(f"Extracting {path.name} to Google Drive", self.plugin.id, work,
+                                             result=location)
         else:
             dest = self.destination()
             self.task = self.app.tasks.start(f"Extracting {path.name}", self.plugin.id,

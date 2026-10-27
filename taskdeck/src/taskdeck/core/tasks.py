@@ -9,13 +9,16 @@ message for the "done" state, or raises (``Cancelled`` for a requested stop). Li
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager
 
 from .pipeline import Cancelled
+from .trace import Trace, TraceStore, environment
 
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 NOTIFY_EVERY = 0.25  # seconds between progress notifications
@@ -60,8 +63,16 @@ class Task:
     started: float = field(default_factory=time.time)
     finished: float | None = None
     cancel_requested: bool = False
+    trace: Trace | None = field(default=None, repr=False, compare=False)  # diagnostics (taskdeck.core.trace)
     _manager: "TaskManager | None" = field(default=None, repr=False, compare=False)
     _last_notify: float = field(default=0.0, repr=False, compare=False)
+    _logged_phase: int = field(default=-1, repr=False, compare=False)
+    _beat_done: int = field(default=0, repr=False, compare=False)
+
+    def log(self, ev: str, **fields: Any) -> None:
+        """Add an event to the task's diagnostics trace (if it has one)."""
+        if self.trace:
+            self.trace.event(ev, **fields)
 
     @property
     def running(self) -> bool:
@@ -82,6 +93,7 @@ class Task:
     def set_phases(self, *phases: tuple[str, int]) -> None:
         """Split the work into stages: set_phases(("Unpacking", n), ("Uploading", n))."""
         self.phases = [Phase(label, total) for label, total in phases]
+        self.log("phases", phases=[[label, total] for label, total in phases])
         self.report(0, sum(total for _, total in phases))
 
     def advance(self, index: int, done: int) -> None:
@@ -93,13 +105,31 @@ class Task:
             if i == index:
                 phase.started = phase.started or now
                 phase.done = done
+        if index != self._logged_phase:
+            self._logged_phase = index
+            self.log("phase", index=index, label=self.phases[index].label if index < len(self.phases) else "",
+                     done=done)
         self.report(sum(p.done for p in self.phases))
 
     def set_note(self, note: str) -> None:
         if note != self.note:
             self.note = note
+            self.log("note", note=note)
             if self._manager:
                 self._manager._notify(self)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Progress for the trace's heartbeat: where it is, and how much moved since the last one."""
+        phase = self.current_phase
+        moved, self._beat_done = self.done - self._beat_done, self.done
+        out: dict[str, Any] = {"done": self.done, "total": self.total, "moved": moved}
+        if phase:
+            out.update(phase=phase.label, phase_done=phase.done, phase_total=phase.total)
+        if self.note:
+            out["note"] = self.note
+        if self.cancel_requested:
+            out["cancel_requested"] = True
+        return out
 
     @property
     def current_phase(self) -> Phase | None:
@@ -116,7 +146,14 @@ class Task:
 
 
 class TaskManager:
-    def __init__(self, start_thread: Callable[[Callable[[], None]], None] | None = None):
+    """``traces`` (a TraceStore) gives each task a diagnostics trace; ``around(task)`` is a context
+    manager the work runs inside (the app uses it to record the task's network requests)."""
+
+    def __init__(self, start_thread: Callable[[Callable[[], None]], None] | None = None,
+                 traces: TraceStore | None = None,
+                 around: Callable[[Task], ContextManager[Any]] | None = None):
+        self.traces = traces
+        self.around = around or (lambda task: contextlib.nullcontext())
         self.tasks: list[Task] = []
         self.listeners: list[Callable[[Task], None]] = []
         self._ids = itertools.count(1)
@@ -124,12 +161,20 @@ class TaskManager:
 
     def start(self, title: str, job_id: str, work: Callable[[Task], str], result: Any = None) -> Task:
         task = Task(next(self._ids), title, job_id, result=result, _manager=self)
+        if self.traces:
+            try:
+                task.trace = self.traces.new(job_id, heartbeat=task.snapshot)
+                task.log("start", title=title, job=job_id, task=task.id, **environment())
+            except OSError:
+                task.trace = None
         self.tasks.append(task)
         self._notify(task)
 
         def run() -> None:
+            error = ""
             try:
-                task.message = work(task) or "Done"
+                with self.around(task):
+                    task.message = work(task) or "Done"
                 task.status = DONE
             except Cancelled as exc:
                 task.message = str(exc) or "Cancelled."
@@ -137,8 +182,13 @@ class TaskManager:
             except Exception as exc:  # shown to the user; the job formats its own errors
                 task.message = str(exc) or type(exc).__name__
                 task.status = FAILED
+                error = traceback.format_exc()
             task.finished = time.time()
             task.note = ""
+            task.log("end", status=task.status, message=task.message, secs=round(task.finished - task.started, 1),
+                     done=task.done, total=task.total, **({"traceback": error} if error else {}))
+            if task.trace:
+                task.trace.close()
             self._notify(task)
 
         self._start(run)
@@ -147,6 +197,7 @@ class TaskManager:
     def cancel(self, task: Task) -> None:
         if task.running:
             task.cancel_requested = True
+            task.log("cancel_requested")
             self._notify(task)
 
     def running(self) -> list[Task]:
@@ -157,6 +208,11 @@ class TaskManager:
             if task.job_id == job_id:
                 return task
         return None
+
+    def log_running(self, ev: str, **fields: Any) -> None:
+        """An event for every running task's trace (e.g. the app went to the background)."""
+        for task in self.running():
+            task.log(ev, **fields)
 
     def forget(self, task: Task) -> None:
         if not task.running and task in self.tasks:

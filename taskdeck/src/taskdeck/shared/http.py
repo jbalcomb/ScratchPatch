@@ -11,11 +11,14 @@ import http.client
 import json
 import socket
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Iterator
 
 
 class HttpError(Exception):
@@ -26,6 +29,54 @@ class HttpError(Exception):
         self.status = status
         self.body = body
         self.timed_out = timed_out  # connected, but no (complete) answer within the timeout
+
+
+# ---- per-thread scope: who may use the network, and who records what it did ------------------------
+#
+# A job's worker thread runs inside ``scope(gate=..., trace=...)``:
+# * gate(url) is called before every request. It may block (e.g. "waiting for Wi-Fi") or raise
+#   (e.g. Cancelled) — the job's Wi-Fi-only setting.
+# * trace(event, **fields) records every request: method, host, path, status, bytes, seconds,
+#   or the error (diagnostics, see taskdeck.core.trace).
+
+_scope = threading.local()
+
+
+@contextmanager
+def scope(gate: Callable[[str], None] | None = None,
+          trace: Callable[..., None] | None = None) -> Iterator[None]:
+    prev = (getattr(_scope, "gate", None), getattr(_scope, "trace", None))
+    _scope.gate = gate or prev[0]
+    _scope.trace = trace or prev[1]
+    try:
+        yield
+    finally:
+        _scope.gate, _scope.trace = prev
+
+
+def _enter(url: str) -> float:
+    gate = getattr(_scope, "gate", None)
+    if gate:
+        gate(url)
+    return time.monotonic()
+
+
+def _record(method: str, url: str, started: float, status: int | None = None, sent: int = 0,
+            received: int = 0, error: str = "") -> None:
+    trace = getattr(_scope, "trace", None)
+    if not trace:
+        return
+    parts = urllib.parse.urlsplit(url)
+    fields: dict[str, Any] = {"method": method, "host": parts.netloc, "path": parts.path,
+                              "secs": round(time.monotonic() - started, 3), "sent": sent, "received": received}
+    if status is not None:
+        fields["status"] = status
+    if error:
+        fields["error"] = error
+    try:
+        trace("http", **fields)
+    except Exception:  # diagnostics must never break a request
+        pass
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -98,14 +149,22 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         data = urllib.parse.urlencode(form).encode("ascii")
         hdrs["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    started = _enter(url)
+    sent = len(data or b"")
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+            raw_bytes = resp.read()
+            _record(method, url, started, resp.status, sent, len(raw_bytes))
+            raw = raw_bytes.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
+        body_bytes = exc.read() or b""
+        _record(method, url, started, exc.code, sent, len(body_bytes))
+        body = body_bytes.decode("utf-8", errors="replace")
         raise HttpError(f"HTTP {exc.code}: {_error_detail(body) or exc.reason}", exc.code, body) from None
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
-        raise _network_error(exc, url, timeout) from None
+        err = _network_error(exc, url, timeout)
+        _record(method, url, started, sent=sent, error=str(err))
+        raise err from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -142,13 +201,19 @@ def send(method: str, url: str, body: bytes | None = None, headers: dict[str, st
     """One request; any HTTP status comes back as a Response (no raising, no redirects followed).
     Network failures raise HttpError, like :func:`request`."""
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    started = _enter(url)
+    sent = len(body or b"")
     try:
         with _RAW_OPENER.open(req, timeout=timeout) as resp:
-            return Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
+            out = Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
     except urllib.error.HTTPError as exc:
-        return Response(exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b"")
+        out = Response(exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b"")
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
-        raise _network_error(exc, url, timeout) from None
+        err = _network_error(exc, url, timeout)
+        _record(method, url, started, sent=sent, error=str(err))
+        raise err from None
+    _record(method, url, started, out.status, sent, len(out.body))
+    return out
 
 
 def reachable(url: str, timeout: float = 3) -> bool:

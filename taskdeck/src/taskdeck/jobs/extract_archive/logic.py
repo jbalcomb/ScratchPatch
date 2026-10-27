@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +97,8 @@ def extract(task: Task, path: Path, dest: Path, password: str | None) -> str:
             entries = a.entries()
             count = sum(1 for e in entries if not e.is_dir)
             total = sum(e.size for e in entries if not e.is_dir)
+            task.log("archive", name=path.name, format=a.format, size=path.stat().st_size, files=count,
+                     bytes=total, encrypted=bool(password))
             task.report(0, total)
 
             def progress(done: int, total_bytes: int) -> bool:
@@ -147,10 +150,15 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     target = location.display(name)
     try:
         with archive.Archive(path, password or None) as a:
-            total = sum(e.size for e in a.entries() if not e.is_dir)
+            entries = a.entries()
+            total = sum(e.size for e in entries if not e.is_dir)
+            task.log("archive", name=path.name, format=a.format, size=path.stat().st_size,
+                     files=sum(1 for e in entries if not e.is_dir), bytes=total, encrypted=bool(password))
             task.set_phases(("Unpacking", total), ("Uploading to Google Drive", total))
+            unpack_started = time.monotonic()
             a.extract(temp, progress=lambda done, _t: (task.advance(0, done), task.cancel_requested)[1],
                       password=password or None)
+            task.log("unpacked", secs=round(time.monotonic() - unpack_started, 2))
         task.advance(1, 0)
         root_id = location.folder_id
         if name:
@@ -173,7 +181,10 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
                     task.advance(1, base + n)
                     return task.cancel_requested
 
+                file_started = time.monotonic()
                 drive.upload(local, parent_id, f, progress=progress, replace=sub_files.get(f))
+                task.log("file", path=str(here / f), bytes=size, secs=round(time.monotonic() - file_started, 3),
+                         replaced=f in sub_files)
                 local.unlink()  # free the space as we go
                 sent += size
                 count += 1
@@ -183,7 +194,7 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
         if exc.code == archive.E_CANCELLED:
             raise Cancelled("Stopped before uploading anything.") from None
         raise RuntimeError(str(exc)) from None
-    except gdrive.UploadCancelled:
+    except (gdrive.UploadCancelled, Cancelled):  # Cancel, also while paused or waiting for Wi-Fi
         raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
     except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
         done = f" {_were_uploaded(count)} before that." if count else ""

@@ -110,6 +110,11 @@ class JobScreen:
         settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
         self.problems = self.plugin.check_ready(settings)
         has_online = type(self.plugin).check_ready_online is not JobPlugin.check_ready_online
+        network = getattr(self.app, "network", None)
+        if has_online and network and network.wifi_only(self.plugin.settings_id) and not network.on_wifi:
+            has_online = False  # Wi-Fi only: the online checks wait too
+            self.problems = self.problems + [Problem("Wi-Fi only is on: connect to Wi-Fi to check the connection. "
+                                                     "Running waits for Wi-Fi.", blocking=False, fix="recheck")]
         self.checking = has_online and not any(p.blocking for p in self.problems)
         self._render_readiness()
         if self.checking:
@@ -248,7 +253,8 @@ class JobScreen:
             self.app.page.update()
 
         settings = self.app.job_settings(self.plugin.id)
-        report = await asyncio.to_thread(self.plugin.run, raw, on_progress, self.ctx, settings)
+        report = await asyncio.to_thread(self._network_scoped(self.plugin.run, self.ctx), raw, on_progress,
+                                         self.ctx, settings)
         if generation != self.generation:  # inputs were edited while this was running
             self._set_running(False)
             self.status.value = "Input changed while running; run again."
@@ -262,6 +268,23 @@ class JobScreen:
         self.app.history.add(self.plugin.id, report.ok, _summary(report), raw)
         self.app.on_history_changed()
         self.view.update()
+
+    def _network_scoped(self, fn, ctx):
+        """fn, run under the job's Wi-Fi-only setting (in the worker thread): network requests wait for Wi-Fi,
+        with "Waiting for Wi-Fi…" in the status line, and Cancel stops the wait."""
+        network = getattr(self.app, "network", None)
+        if network is None:
+            return fn
+
+        def on_wait(text: str) -> None:
+            self.status.value = text or "Continuing…"
+            self.app.page.update()
+
+        def run(*args):
+            cancelled = (lambda: ctx._cancelled) if ctx else (lambda: False)
+            with network.scope(self.plugin.settings_id, cancelled, on_wait):
+                return fn(*args)
+        return run
 
     def _set_running(self, running: bool) -> None:
         self.run_button.disabled = running or self.blocked
@@ -337,7 +360,8 @@ class JobScreen:
         self.commit_button.content = "Saving…"
         self.commit_error.controls = []
         self.view.update()
-        outcome = await asyncio.to_thread(self.plugin.attempt_commit, payload, self.app.job_settings(self.plugin.id))
+        outcome = await asyncio.to_thread(self._network_scoped(self.plugin.attempt_commit, None), payload,
+                                          self.app.job_settings(self.plugin.id))
         ok, message = outcome.ok, outcome.message
         if ok:
             self.commit_button.content = self.plugin.committed_label

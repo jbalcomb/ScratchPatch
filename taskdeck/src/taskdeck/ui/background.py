@@ -89,14 +89,16 @@ class BackgroundKeeper:
         return self._service
 
     async def _start(self, title: str, text: str, pct: int | None) -> None:
-        await self._call("start", title, text, pct)
+        started = await self._call("start", title, text, pct)
+        self.app.tasks.log_running("service", started=bool(started))
         await self.ask_once()
 
-    async def _call(self, method: str, *args: Any) -> None:
+    async def _call(self, method: str, *args: Any) -> Any:
         try:
-            await getattr(self.service, method)(*args)
-        except Exception:  # a notification problem must never stop the task
-            pass
+            return await getattr(self.service, method)(*args)
+        except Exception as exc:  # a notification problem must never stop the task
+            self.app.tasks.log_running("service", method=method, error=f"{type(exc).__name__}: {exc}")
+            return None
 
     # ---- permissions ------------------------------------------------------------------------------
 

@@ -1,0 +1,234 @@
+"""Diagnostics traces, their Drive copy, the per-request network scope, and Wi-Fi only."""
+
+import http.server as http_server
+import json
+import sys
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from taskdeck.core import Cancelled, JsonStore, TaskManager
+from taskdeck.core.tasks import DONE, FAILED
+from taskdeck.core.trace import Trace, TraceStore
+from taskdeck.shared import gdrive, http
+from taskdeck.ui.diagnostics import FOLDER, DiagnosticsSync
+from taskdeck.ui.network import WAITING, NetworkMonitor
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import trace_report  # noqa: E402
+
+from test_gdrive import FIX, FakeDrive, client, needs_engine  # noqa: E402
+
+
+def events(path):
+    return [json.loads(line) for line in Path(path).read_text().splitlines()]
+
+
+# ---- traces ----------------------------------------------------------------------------------------
+
+def test_trace_file_and_heartbeat(tmp_path):
+    beats = iter(range(100))
+    t = Trace(tmp_path / "a.jsonl", heartbeat=lambda: {"n": next(beats)}, interval=0.02)
+    t.event("hello", x=1)
+    time.sleep(0.1)
+    t.close()
+    t.event("after close")  # ignored
+    ev = events(tmp_path / "a.jsonl")
+    assert ev[0]["ev"] == "hello" and ev[0]["x"] == 1 and "t" in ev[0] and "s" in ev[0]
+    assert sum(e["ev"] == "heartbeat" for e in ev) >= 2 and ev[-1]["ev"] != "after close"
+
+
+def test_trace_store_keeps_the_newest(tmp_path):
+    store = TraceStore(tmp_path / "d", keep=3)
+    for i in range(5):
+        store.new(f"job {i}/x").close()
+    names = [p.name for p in store.files()]
+    assert len(names) == 3 and names[-1].endswith("job-4-x.jsonl")
+
+
+def test_task_manager_traces(tmp_path):
+    tm = TaskManager(start_thread=lambda fn: fn(), traces=TraceStore(tmp_path))
+
+    def work(t):
+        t.set_phases(("Unpacking", 10), ("Uploading", 10))
+        t.advance(0, 5)
+        t.advance(1, 3)
+        t.set_note("Paused")
+        t.set_note("")
+        return "ok"
+    t = tm.start("Extracting a.7z", "extract_archive", work)
+    assert t.status == DONE
+    kinds = [e["ev"] for e in events(t.trace.path)]
+    assert kinds == ["start", "phases", "phase", "phase", "note", "note", "end"]
+    end = events(t.trace.path)[-1]
+    assert end["status"] == DONE and end["message"] == "ok"
+
+    def broken(t):
+        raise ValueError("boom")
+    t = tm.start("x", "j", broken)
+    end = events(t.trace.path)[-1]
+    assert t.status == FAILED and "ValueError: boom" in end["traceback"]
+
+
+# ---- the per-thread network scope -----------------------------------------------------------------
+
+@pytest.fixture
+def server():
+    class Handler(http_server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"ok": true}' if self.path != "/missing" else b'{"error": "nope"}'
+            self.send_response(200 if self.path != "/missing" else 404)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_PUT(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(308)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_port}"
+    srv.shutdown()
+
+
+def test_scope_records_and_gates_requests(server):
+    seen, gated = [], []
+    with http.scope(trace=lambda ev, **f: seen.append((ev, f)), gate=gated.append):
+        assert http.request("GET", f"{server}/a?q=secret") == {"ok": True}
+        assert http.send("PUT", f"{server}/up", b"x" * 1000).status == 308
+        with pytest.raises(http.HttpError):
+            http.request("GET", f"{server}/missing")
+        with pytest.raises(http.HttpError):
+            http.request("GET", "http://127.0.0.1:9/", timeout=2)
+    http.request("GET", f"{server}/b")  # outside the scope: not recorded
+    assert len(gated) == 4
+    rec = [f for _, f in seen]
+    assert [r.get("status") for r in rec] == [200, 308, 404, None]
+    assert rec[0]["path"] == "/a" and "secret" not in json.dumps(rec)  # no query strings
+    assert rec[1]["sent"] == 1000 and "error" in rec[3]
+
+    def refuse(url):
+        raise Cancelled("no")
+    with http.scope(gate=refuse), pytest.raises(Cancelled):
+        http.request("GET", f"{server}/a")
+
+
+# ---- Wi-Fi only -------------------------------------------------------------------------------------
+
+def monitor(tmp_path, wifi_only=True):
+    app = SimpleNamespace(tasks=TaskManager(), job_settings=lambda sid: {"wifi_only": wifi_only})
+    return NetworkMonitor(app)
+
+
+def test_wait_for_wifi(tmp_path):
+    net = monitor(tmp_path)
+    assert net.on_wifi  # unknown: nothing held back
+    net.set_types(["mobile", "vpn"])
+    notes = []
+    threading.Timer(0.1, net.set_types, args=(["wifi", "vpn"],)).start()
+    net.wait_for_wifi(lambda: False, notes.append)
+    assert notes == [WAITING, ""]
+
+    net.set_types(["mobile"])
+    with pytest.raises(Cancelled):
+        net.wait_for_wifi(lambda: True, notes.append)
+
+
+def test_scope_only_gates_wifi_only_jobs(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(http, "_RAW_OPENER", SimpleNamespace(open=lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(
+        http.urllib.error.URLError("down"))))
+    off = monitor(tmp_path, wifi_only=False)
+    off.set_types(["mobile"])
+    with off.scope("j", lambda: True, lambda n: None), pytest.raises(http.HttpError):
+        http.send("GET", "http://example.invalid/")  # not Wi-Fi only: goes out on mobile data
+    on = monitor(tmp_path)
+    on.set_types(["mobile"])
+    with on.scope("j", lambda: True, lambda n: None), pytest.raises(Cancelled):
+        http.send("GET", "http://example.invalid/")  # waits for Wi-Fi; cancelled
+    assert calls == [1]
+
+
+# ---- the Drive copy ------------------------------------------------------------------------------------
+
+def sync_app(tmp_path, fake):
+    google = SimpleNamespace(connected=True, locked=False, drive=lambda: client(fake))
+    return SimpleNamespace(google=google, store=JsonStore(tmp_path / "state.json"), temp_dir=tmp_path / "tmp",
+                           tasks=TaskManager())
+
+
+def test_sync_uploads_new_and_grown_traces(tmp_path):
+    fake = FakeDrive()
+    store = TraceStore(tmp_path / "diag")
+    a = store.new("a")
+    a.event("one")
+    app = sync_app(tmp_path, fake)
+    sync = DiagnosticsSync(app, store)
+    assert sync.sync() == 1
+    folder = next(i for i, it in fake.items.items() if it["name"] == FOLDER)
+    assert list(fake.tree(folder)) == [a.path.name]
+    assert sync.sync() == 0  # nothing changed
+
+    a.event("two")  # still running: grows
+    b = store.new("b")
+    b.event("x")
+    assert sync.sync() == 2
+    tree = fake.tree(folder)
+    assert len(tree) == 2 and tree[a.path.name].count(b"\n") == 2  # replaced, not duplicated
+    assert not (tmp_path / "tmp" / "diagnostics").exists()
+
+    app.google.connected = False
+    b.event("y")
+    assert sync.sync() == 0  # not connected: later
+
+
+def test_sync_survives_errors(tmp_path):
+    fake = FakeDrive()
+    fake.send = lambda *a, **k: (_ for _ in ()).throw(http.HttpError("Can't reach www.googleapis.com"))
+    store = TraceStore(tmp_path / "diag")
+    store.new("a").event("x")
+    sync = DiagnosticsSync(sync_app(tmp_path, fake), store)
+    assert sync.sync() == 0 and "Can't reach" in sync.last_error
+
+
+# ---- a real extraction, traced, and the report ------------------------------------------------------------
+
+@needs_engine
+def test_extract_to_drive_trace_and_report(tmp_path):
+    from taskdeck.jobs.extract_archive import logic
+
+    fake = FakeDrive()
+    fake.faults = [("PUT", "network")] * 3
+    tm = TaskManager(start_thread=lambda fn: fn(), traces=TraceStore(tmp_path / "diag"),
+                     around=lambda t: http.scope(trace=t.trace))
+    drive = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=lambda s: None, chunk=256 * 1024)
+    t = tm.start("Extracting data-encrypted.7z to Google Drive", "extract_archive", lambda t: logic.extract_to_drive(
+        t, FIX / "data-encrypted.7z", "Secret1", drive, gdrive.DriveLocation(), "Pics", tmp_path / "tmp"))
+    assert t.status == DONE, t.message
+    ev = events(t.trace.path)
+    kinds = [e["ev"] for e in ev]
+    assert kinds[0] == "start" and kinds[-1] == "end"
+    assert {"archive", "unpacked", "file", "note"} <= set(kinds)
+    assert sum(e["ev"] == "file" for e in ev) == 3
+    text = trace_report.report(trace_report.load(t.trace.path))
+    assert "Ended: done" in text and "Files uploaded: 3" in text and "Timeline:" in text
+    assert trace_report.main([str(t.trace.path), "--minute"]) == 0
+
+
+def test_report_without_end_and_with_stall(tmp_path):
+    p = tmp_path / "t.jsonl"
+    lines = [{"t": 0, "s": 0, "ev": "start", "title": "X", "job": "j"},
+             {"t": 30, "s": 30, "ev": "heartbeat", "done": 10, "total": 100, "moved": 10, "phase": "Uploading"},
+             {"t": 60, "s": 60, "ev": "heartbeat", "done": 10, "total": 100, "moved": 0, "phase": "Uploading"},
+             {"t": 90, "s": 90, "ev": "heartbeat", "done": 10, "total": 100, "moved": 0, "phase": "Uploading"}]
+    p.write_text("\n".join(json.dumps(x) for x in lines) + "\n{broken")
+    text = trace_report.report(trace_report.load(p))
+    assert "No end recorded" in text and "STALL" in text and "corrupt" in text

@@ -19,6 +19,8 @@ sign-in now retries through it; these make it much less likely to happen at all.
 
 ## Other open items (details in the linked docs)
 
+- [ ] Slow or stalling Drive uploads: analyse the task traces (`docs/DIAGNOSTICS.md`).
+
 - [ ] Dropbox as an Extract Archive destination (Full Dropbox): `docs/jobs/extract_archive_SPEC.md`, step 3.
 - [ ] Full Google Drive browsing (native Google Sign-In + Google review): same spec, §1.4, "planned (b)".
 - [ ] Fingerprint lock design: keep the vault always on and make only the fingerprint check optional
