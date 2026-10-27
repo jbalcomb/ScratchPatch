@@ -249,6 +249,7 @@ def test_extract_to_drive(tmp_path):
     assert t.message == "Uploaded 3 files (3.0 KB) to Google Drive › My Drive › Backups › Pics"
     pics = next(i for i, it in fake.items.items() if it["name"] == "Pics")
     assert fake.tree(pics) == CONTENT and t.result.folder_id == pics
+    assert [(p.label, p.complete) for p in t.phases] == [("Unpacking", True), ("Uploading to Google Drive", True)]
     assert not any((tmp_path / "tmp").iterdir())  # temporary copy removed
 
     # again into the same folder: files replaced, folders reused (no duplicates)

@@ -22,6 +22,30 @@ NOTIFY_EVERY = 0.25  # seconds between progress notifications
 
 
 @dataclass
+class Phase:
+    """One stage of a task with its own progress, e.g. "Unpacking" then "Uploading to Google Drive"."""
+
+    label: str
+    total: int = 0
+    done: int = 0
+    started: float | None = None
+
+    @property
+    def fraction(self) -> float | None:
+        return min(1.0, self.done / self.total) if self.total else None
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.total) and self.done >= self.total
+
+    def eta(self, now: float | None = None) -> float | None:
+        if self.started is None or not self.total or self.done <= 0:
+            return None
+        elapsed = (now or time.time()) - self.started
+        return max(0.0, (self.total - self.done) * elapsed / self.done) if elapsed >= 1 else None
+
+
+@dataclass
 class Task:
     id: int
     title: str  # e.g. "Extracting photos.7z"
@@ -30,7 +54,7 @@ class Task:
     done: int = 0
     total: int = 0
     message: str = ""  # result or error, for the user
-    detail: str = ""  # what it's doing right now, e.g. "Uploading to Google Drive…"
+    phases: list[Phase] = field(default_factory=list)  # optional stages, each shown with its own bar
     result: Any = None  # anything the job wants to keep (e.g. the destination folder)
     started: float = field(default_factory=time.time)
     finished: float | None = None
@@ -53,6 +77,26 @@ class Task:
         if not self.total or self.done <= 0 or elapsed < 1:
             return None
         return max(0.0, (self.total - self.done) * elapsed / self.done)
+
+    def set_phases(self, *phases: tuple[str, int]) -> None:
+        """Split the work into stages: set_phases(("Unpacking", n), ("Uploading", n))."""
+        self.phases = [Phase(label, total) for label, total in phases]
+        self.report(0, sum(total for _, total in phases))
+
+    def advance(self, index: int, done: int) -> None:
+        """Progress within one phase (earlier phases count as finished)."""
+        now = time.time()
+        for i, phase in enumerate(self.phases):
+            if i < index and not phase.complete:
+                phase.done = phase.total
+            if i == index:
+                phase.started = phase.started or now
+                phase.done = done
+        self.report(sum(p.done for p in self.phases))
+
+    @property
+    def current_phase(self) -> Phase | None:
+        return next((p for p in self.phases if not p.complete), None)
 
     def report(self, done: int, total: int | None = None) -> None:
         self.done = done

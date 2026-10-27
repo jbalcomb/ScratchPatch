@@ -303,17 +303,19 @@ class ExtractScreen:
             self.progress_box.controls = []
             return
         if t.running:
-            pct = f" {t.fraction * 100:.0f}%" if t.fraction is not None else ""
-            done, total = t.done, t.total
-            if isinstance(t.result, DriveLocation):  # the bar covers unpacking + uploading; the size, this phase
-                total //= 2
-                done = done - total if done > total else done
-            lines = [ft.Text(f"{t.detail or 'Extracting…'}{pct}", weight=ft.FontWeight.W_600),
-                     ft.ProgressBar(value=t.fraction),
-                     ft.Text(f"{files.human_size(done)} of {files.human_size(total)}" if t.total else "Starting…")]
-            eta = t.eta()
-            if eta is not None:
-                lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(), color=ft.Colors.ON_SURFACE_VARIANT))
+            if t.phases:  # e.g. Unpacking, then Uploading to Google Drive: one bar each
+                lines = [ft.Text(t.title, weight=ft.FontWeight.W_600, max_lines=2)]
+                for phase in t.phases:
+                    lines += _phase_rows(phase, active=phase is t.current_phase)
+            else:
+                pct = f" {t.fraction * 100:.0f}%" if t.fraction is not None else ""
+                lines = [ft.Text(f"Extracting…{pct}", weight=ft.FontWeight.W_600),
+                         ft.ProgressBar(value=t.fraction),
+                         ft.Text(f"{files.human_size(t.done)} of {files.human_size(t.total)}" if t.total else "Starting…")]
+                eta = t.eta()
+                if eta is not None:
+                    lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(),
+                                         color=ft.Colors.ON_SURFACE_VARIANT))
             if t.cancel_requested:
                 lines.append(ft.Text("Stopping…", color=ft.Colors.ON_SURFACE_VARIANT))
             lines += [ft.Row([ft.OutlinedButton("Cancel", icon=ft.Icons.STOP, on_click=self.cancel,
@@ -342,6 +344,28 @@ class ExtractScreen:
             self.app.tasks.forget(self.task)
             self.task = None
         self.render()
+
+
+def _phase_rows(phase, active: bool) -> list[ft.Control]:
+    """A phase's label and state, its bar, and (while it runs) size and time left."""
+    if phase.complete:
+        state = "✓ Done"
+    elif active and phase.started is not None:
+        state = f"{(phase.fraction or 0) * 100:.0f}%"
+    else:
+        state = "Waiting"
+    rows: list[ft.Control] = [
+        ft.Row([ft.Text(phase.label, expand=True, weight=ft.FontWeight.W_500 if active else None),
+                ft.Text(state, color=ft.Colors.ON_SURFACE_VARIANT)]),
+        ft.ProgressBar(value=phase.fraction if phase.started is not None or phase.complete else 0),
+    ]
+    if active and phase.started is not None:
+        line = f"{files.human_size(phase.done)} of {files.human_size(phase.total)}"
+        eta = phase.eta()
+        if eta is not None:
+            line += f" · {files.human_duration(eta)} left"
+        rows.append(ft.Text(line, size=13, color=ft.Colors.ON_SURFACE_VARIANT))
+    return rows
 
 
 def _notice(lines: list[str]) -> ft.Control:

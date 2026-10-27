@@ -142,12 +142,10 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     try:
         with archive.Archive(path, password or None) as a:
             total = sum(e.size for e in a.entries() if not e.is_dir)
-            task.detail = "Unpacking…"
-            task.report(0, total * 2)  # first half: unpacking; second half: uploading
-            a.extract(temp, progress=lambda done, _t: (task.report(done), task.cancel_requested)[1],
+            task.set_phases(("Unpacking", total), ("Uploading to Google Drive", total))
+            a.extract(temp, progress=lambda done, _t: (task.advance(0, done), task.cancel_requested)[1],
                       password=password or None)
-        task.detail = "Uploading to Google Drive…"
-        task.report(total)
+        task.advance(1, 0)
         root_id = location.folder_id
         if name:
             existing, _ = drive.children(root_id)
@@ -166,7 +164,7 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
                 size, base = local.stat().st_size, sent
 
                 def progress(n: int, base=base) -> bool:
-                    task.report(total + base + n)
+                    task.advance(1, base + n)
                     return task.cancel_requested
 
                 drive.upload(local, parent_id, f, progress=progress, replace=sub_files.get(f))

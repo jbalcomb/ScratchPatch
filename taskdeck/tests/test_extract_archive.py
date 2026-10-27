@@ -253,3 +253,37 @@ def test_home_strip_shows_running_tasks(tmp_path):
     t.report(50, 100)
     strip = app.running_strip()
     assert len(strip) == 1 and "Extracting big.7z · 50%" in strip[0].content.controls[1].value
+
+
+def test_task_phases():
+    tm = TaskManager(start_thread=lambda fn: None)
+    t = tm.start("x", "j", lambda t: "")
+    t.set_phases(("Unpacking", 100), ("Uploading", 100))
+    assert t.total == 200 and t.current_phase.label == "Unpacking"
+    t.advance(0, 50)
+    assert t.done == 50 and t.phases[0].fraction == 0.5 and t.phases[1].started is None
+    t.advance(1, 20)  # unpacking counts as finished once uploading starts
+    assert t.phases[0].complete and t.done == 120 and t.current_phase.label == "Uploading"
+    t.phases[1].started -= 10
+    assert t.phases[1].eta() == pytest.approx(40.0, abs=1)
+
+
+def test_screen_shows_a_bar_per_phase(tmp_path):
+    import flet as ft
+
+    from taskdeck.shared.gdrive import DriveLocation
+
+    app = make_app(tmp_path)
+    app.tasks._start = lambda fn: None
+    app.open_job("extract_archive")
+    screen = app.stack[-1]
+    t = app.tasks.start("Extracting x.7z to Google Drive", "extract_archive", lambda t: "", result=DriveLocation())
+    t.set_phases(("Unpacking", 1000), ("Uploading to Google Drive", 1000))
+    t.advance(1, 250)
+    screen.task = t
+    screen.render(update=False)
+    bars = [c for c in screen.progress_box.controls if isinstance(c, ft.ProgressBar)]
+    assert [b.value for b in bars] == [1.0, 0.25]
+    texts = [c.controls[1].value for c in screen.progress_box.controls if isinstance(c, ft.Row) and len(c.controls) == 2
+             and isinstance(c.controls[1], ft.Text)]
+    assert texts[:2] == ["✓ Done", "25%"]
