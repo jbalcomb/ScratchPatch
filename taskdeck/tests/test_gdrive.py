@@ -464,3 +464,28 @@ def test_device_flow_survives_network_loss(monkeypatch):
     offline = []
     tokens = google_oauth.wait("CID", "S", code, sleep=lambda s: None, on_offline=offline.append)
     assert tokens.refresh_token == "RT" and offline == [True, True, False, False]
+
+
+@needs_engine
+def test_two_runs_with_the_same_task_id_use_separate_temp_folders(tmp_path):
+    """After a reload the old instance's task 1 may still run while the new instance starts its own task 1."""
+    from taskdeck.jobs.extract_archive import logic
+
+    seen = []
+    real = gdrive.DriveClient.upload
+
+    def upload(self, path, *a, **k):
+        seen.append(path.parent.parent if path.parent.name == "notes" else path.parent)
+        return real(self, path, *a, **k)
+    fake = FakeDrive()
+    tm1, tm2 = run_inline(), run_inline()  # two app instances: both number their first task 1
+    gdrive.DriveClient.upload = upload
+    try:
+        for tm, dest in ((tm1, "P"), (tm2, "Q")):
+            t = tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
+                t, FIX / "plain.7z", None, client(fake), DriveLocation(), dest, tmp_path / "tmp"))
+            assert t.id == 1 and t.status == DONE
+    finally:
+        gdrive.DriveClient.upload = real
+    folders = {p.relative_to(tmp_path / "tmp").parts[0] for p in seen}
+    assert len(folders) == 2 and all(f.startswith("task-1-") for f in folders)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
-import time
+import secrets
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -144,7 +145,9 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     Same-named folders in Drive are reused. A same-named file of the same size is taken as already
     uploaded and skipped (so running it again after a cancel or crash only sends what's missing);
     one of a different size is replaced, like extracting on the phone."""
-    temp = temp_root / f"task-{task.id}-{os.getpid()}"
+    # Unique per run: after a reload, a task of the previous app instance (same process, task ids
+    # starting again at 1) may still be using its own folder.
+    temp = temp_root / f"task-{task.id}-{secrets.token_hex(4)}-{os.getpid()}"
     count = sent = skipped = skipped_bytes = 0
     # Android cuts the network of apps in the background: wait for it instead of failing.
     drive.keep_waiting = lambda: not task.cancel_requested
