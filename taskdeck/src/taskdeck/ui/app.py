@@ -3,6 +3,7 @@ History, Settings, the command palette and keyboard shortcuts."""
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -40,6 +41,7 @@ TABS = [
 THEMES = {"system": ft.ThemeMode.SYSTEM, "light": ft.ThemeMode.LIGHT, "dark": ft.ThemeMode.DARK}
 TILE_WIDTH = 96
 LOCK_AFTER = 5 * 60  # seconds in the background before credentials lock again
+CHECK_LIMIT = 30  # seconds before "Check for updates" says it got no answer
 _AUTO = object()
 
 
@@ -58,9 +60,10 @@ class TaskDeckApp:
         self.favorites = Favorites(self.store)
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
-        run_thread = getattr(page, "run_thread", None)
         traces = TraceStore(self.store.path.parent / "diagnostics")  # one trace file per task, for analysis
-        self.tasks = TaskManager(start_thread=run_thread, traces=traces,
+        # Each task gets its own thread: a long upload must not hold one of the few threads of Flet's shared
+        # pool (page.run_thread) for hours, or other background work (e.g. checking for updates) never runs.
+        self.tasks = TaskManager(traces=traces,
                                  around=lambda task: http.scope(trace=task.trace))  # every request is recorded
         self.tasks.notify_in_background = True  # uploads never wait for the screen to redraw
         self.tasks.listeners.append(self.on_task)
@@ -571,13 +574,23 @@ class TaskDeckApp:
         self.render()
         self.page.update()
 
+        done = threading.Event()
+
         def work():
             result = boot.check_for_update()
+            done.set()
             self.update_status = result["message"]
             self.render()
             self.page.update()
 
-        self.page.run_thread(work)
+        def watchdog():
+            if not done.wait(CHECK_LIMIT):  # e.g. the phone's DNS not answering: urllib's timeout doesn't cover that
+                self.update_status = f"No answer from GitHub within {CHECK_LIMIT} s. Check the connection and try again."
+                self.render()
+                self.page.update()
+
+        threading.Thread(target=work, daemon=True).start()  # not page.run_thread: see self.tasks
+        threading.Thread(target=watchdog, daemon=True).start()
 
     def on_update_ready(self, result: dict) -> None:
         """Called from the updater's background thread when a new version is downloaded."""

@@ -384,3 +384,23 @@ def test_startup_keeps_this_process_temp_folders(tmp_path):
             break
         time.sleep(0.02)
     assert not stale.exists() and (mine / "a.png").exists()
+
+
+def test_check_for_updates_never_stays_on_checking(tmp_path, monkeypatch):
+    import threading as th
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    app = make_app(tmp_path)
+    hang = th.Event()
+    monkeypatch.setattr(app_module, "boot", SimpleNamespace(check_for_update=lambda: hang.wait(5) and {"message": "Up to date."}))
+    monkeypatch.setattr(app_module, "CHECK_LIMIT", 0.1)
+    app.check_updates()
+    assert app.update_status == "Checking…"
+    for _ in range(100):
+        if app.update_status != "Checking…":
+            break
+        time.sleep(0.02)
+    hang.set()
+    assert app.update_status.startswith("No answer from GitHub within")
