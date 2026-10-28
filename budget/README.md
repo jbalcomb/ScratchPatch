@@ -3,7 +3,7 @@
 Upload a Bank of America CSV export from any device at home (or drop it into a folder); its transactions land in a SQLite file, categorized by
 `rules.txt`, which you edit by hand. Python 3.10+, standard library only: nothing to install.
 
-Part of [PERSONAL_STACK_PLAN.md](../PERSONAL_STACK_PLAN.md) (first task).
+Plan and next steps: [PLAN.md](PLAN.md).
 
 ## Run it
 
