@@ -55,6 +55,11 @@ def scope(gate: Callable[[str], None] | None = None,
         _scope.gate, _scope.trace = prev
 
 
+def current_scope() -> dict[str, Any]:
+    """This thread's scope, to carry into worker threads: ``with scope(**current_scope()):``."""
+    return {"gate": getattr(_scope, "gate", None), "trace": getattr(_scope, "trace", None)}
+
+
 def _enter(url: str) -> float:
     gate = getattr(_scope, "gate", None)
     if gate:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,7 +171,10 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             existing, _ = drive.children(root_id)
             root_id = existing.get(name) or drive.create_folder(name, root_id).id
             task.result = location.child(gdrive.Folder(root_id, name))  # "Open in Drive" goes straight there
+        # 1. Folders, listings and skips, one by one (cheap). 2. The uploads, several at once: Google
+        # takes ~5 s to confirm each new file, so one at a time thousands of small files take hours.
         folder_ids = {Path("."): root_id}
+        todo: list[tuple[Path, str, str, Path, int, str | None]] = []  # local, parent, name, rel, size, replace
         for dirpath, dirnames, filenames in os.walk(temp):
             dirnames.sort()
             here = Path(dirpath).relative_to(temp)
@@ -178,33 +182,28 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             sub_folders, sub_files = drive.children_sized(parent_id)
             for d in dirnames:
                 folder_ids[here / d] = sub_folders.get(d) or drive.create_folder(d, parent_id).id
+                if task.cancel_requested:
+                    raise gdrive.UploadCancelled()
             for f in sorted(filenames):
                 local = Path(dirpath) / f
-                size, base = local.stat().st_size, sent + skipped_bytes
+                size = local.stat().st_size
                 existing_id, existing_size = sub_files.get(f, (None, -1))
                 if existing_id and existing_size == size:  # already there (an earlier, interrupted run)
                     task.log("file", path=str(here / f), bytes=size, skipped=True)
                     local.unlink()
                     skipped += 1
                     skipped_bytes += size
-                    task.advance(1, base + size)
-                    if task.cancel_requested:
-                        raise gdrive.UploadCancelled()
+                    task.advance(1, skipped_bytes)
                     continue
-
-                def progress(n: int, base=base) -> bool:
-                    task.advance(1, base + n)
-                    return task.cancel_requested
-
-                file_started = time.monotonic()
-                drive.upload(local, parent_id, f, progress=progress, replace=existing_id)
-                task.log("file", path=str(here / f), bytes=size, secs=round(time.monotonic() - file_started, 3),
-                         replaced=bool(existing_id))
-                local.unlink()  # free the space as we go
-                sent += size
-                count += 1
-                if task.cancel_requested:
-                    raise gdrive.UploadCancelled()
+                todo.append((local, parent_id, f, here / f, size, existing_id))
+        task.log("uploads", files=len(todo), bytes=sum(t[4] for t in todo), workers=UPLOAD_WORKERS)
+        count, sent = _upload_all(task, drive, todo, skipped_bytes)
+    except _Interrupted as stop:
+        count, sent = stop.count, stop.sent
+        if isinstance(stop.error, (gdrive.UploadCancelled, Cancelled)):
+            raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
+        done = f" {_were_uploaded(count)} before that." if count else ""
+        raise RuntimeError(f"{stop.error}{done}") from None
     except archive.ArchiveError as exc:
         if exc.code == archive.E_CANCELLED:
             raise Cancelled("Stopped before uploading anything.") from None
@@ -220,6 +219,79 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     if skipped:
         message += f". Skipped {skipped:,} already there ({files.human_size(skipped_bytes)})."
     return message
+
+
+UPLOAD_WORKERS = 6  # files uploaded at the same time
+
+
+class _Interrupted(Exception):
+    """The uploads stopped (cancel or error) after ``count`` files / ``sent`` bytes."""
+
+    def __init__(self, error: BaseException, count: int, sent: int):
+        super().__init__(str(error))
+        self.error, self.count, self.sent = error, count, sent
+
+
+def _upload_all(task: Task, drive: gdrive.DriveClient, todo: list, already: int,
+                workers: int | None = None) -> tuple[int, int]:
+    """Upload the files in ``todo`` with several threads; returns (files, bytes). Progress counts the
+    finished files plus what the running ones have sent so far. On Cancel or the first error, no new
+    file starts, the running ones finish, and _Interrupted is raised."""
+    lock = threading.Lock()
+    queue = iter(todo)
+    state = {"count": 0, "sent": 0}
+    in_flight: dict[int, int] = {}
+    errors: list[BaseException] = []
+    scope = http.current_scope()  # the task's trace and Wi-Fi-only gate, in every worker
+
+    def report() -> None:
+        task.advance(1, already + state["sent"] + sum(in_flight.values()))
+
+    def worker() -> None:
+        me = threading.get_ident()
+        with http.scope(**scope):
+            while True:
+                with lock:
+                    if errors or task.cancel_requested:
+                        return
+                    item = next(queue, None)
+                if item is None:
+                    return
+                local, parent_id, name, rel, size, replace = item
+
+                def progress(n: int) -> bool:
+                    with lock:
+                        in_flight[me] = n
+                        report()
+                    return task.cancel_requested
+
+                started = time.monotonic()
+                try:
+                    drive.upload(local, parent_id, name, progress=progress, replace=replace)
+                except BaseException as exc:  # noqa: BLE001 - handed to the task thread
+                    with lock:
+                        in_flight.pop(me, None)
+                        errors.append(exc)
+                    return
+                task.log("file", path=str(rel), bytes=size, secs=round(time.monotonic() - started, 3),
+                         replaced=bool(replace))
+                local.unlink()  # free the space as we go
+                with lock:
+                    in_flight.pop(me, None)
+                    state["count"] += 1
+                    state["sent"] += size
+                    report()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(workers or UPLOAD_WORKERS, len(todo)))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if errors:
+        raise _Interrupted(errors[0], state["count"], state["sent"])
+    if task.cancel_requested and state["count"] < len(todo):
+        raise _Interrupted(gdrive.UploadCancelled(), state["count"], state["sent"])
+    return state["count"], state["sent"]
 
 
 def _were_uploaded(count: int) -> str:

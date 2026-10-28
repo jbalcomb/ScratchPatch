@@ -87,6 +87,14 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
                 f"connect {sum(new) / len(new) if new else 0:.2f} s ({len(new)} new connections, "
                 f"{len(timed) - len(new)} reused), send {avg('send'):.2f} s, wait for Google {avg('wait'):.2f} s, "
                 f"read {avg('read'):.2f} s; progress updates while sending {avg('callbacks'):.2f} s")
+            kinds: dict[str, list[float]] = {}
+            for e in timed:
+                kind = "create file" if e.get("method") == "POST" and "/upload/" in e.get("path", "") else \
+                    "upload piece" if e.get("method") == "PUT" else \
+                    "list folder" if e.get("method") == "GET" else f"{e.get('method')} {e.get('path', '')[-20:]}"
+                kinds.setdefault(kind, []).append(e["wait"])
+            say("Google's reply time by request: " + ", ".join(
+                f"{k} {sorted(v)[len(v) // 2]:.2f} s median ({len(v)})" for k, v in sorted(kinds.items())))
             between = [b["s"] - (a["s"]) for a, b in zip(http, http[1:])]
             gaps = [g - b["secs"] for g, b in zip(between, http[1:])]
             if gaps:

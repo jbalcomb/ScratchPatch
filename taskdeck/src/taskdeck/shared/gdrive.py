@@ -79,6 +79,13 @@ def _explain(resp: http.Response, what: str) -> DriveError:
                       resp.status)
 
 
+def _retryable(resp: http.Response) -> bool:
+    """Server busy, or Google asking to slow down (429, or 403 with a rate-limit reason)."""
+    if resp.status in (429, 500, 502, 503, 504):
+        return True
+    return resp.status == 403 and b"ateLimitExceeded" in resp.body  # rateLimitExceeded, userRateLimitExceeded
+
+
 OFFLINE_RETRY_MAX = 15  # seconds between tries while waiting for the network to come back
 
 
@@ -134,7 +141,7 @@ class DriveClient:
                 attempt += 1
                 continue
             self._online()
-            if resp.status in (429, 500, 502, 503, 504) and attempt < RETRIES - 1:
+            if _retryable(resp) and attempt < RETRIES - 1:
                 self.sleep(min(2 ** attempt, 30))
                 attempt += 1
                 continue
@@ -237,7 +244,7 @@ class DriveClient:
                     restarts += 1
                     session, offset = self._start_session(name, parent, size, replace), 0
                     continue
-                if resp.status in (429, 500, 502, 503, 504):
+                if _retryable(resp):
                     failures += 1
                     self.sleep(min(2 ** failures, 30))
                     offset = self._resume_offset(session, size)
@@ -280,7 +287,7 @@ class DriveClient:
                 if progress and progress(size):
                     raise UploadCancelled()
                 return str((resp.json() or {}).get("id", ""))
-            if resp.status in (429, 500, 502, 503, 504) and server_errors < RETRIES:
+            if _retryable(resp) and server_errors < RETRIES:
                 server_errors += 1
                 self.sleep(min(2 ** server_errors, 30))
                 continue
