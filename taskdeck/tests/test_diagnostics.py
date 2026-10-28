@@ -347,3 +347,44 @@ def test_connections_are_kept_open_and_renewed_when_stale():
         assert len(connections) == 2
     finally:
         srv.shutdown()
+
+
+def test_listeners_run_off_the_work_thread():
+    tm = TaskManager(start_thread=lambda fn: threading.Thread(target=fn).start())
+    tm.notify_in_background = True
+    seen, work_thread = [], []
+
+    def slow_listener(task):
+        seen.append((threading.get_ident(), task.status, task.done))
+        time.sleep(0.05)  # e.g. a slow screen redraw
+    tm.listeners.append(slow_listener)
+
+    def work(t):
+        work_thread.append(threading.get_ident())
+        started = time.monotonic()
+        for i in range(100):
+            t.report(i, 100)
+        assert time.monotonic() - started < 0.5  # not held up by the listener
+        return "ok"
+    t = tm.start("x", "j", work)
+    for _ in range(200):
+        if seen and seen[-1][1] == DONE:
+            break
+        time.sleep(0.02)
+    assert seen[-1][1] == DONE  # the end is always delivered
+    assert work_thread[0] not in {ident for ident, _, _ in seen}
+    assert len(seen) < 100  # coalesced
+
+
+def test_request_timing_breakdown(server):
+    seen = []
+    with http.scope(trace=lambda ev, **f: seen.append(f)):
+        http.send("GET", f"{server}/a")
+        http.send("PUT", f"{server}/up", gdrive.Piece(b"z" * 300_000, lambda n: time.sleep(0.01)),
+                  {"Content-Length": "300000"})
+    first, second = seen
+    assert first["reused"] is False and "connect" in first and {"send", "wait", "read"} <= set(first)
+    assert second["callbacks"] >= 0.01
+    lines = [{"t": 0, "s": 0, "ev": "start"}] + [{"t": i, "s": i, "ev": "http", **f} for i, f in enumerate(seen, 1)]
+    text = trace_report.report(lines)
+    assert "Where a request's time goes" in text and "2 new connections, 0 reused" in text  # HTTP/1.0 test server

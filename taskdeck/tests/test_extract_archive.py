@@ -194,6 +194,7 @@ def make_app(tmp_path):
     from taskdeck.ui.app import TaskDeckApp
 
     app = TaskDeckApp(FakePage(), store=JsonStore(tmp_path / "state.json"), vault_backend=None)
+    app.tasks.notify_in_background = False  # listeners run at once, so tests can check right after
     app.toasts = []
     app.toast = app.toasts.append
     return app

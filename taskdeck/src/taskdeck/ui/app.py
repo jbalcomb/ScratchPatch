@@ -62,6 +62,7 @@ class TaskDeckApp:
         traces = TraceStore(self.store.path.parent / "diagnostics")  # one trace file per task, for analysis
         self.tasks = TaskManager(start_thread=run_thread, traces=traces,
                                  around=lambda task: http.scope(trace=task.trace))  # every request is recorded
+        self.tasks.notify_in_background = True  # uploads never wait for the screen to redraw
         self.tasks.listeners.append(self.on_task)
         self.background = BackgroundKeeper(self)  # foreground service while tasks run (APK with the extension)
         self.tasks.listeners.append(self.background.on_task)

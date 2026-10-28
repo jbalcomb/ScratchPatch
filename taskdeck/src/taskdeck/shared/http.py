@@ -63,7 +63,7 @@ def _enter(url: str) -> float:
 
 
 def _record(method: str, url: str, started: float, status: int | None = None, sent: int = 0,
-            received: int = 0, error: str = "") -> None:
+            received: int = 0, error: str = "", **timing: Any) -> None:
     trace = getattr(_scope, "trace", None)
     if not trace:
         return
@@ -74,6 +74,7 @@ def _record(method: str, url: str, started: float, status: int | None = None, se
         fields["status"] = status
     if error:
         fields["error"] = error
+    fields.update(timing)
     try:
         trace("http", **fields)
     except Exception:  # diagnostics must never break a request
@@ -263,10 +264,22 @@ def send(method: str, url: str, body: Any = None, headers: dict[str, str] | None
     for attempt in (1, 2):
         conn = _pooled(parts, timeout)
         reused = conn.sock is not None
+        timing: dict[str, Any] = {"reused": reused}
         try:
+            t0 = time.monotonic()
+            if not reused:
+                conn.connect()  # DNS, TCP and (for https) the TLS handshake
+                timing["connect"] = round(time.monotonic() - t0, 3)
+            t1 = time.monotonic()
             conn.request(method, target, body=body, headers=headers or {})
+            t2 = time.monotonic()
             resp = conn.getresponse()
+            t3 = time.monotonic()
             data = resp.read()
+            t4 = time.monotonic()
+            timing.update(send=round(t2 - t1, 3), wait=round(t3 - t2, 3), read=round(t4 - t3, 3))
+            if getattr(body, "callback_secs", 0):  # time spent in progress updates while sending
+                timing["callbacks"] = round(body.callback_secs, 3)
         except (OSError, http.client.HTTPException) as exc:  # incl. a cut connection
             _drop(parts)
             if reused and attempt == 1 and isinstance(exc, _STALE):
@@ -275,12 +288,12 @@ def send(method: str, url: str, body: Any = None, headers: dict[str, str] | None
                     body.seek(0)
                 continue
             err = _network_error(exc, url, timeout)
-            _record(method, url, started, sent=sent, error=str(err))
+            _record(method, url, started, sent=sent, error=str(err), **timing)
             raise err from None
         if resp.will_close:
             _drop(parts)
         out = Response(resp.status, {k.lower(): v for k, v in resp.getheaders()}, data)
-        _record(method, url, started, out.status, sent, len(out.body))
+        _record(method, url, started, out.status, sent, len(out.body), **timing)
         return out
     raise AssertionError("unreachable")
 

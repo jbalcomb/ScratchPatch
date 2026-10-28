@@ -335,6 +335,7 @@ class Piece(io.BytesIO):
         self.size = len(data)
         self.on_sent = on_sent
         self._reported = 0
+        self.callback_secs = 0.0  # time spent in on_sent (diagnostics: progress updates slowing the upload)
 
     def __len__(self) -> int:
         return self.size
@@ -344,7 +345,9 @@ class Piece(io.BytesIO):
         sent = self.tell()
         if self.on_sent and (sent - self._reported >= self.REPORT_EVERY or (sent == self.size and out)):
             self._reported = sent
+            started = time.monotonic()
             self.on_sent(sent)  # cancelling waits for the end of the piece
+            self.callback_secs += time.monotonic() - started
         return out
 
 

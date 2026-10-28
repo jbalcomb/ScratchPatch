@@ -77,11 +77,27 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
             secs = sorted(e["secs"] for e in ok_up)
             say(f"Upload pieces: {len(ok_up)}, {mb(sent)} in {clock(busy)} of request time = {rate(sent, busy)} "
                 f"while sending; piece time median {secs[len(secs) // 2]:.1f} s, max {secs[-1]:.1f} s")
+        timed = [e for e in http if "wait" in e]
+        if timed:
+            def avg(key: str) -> float:
+                vals = [e.get(key, 0) for e in timed]
+                return sum(vals) / len(vals)
+            new = [e["connect"] for e in timed if "connect" in e]
+            say(f"Where a request's time goes (average of {len(timed)}): "
+                f"connect {sum(new) / len(new) if new else 0:.2f} s ({len(new)} new connections, "
+                f"{len(timed) - len(new)} reused), send {avg('send'):.2f} s, wait for Google {avg('wait'):.2f} s, "
+                f"read {avg('read'):.2f} s; progress updates while sending {avg('callbacks'):.2f} s")
+            between = [b["s"] - (a["s"]) for a, b in zip(http, http[1:])]
+            gaps = [g - b["secs"] for g, b in zip(between, http[1:])]
+            if gaps:
+                say(f"Time between requests (TaskDeck's own work): average {sum(gaps) / len(gaps):.2f} s, "
+                    f"max {max(gaps):.1f} s")
         slow = sorted(http, key=lambda e: -e["secs"])[:5]
         say("Slowest requests:")
         for e in slow:
+            parts = " ".join(f"{k} {e[k]:.1f}" for k in ("connect", "send", "wait", "read", "callbacks") if k in e)
             say(f"  {clock(e['s'])}  {e['secs']:7.1f} s  {e.get('method')} {e.get('host')}{e.get('path', '')[:50]}"
-                f"  sent {mb(e.get('sent', 0))}  -> {e.get('status', e.get('error', '?'))}")
+                f"  sent {mb(e.get('sent', 0))}  -> {e.get('status', e.get('error', '?'))}  {parts}")
         errors = [e for e in http if "error" in e or (e.get("status") or 0) >= 400]
         if errors:
             say("Failed requests:")

@@ -211,6 +211,11 @@ class TaskManager:
                  around: Callable[[Task], ContextManager[Any]] | None = None):
         self.traces = traces
         self.around = around or (lambda task: contextlib.nullcontext())
+        self.notify_in_background = False  # the app turns this on (see _notify)
+        self._pending: dict[int, Task] = {}
+        self._pending_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._notifier: threading.Thread | None = None
         self.tasks: list[Task] = []
         self.listeners: list[Callable[[Task], None]] = []
         self._ids = itertools.count(1)
@@ -276,6 +281,29 @@ class TaskManager:
             self.tasks.remove(task)
 
     def _notify(self, task: Task) -> None:
+        """Tell the listeners (screen, notification, diagnostics). With ``notify_in_background`` they
+        run on a separate thread, so the work never waits on the screen; changes in between are
+        coalesced (each listener sees a task's latest state)."""
+        if not self.notify_in_background:
+            self._deliver(task)
+            return
+        with self._pending_lock:
+            self._pending[id(task)] = task
+            if self._notifier is None:
+                self._notifier = threading.Thread(target=self._notify_loop, daemon=True)
+                self._notifier.start()
+        self._wake.set()
+
+    def _notify_loop(self) -> None:
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            with self._pending_lock:
+                batch, self._pending = list(self._pending.values()), {}
+            for task in batch:
+                self._deliver(task)
+
+    def _deliver(self, task: Task) -> None:
         for listener in list(self.listeners):
             try:
                 listener(task)

@@ -472,20 +472,21 @@ def test_two_runs_with_the_same_task_id_use_separate_temp_folders(tmp_path):
     from taskdeck.jobs.extract_archive import logic
 
     seen = []
-    real = gdrive.DriveClient.upload
-
-    def upload(self, path, *a, **k):
-        seen.append(path.parent.parent if path.parent.name == "notes" else path.parent)
-        return real(self, path, *a, **k)
     fake = FakeDrive()
+
+    def watched():
+        drive = client(fake)
+        real = drive.upload
+
+        def upload(path, *a, **k):
+            seen.append(path.parent.parent if path.parent.name == "notes" else path.parent)
+            return real(path, *a, **k)
+        drive.upload = upload
+        return drive
     tm1, tm2 = run_inline(), run_inline()  # two app instances: both number their first task 1
-    gdrive.DriveClient.upload = upload
-    try:
-        for tm, dest in ((tm1, "P"), (tm2, "Q")):
-            t = tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
-                t, FIX / "plain.7z", None, client(fake), DriveLocation(), dest, tmp_path / "tmp"))
-            assert t.id == 1 and t.status == DONE
-    finally:
-        gdrive.DriveClient.upload = real
+    for tm, dest in ((tm1, "P"), (tm2, "Q")):
+        t = tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
+            t, FIX / "plain.7z", None, watched(), DriveLocation(), dest, tmp_path / "tmp"))
+        assert t.id == 1 and t.status == DONE
     folders = {p.relative_to(tmp_path / "tmp").parts[0] for p in seen}
     assert len(folders) == 2 and all(f.startswith("task-1-") for f in folders)
