@@ -17,8 +17,11 @@ from taskdeck.shared import gdrive, http
 from taskdeck.ui.diagnostics import FOLDER, DiagnosticsSync
 from taskdeck.ui.network import WAITING, NetworkMonitor
 
+
+from taskdeck.core import trace_report  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-import trace_report  # noqa: E402
+import trace_report as trace_report_cli  # noqa: E402
 
 from test_gdrive import FIX, FakeDrive, client, needs_engine  # noqa: E402
 
@@ -115,6 +118,12 @@ def test_scope_records_and_gates_requests(server):
     assert rec[0]["path"] == "/a" and "secret" not in json.dumps(rec)  # no query strings
     assert rec[1]["sent"] == 1000 and "error" in rec[3]
 
+    sent = []
+    with http.scope(trace=lambda ev, **f: seen.append((ev, f))):
+        assert http.send("PUT", f"{server}/up", gdrive.Piece(b"y" * 600_000, sent.append),
+                         {"Content-Length": "600000"}).status == 308
+    assert sent == [262144, 524288, 600000] and seen[-1][1]["sent"] == 600_000  # reported as it goes out
+
     def refuse(url):
         raise Cancelled("no")
     with http.scope(gate=refuse), pytest.raises(Cancelled):
@@ -174,7 +183,9 @@ def test_sync_uploads_new_and_grown_traces(tmp_path):
     sync = DiagnosticsSync(app, store)
     assert sync.sync() == 1
     folder = next(i for i, it in fake.items.items() if it["name"] == FOLDER)
-    assert list(fake.tree(folder)) == [a.path.name]
+    tree = fake.tree(folder)
+    summary = a.path.stem + ".summary.txt"
+    assert sorted(tree) == sorted([a.path.name, summary]) and b"Task:" in tree[summary]
     assert sync.sync() == 0  # nothing changed
 
     a.event("two")  # still running: grows
@@ -182,7 +193,7 @@ def test_sync_uploads_new_and_grown_traces(tmp_path):
     b.event("x")
     assert sync.sync() == 2
     tree = fake.tree(folder)
-    assert len(tree) == 2 and tree[a.path.name].count(b"\n") == 2  # replaced, not duplicated
+    assert len(tree) == 4 and tree[a.path.name].count(b"\n") == 2  # replaced, not duplicated
     assert not (tmp_path / "tmp" / "diagnostics").exists()
 
     app.google.connected = False
@@ -220,7 +231,7 @@ def test_extract_to_drive_trace_and_report(tmp_path):
     assert sum(e["ev"] == "file" for e in ev) == 3
     text = trace_report.report(trace_report.load(t.trace.path))
     assert "Ended: done" in text and "Files uploaded: 3" in text and "Timeline:" in text
-    assert trace_report.main([str(t.trace.path), "--minute"]) == 0
+    assert trace_report_cli.main([str(t.trace.path), "--minute"]) == 0
 
 
 def test_report_without_end_and_with_stall(tmp_path):
@@ -232,3 +243,52 @@ def test_report_without_end_and_with_stall(tmp_path):
     p.write_text("\n".join(json.dumps(x) for x in lines) + "\n{broken")
     text = trace_report.report(trace_report.load(p))
     assert "No end recorded" in text and "STALL" in text and "corrupt" in text
+
+
+def test_network_change_cuts_open_connections():
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()  # accepts, never answers: like a connection left on the old network
+    port = listener.getsockname()[1]
+    errors = []
+    started = time.monotonic()
+    worker = threading.Thread(target=lambda: errors.append(
+        pytest.raises(http.HttpError, http.request, "GET", f"http://127.0.0.1:{port}/", timeout=30)))
+    worker.start()
+    for _ in range(100):
+        if http.abort_connections():
+            break
+        time.sleep(0.02)
+    worker.join(5)
+    listener.close()
+    assert errors and time.monotonic() - started < 5  # failed at once, not after 30 s
+
+    net = monitor(None)
+    cut = []
+    real = http.abort_connections
+    try:
+        http.abort_connections = lambda: cut.append(1) or 0
+        net.set_types(["mobile"])  # first look: nothing to cut
+        net.set_types(["wifi"])
+        net.set_types(["wifi"])  # no change
+    finally:
+        http.abort_connections = real
+    assert cut == [1]
+
+
+def test_stall_note(monkeypatch):
+    tm = TaskManager(start_thread=lambda fn: None)
+    t = tm.start("x", "j", lambda t: "")
+    t.report(10, 100)
+    now = time.time()
+    t.watch(now + 30)
+    assert t.note == ""
+    t.watch(now + 125)
+    assert t.note == "No progress for 2 minutes. Still trying…"
+    t.report(20, 100)  # moving again
+    assert t.note == ""
+    t.set_note("Paused: no connection.")
+    t.watch(time.time() + 300)
+    assert t.note == "Paused: no connection."  # an explained pause isn't overwritten

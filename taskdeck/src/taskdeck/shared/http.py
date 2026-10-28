@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -108,11 +109,39 @@ class _Response(http.client.HTTPResponse):
             return version, status, reason
 
 
-class _HTTPConnection(http.client.HTTPConnection):
+# Open sockets, so a network change can cut them (abort_connections): a request in flight when the
+# phone moves between mobile data and Wi-Fi otherwise hangs on the old network until its timeout.
+_live: "weakref.WeakSet[socket.socket]" = weakref.WeakSet()
+_live_lock = threading.Lock()
+
+
+def abort_connections() -> int:
+    """Shut down every open connection; requests using them fail at once (and are retried by their
+    callers on the new network). Returns how many were cut."""
+    with _live_lock:
+        socks = list(_live)
+    count = 0
+    for sock in socks:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+            count += 1
+        except OSError:
+            pass
+    return count
+
+
+class _Tracked:
+    def connect(self):
+        super().connect()
+        with _live_lock:
+            _live.add(self.sock)
+
+
+class _HTTPConnection(_Tracked, http.client.HTTPConnection):
     response_class = _Response
 
 
-class _HTTPSConnection(http.client.HTTPSConnection):
+class _HTTPSConnection(_Tracked, http.client.HTTPSConnection):
     response_class = _Response
 
 
@@ -161,7 +190,7 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         _record(method, url, started, exc.code, sent, len(body_bytes))
         body = body_bytes.decode("utf-8", errors="replace")
         raise HttpError(f"HTTP {exc.code}: {_error_detail(body) or exc.reason}", exc.code, body) from None
-    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:  # incl. a cut connection
         err = _network_error(exc, url, timeout)
         _record(method, url, started, sent=sent, error=str(err))
         raise err from None
@@ -202,13 +231,13 @@ def send(method: str, url: str, body: bytes | None = None, headers: dict[str, st
     Network failures raise HttpError, like :func:`request`."""
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     started = _enter(url)
-    sent = len(body or b"")
+    sent = len(body) if body is not None else 0  # bytes, or a sized file-like (sent as it is read)
     try:
         with _RAW_OPENER.open(req, timeout=timeout) as resp:
             out = Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
     except urllib.error.HTTPError as exc:
         out = Response(exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b"")
-    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:  # incl. a cut connection
         err = _network_error(exc, url, timeout)
         _record(method, url, started, sent=sent, error=str(err))
         raise err from None

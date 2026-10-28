@@ -113,6 +113,8 @@ class FakeDrive:
         return out
 
     def send(self, method, url, body=None, headers=None, timeout=60):
+        if hasattr(body, "read"):  # an upload piece (gdrive.Piece): read it like http.client does
+            body = b"".join(iter(lambda: body.read(8192), b""))
         for i, (m, fault) in enumerate(self.faults):
             if m == method:
                 del self.faults[i]
@@ -182,13 +184,14 @@ def test_folders(tmp_path):
 
 def test_upload_in_pieces_with_progress(tmp_path):
     fake = FakeDrive()
-    data = bytes(range(256)) * 4096  # 1 MiB -> 4 pieces of 256 KiB
+    data = bytes(range(256)) * 4096  # 1 MiB -> 2 pieces of 512 KiB
     f = tmp_path / "big.bin"
     f.write_bytes(data)
     seen = []
-    fid = client(fake).upload(f, "root", progress=lambda n: seen.append(n) and False)
-    assert fake.items[fid]["data"] == data and fake.puts == 4
-    assert seen == [262144, 524288, 786432, 1048576]
+    fid = client(fake, chunk=512 * 1024).upload(f, "root", progress=lambda n: seen.append(n) and False)
+    assert fake.items[fid]["data"] == data and fake.puts == 2
+    # every 256 KiB as it is sent, then as Google confirms each piece
+    assert seen == [262144, 524288, 524288, 786432, 1048576, 1048576]
 
 
 def test_upload_resumes_after_network_drop_and_server_error(tmp_path):

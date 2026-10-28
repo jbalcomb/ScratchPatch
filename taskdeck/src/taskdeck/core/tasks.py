@@ -23,6 +23,7 @@ from .trace import Trace, TraceStore, environment
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 NOTIFY_EVERY = 0.25  # seconds between progress notifications
 SPEED_WINDOW = 10.0  # seconds the current speed is averaged over
+STALL_AFTER = 60.0  # seconds without progress before the task says so
 
 
 class Speedometer:
@@ -100,6 +101,8 @@ class Task:
     _logged_phase: int = field(default=-1, repr=False, compare=False)
     _beat_done: int = field(default=0, repr=False, compare=False)
     meter: Speedometer = field(default_factory=Speedometer, repr=False, compare=False)
+    _progress_at: float = field(default_factory=time.time, repr=False, compare=False)
+    _stalled: bool = field(default=False, repr=False, compare=False)
 
     def log(self, ev: str, **fields: Any) -> None:
         """Add an event to the task's diagnostics trace (if it has one)."""
@@ -151,6 +154,18 @@ class Task:
             if self._manager:
                 self._manager._notify(self)
 
+    def watch(self, now: float | None = None) -> None:
+        """Called every heartbeat: says so when nothing has moved for a while (unless the task already
+        explains why, e.g. paused), and refreshes the screen so the speed falls while stalled."""
+        now = now or time.time()
+        idle = now - self._progress_at
+        if self.running and idle >= STALL_AFTER and (not self.note or self._stalled):
+            self._stalled = True
+            minutes = int(idle // 60)
+            self.set_note(f"No progress for {minutes} minute{'s' * (minutes != 1)}. Still trying…")
+        if self._manager:
+            self._manager._notify(self)
+
     def snapshot(self) -> dict[str, Any]:
         """Progress for the trace's heartbeat: where it is, and how much moved since the last one."""
         phase = self.current_phase
@@ -172,10 +187,15 @@ class Task:
         return self.meter.speed(now)
 
     def report(self, done: int, total: int | None = None) -> None:
+        now = time.time()
+        if done != self.done:
+            self._progress_at = now
+            if self._stalled:
+                self._stalled = False
+                self.set_note("")
         self.done = done
         if total is not None:
             self.total = total
-        now = time.time()
         self.meter.add(done, now)
         if self._manager and now - self._last_notify >= NOTIFY_EVERY:
             self._last_notify = now
@@ -200,7 +220,7 @@ class TaskManager:
         task = Task(next(self._ids), title, job_id, result=result, _manager=self)
         if self.traces:
             try:
-                task.trace = self.traces.new(job_id, heartbeat=task.snapshot)
+                task.trace = self.traces.new(job_id, heartbeat=lambda: (task.watch(), task.snapshot())[1])
                 task.log("start", title=title, job=job_id, task=task.id, **environment())
             except OSError:
                 task.trace = None

@@ -10,7 +10,8 @@ screen for it in the app; it's for working out what went wrong or why something 
   storage every few seconds), so it survives the app being killed. The newest 20 are kept.
 * **In Google Drive (a copy):** My Drive → **TaskDeck diagnostics**. Uploaded when a task ends, every 2 minutes
   while tasks run, and when TaskDeck starts (catching up after a crash or kill). A growing file replaces its
-  earlier copy. Needs Google Drive connected (Settings → Accounts); otherwise the files wait on the phone.
+  earlier copy, and next to each trace goes `<name>.summary.txt`: the report below, readable at a glance (a long
+  trace has thousands of lines). Needs Google Drive connected (Settings → Accounts); otherwise the files wait on the phone.
   Ignores the jobs' Wi-Fi-only setting (traces are small).
 
 ## What's in them
@@ -25,9 +26,9 @@ One JSON object per line, each with `t` (Unix time), `s` (seconds since the task
 | `http` | **every request** the task makes: method, host, path (no query string), status or error, bytes sent and received, seconds |
 | `file` | one file uploaded: path in the archive, bytes, seconds |
 | `heartbeat` | every 30 s: progress and bytes moved since the last heartbeat (a stall shows as heartbeats with `moved: 0`) |
-| `note` | pauses: "Paused: no connection", "Waiting for Wi-Fi", and when they clear |
+| `note` | pauses: "Paused: no connection", "Waiting for Wi-Fi", "No progress for N minutes" (shown in the app after a minute without progress), and when they clear |
 | `app` | TaskDeck went to the background / came back |
-| `network` | Wi-Fi / mobile data changes |
+| `network` | Wi-Fi / mobile data changes, and how many open connections were cut (`connections_cut`): on a change, requests in flight on the old network are ended at once and retried, instead of hanging until their timeout |
 | `service` | the background service started (or failed) |
 | `cancel_requested`, `end` | Cancel tapped; how it ended (status, message, Python traceback on failure) |
 
@@ -38,6 +39,8 @@ No file contents, passwords, tokens or query strings are recorded.
 ```
 python tools/trace_report.py TRACE.jsonl [--minute]
 ```
+
+(the same report as the `.summary.txt` files; the code is `taskdeck.core.trace_report`)
 
 prints how it ended, where the time went, upload speed (per request and per file), the slowest and failed
 requests, stalls, and the timeline of pauses, app and network changes.

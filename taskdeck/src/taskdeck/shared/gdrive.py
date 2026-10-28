@@ -6,6 +6,7 @@ With the ``drive.file`` scope TaskDeck only sees folders and files it created it
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import time
@@ -202,9 +203,10 @@ class DriveClient:
                 piece = fh.read(self.chunk)
                 end = offset + len(piece) - 1
                 content_range = f"bytes {offset}-{end}/{size}" if size else "bytes */0"
+                body = Piece(piece, (lambda n, at=offset: progress(at + n)) if progress else None)
                 try:
-                    resp = self.send("PUT", session, piece, {"Content-Length": str(len(piece)),
-                                                             "Content-Range": content_range}, 120)
+                    resp = self.send("PUT", session, body, {"Content-Length": str(len(piece)),
+                                                            "Content-Range": content_range}, 60)
                 except http.HttpError:
                     if self.keep_waiting is None:  # when waiting, a dropped network is a pause, not a failure
                         failures += 1
@@ -261,6 +263,30 @@ class DriveClient:
             self.sleep(min(2 ** server_errors, 30))
             server_errors += 1
         raise DriveError("Lost the connection to Google Drive while uploading.")
+
+
+class Piece(io.BytesIO):
+    """An upload piece that reports its progress as it is sent (every REPORT_EVERY bytes), instead of
+    only when the whole piece has gone through: smooth progress and speed on slow connections."""
+
+    REPORT_EVERY = 256 * 1024
+
+    def __init__(self, data: bytes, on_sent: Callable[[int], object] | None = None):
+        super().__init__(data)
+        self.size = len(data)
+        self.on_sent = on_sent
+        self._reported = 0
+
+    def __len__(self) -> int:
+        return self.size
+
+    def read(self, n: int = -1) -> bytes:
+        out = super().read(n)
+        sent = self.tell()
+        if self.on_sent and (sent - self._reported >= self.REPORT_EVERY or (sent == self.size and out)):
+            self._reported = sent
+            self.on_sent(sent)  # cancelling waits for the end of the piece
+        return out
 
 
 def _range_end(header: str | None) -> int:

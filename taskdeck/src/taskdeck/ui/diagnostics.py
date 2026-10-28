@@ -15,13 +15,14 @@ import shutil
 import threading
 from typing import TYPE_CHECKING, Any
 
+from taskdeck.core import trace_report
 from taskdeck.core.trace import TraceStore
 
 if TYPE_CHECKING:
     from .app import TaskDeckApp
 
 FOLDER = "TaskDeck diagnostics"
-SYNCED = "diagnostics:synced"  # store: {file name: [size, Drive file id]}
+SYNCED = "diagnostics:synced"  # store: {file name: [size, Drive file id, summary's Drive file id]}
 FOLDER_ID = "diagnostics:folder"
 EVERY = 120.0  # seconds between syncs while a task runs
 
@@ -99,20 +100,28 @@ class DiagnosticsSync:
                 snap = snapshot_dir / path.name  # a still-growing file is copied, so its size holds still
                 shutil.copyfile(path, snap)
                 size = snap.stat().st_size
-                old_id = (synced.get(path.name) or [None, None])[1]
-                try:
-                    file_id = drive.upload(snap, folder, path.name, replace=old_id)
-                except Exception:
-                    if not old_id:
-                        raise
-                    file_id = drive.upload(snap, folder, path.name)  # the old copy was deleted in Drive
-                synced[path.name] = [size, file_id]
+                _, old_id, old_summary = (list(synced.get(path.name) or []) + [None, None, None])[:3]
+                file_id = self._upload(drive, snap, folder, path.name, old_id)
+                # A short readable report next to it (a long trace is too big to read through quickly).
+                summary = snapshot_dir / (path.stem + ".summary.txt")
+                summary.write_text(f"{path.name}\n{trace_report.report(trace_report.load(snap))}\n", encoding="utf-8")
+                summary_id = self._upload(drive, summary, folder, summary.name, old_summary)
+                synced[path.name] = [size, file_id, summary_id]
                 self.app.store.set(SYNCED, synced)
                 count += 1
         finally:
             shutil.rmtree(snapshot_dir, ignore_errors=True)
         self.last_error = ""
         return count
+
+    @staticmethod
+    def _upload(drive: Any, path: Any, folder: str, name: str, old_id: str | None) -> str:
+        try:
+            return drive.upload(path, folder, name, replace=old_id)
+        except Exception:
+            if not old_id:
+                raise
+            return drive.upload(path, folder, name)  # the old copy was deleted in Drive
 
     def _folder(self, drive: Any) -> str:
         known = self.app.store.get(FOLDER_ID)

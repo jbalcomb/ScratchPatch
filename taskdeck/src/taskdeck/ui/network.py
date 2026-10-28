@@ -46,10 +46,12 @@ class NetworkMonitor:
     def set_types(self, types: list[str]) -> None:
         with self._changed:
             changed = types != self.types
+            switched = changed and self.types is not None
             self.types = list(types)
             self._changed.notify_all()
         if changed:
-            self.app.tasks.log_running("network", types=self.types)
+            cut = http.abort_connections() if switched else 0  # don't wait for the old network to time out
+            self.app.tasks.log_running("network", types=self.types, connections_cut=cut)
 
     @property
     def on_wifi(self) -> bool:
