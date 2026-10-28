@@ -508,7 +508,7 @@ def test_uploads_run_in_parallel_and_stop_on_the_first_error(tmp_path):
 
     tm = TaskManager(start_thread=lambda fn: None)
     task = tm.start("x", "j", lambda t: "")
-    task.set_phases(("Unpacking", 1), ("Uploading", 60))
+    task.set_phases(("Unpacking", 1), ("Uploading", 12, "files"))
     running, peak, uploaded = [0], [0], []
     lock = threading.Lock()
 
@@ -536,10 +536,10 @@ def test_uploads_run_in_parallel_and_stop_on_the_first_error(tmp_path):
             out.append((p, "root", n, Path(n), 5, None))
         return out
     started = _time.monotonic()
-    count, sent = logic._upload_all(task, SlowDrive(), files([f"f{i}" for i in range(12)]), 0, workers=6)
+    count, sent = logic._upload_all(task, SlowDrive(), files([f"f{i}" for i in range(12)]), workers=6)
     assert (count, sent) == (12, 60) and peak[0] == 6 and _time.monotonic() - started < 0.4  # ~2 rounds, not 12
-    assert task.phases[1].done == 60 and not any((tmp_path / f"f{i}").exists() for i in range(12))
+    assert task.phases[1].done == 12 and task.phases[1].complete and not any((tmp_path / f"f{i}").exists() for i in range(12))
 
     with pytest.raises(logic._Interrupted) as stop:
-        logic._upload_all(task, SlowDrive(), files(["bad"] + [f"g{i}" for i in range(30)]), 0, workers=3)
+        logic._upload_all(task, SlowDrive(), files(["bad"] + [f"g{i}" for i in range(30)]), workers=3)
     assert "HTTP 400" in str(stop.value.error) and stop.value.count < 30  # no new files after the error

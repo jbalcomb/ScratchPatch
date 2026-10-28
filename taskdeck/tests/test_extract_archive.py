@@ -314,7 +314,17 @@ def test_screen_shows_a_bar_per_phase(tmp_path):
     t.phases[1].meter.samples = [(time.time() - 10, 0), (time.time(), 250)]  # 25 B/s lately
     screen.render(update=False)
     lines = [c.value for c in screen.progress_box.controls if isinstance(c, ft.Text)]
-    assert any(str(v).startswith("250 bytes of 1,000 bytes · 2") and str(v).endswith(" B/s") for v in lines), lines
+    assert any(str(v).startswith("250 bytes of 1,000 bytes · 2") and " B/s" in str(v) for v in lines), lines
+
+    # uploading counts files: "N of M files · rate · time left" at the current rate
+    t.set_phase(1, label="Uploading to Google Drive (9,779 already there)", total=1000)
+    t.phases[1].unit = "files"
+    t.advance(1, 400)
+    t.phases[1].meter.samples = [(time.time() - 10, 380), (time.time(), 400)]  # 2 files/s lately
+    screen.render(update=False)
+    lines = [str(c.value) for c in screen.progress_box.controls if isinstance(c, ft.Text)]
+    assert any(v.startswith("400 of 1,000 files · 2.0 files/s · about 5 min left") for v in lines), lines
+    assert t.fraction == 0.4  # the task's fraction is the current phase's, not bytes and files mixed
 
 
 def test_reload_waits_for_running_tasks(tmp_path, monkeypatch):

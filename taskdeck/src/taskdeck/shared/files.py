@@ -159,6 +159,13 @@ def human_speed(bytes_per_second: float) -> str:
     return str(n)
 
 
+def human_rate(per_second: float, unit: str = "files") -> str:
+    """2.3 files/s, or 40 files/min when under one a second."""
+    if per_second >= 1:
+        return f"{per_second:.1f} {unit}/s"
+    return f"{per_second * 60:.0f} {unit}/min"
+
+
 def human_duration(seconds: float) -> str:
     if seconds < 60:
         return "less than a minute" if seconds >= 30 else "a few seconds"

@@ -59,6 +59,7 @@ class Phase:
     label: str
     total: int = 0
     done: int = 0
+    unit: str = "bytes"  # or "files": what total and done count (and what the speed is in)
     started: float | None = None
     meter: Speedometer = field(default_factory=Speedometer, repr=False, compare=False)
 
@@ -74,9 +75,14 @@ class Phase:
         return bool(self.total) and self.done >= self.total
 
     def eta(self, now: float | None = None) -> float | None:
+        """Seconds left at the current speed (falls back to the average since the phase started)."""
         if self.started is None or not self.total or self.done <= 0:
             return None
-        elapsed = (now or time.time()) - self.started
+        now = now or time.time()
+        speed = self.meter.speed(now)
+        if speed is not None:
+            return max(0.0, (self.total - self.done) / speed) if speed > 0 else None
+        elapsed = now - self.started
         return max(0.0, (self.total - self.done) * elapsed / self.done) if elapsed >= 1 else None
 
 
@@ -115,21 +121,39 @@ class Task:
 
     @property
     def fraction(self) -> float | None:
+        """With phases: the current phase's (their units differ, e.g. bytes then files)."""
+        if self.phases:
+            phase = self.current_phase
+            return phase.fraction if phase else 1.0
         return self.done / self.total if self.total else None
 
     def eta(self, now: float | None = None) -> float | None:
         """Seconds left, from the average speed so far (None until there is enough to go on)."""
+        if self.phases:
+            phase = self.current_phase
+            return phase.eta(now) if phase else 0.0
         now = now or time.time()
         elapsed = now - self.started
         if not self.total or self.done <= 0 or elapsed < 1:
             return None
         return max(0.0, (self.total - self.done) * elapsed / self.done)
 
-    def set_phases(self, *phases: tuple[str, int]) -> None:
-        """Split the work into stages: set_phases(("Unpacking", n), ("Uploading", n))."""
-        self.phases = [Phase(label, total) for label, total in phases]
-        self.log("phases", phases=[[label, total] for label, total in phases])
-        self.report(0, sum(total for _, total in phases))
+    def set_phases(self, *phases: tuple) -> None:
+        """Split the work into stages: set_phases(("Unpacking", bytes), ("Uploading", files, "files")).
+        A total that isn't known yet can be 0 and set later with set_phase."""
+        self.phases = [Phase(p[0], p[1], unit=p[2] if len(p) > 2 else "bytes") for p in phases]
+        self.log("phases", phases=[list(p) for p in phases])
+        self.report(0, sum(p.total for p in self.phases))
+
+    def set_phase(self, index: int, label: str | None = None, total: int | None = None) -> None:
+        """Rename a phase, or set its total (which restarts its count, timing and speed)."""
+        phase = self.phases[index]
+        if label is not None:
+            phase.label = label
+        if total is not None:
+            phase.total, phase.done, phase.started, phase.meter = total, 0, None, Speedometer()
+        self.log("phase_set", index=index, label=phase.label, total=phase.total, unit=phase.unit)
+        self.report(sum(p.done for p in self.phases), sum(p.total for p in self.phases))
 
     def advance(self, index: int, done: int) -> None:
         """Progress within one phase (earlier phases count as finished)."""

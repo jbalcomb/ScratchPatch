@@ -95,11 +95,10 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
                 kinds.setdefault(kind, []).append(e["wait"])
             say("Google's reply time by request: " + ", ".join(
                 f"{k} {sorted(v)[len(v) // 2]:.2f} s median ({len(v)})" for k, v in sorted(kinds.items())))
-            between = [b["s"] - (a["s"]) for a, b in zip(http, http[1:])]
-            gaps = [g - b["secs"] for g, b in zip(between, http[1:])]
-            if gaps:
-                say(f"Time between requests (TaskDeck's own work): average {sum(gaps) / len(gaps):.2f} s, "
-                    f"max {max(gaps):.1f} s")
+            between = [b["s"] - a["s"] - b["secs"] for a, b in zip(http, http[1:])]
+            if between and min(between) >= -0.5:  # one request at a time (parallel requests overlap)
+                say(f"Time between requests (TaskDeck's own work): average {sum(between) / len(between):.2f} s, "
+                    f"max {max(between):.1f} s")
         slow = sorted(http, key=lambda e: -e["secs"])[:5]
         say("Slowest requests:")
         for e in slow:
@@ -125,7 +124,11 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
         secs = sum(e["secs"] for e in files)
         small = [e for e in files if e["bytes"] < 1_000_000]
         say("")
-        say(f"Files uploaded: {len(files)}, {mb(total)} in {clock(secs)} = {rate(total, secs)} overall")
+        say(f"Files uploaded: {len(files)}, {mb(total)}")
+        span = files[-1]["s"] - (files[0]["s"] - files[0]["secs"])
+        if span > 0:
+            say(f"  {len(files) / span * 60:.0f} files/min while uploading ({clock(span)}); "
+                f"each file took {secs / len(files):.1f} s on average")
         if small:
             per = sum(e["secs"] for e in small) / len(small)
             say(f"  {len(small)} files under 1 MB: {per:.1f} s each on average (per-file overhead)")

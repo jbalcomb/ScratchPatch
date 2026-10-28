@@ -365,6 +365,8 @@ def _phase_rows(phase, active: bool) -> list[ft.Control]:
     """A phase's label and state, its bar, and (while it runs) size and time left."""
     if phase.complete:
         state = "✓ Done"
+    elif active and phase.started is not None and not phase.total:
+        state = "…"  # total not known yet (e.g. still checking what's already in Drive)
     elif active and phase.started is not None:
         state = f"{(phase.fraction or 0) * 100:.0f}%"
     else:
@@ -374,7 +376,14 @@ def _phase_rows(phase, active: bool) -> list[ft.Control]:
                 ft.Text(state, color=ft.Colors.ON_SURFACE_VARIANT)]),
         ft.ProgressBar(value=phase.fraction if phase.started is not None or phase.complete else 0),
     ]
-    if active and phase.started is not None:
+    if active and phase.started is not None and phase.unit == "files":
+        speed = phase.speed()
+        line = f"{phase.done:,} of {phase.total:,} files" + (f" · {files.human_rate(speed)}" if speed else "")
+        eta = phase.eta()
+        if eta is not None:
+            line += f" · {files.human_duration(eta)} left"
+        rows.append(ft.Text(line, size=13, color=ft.Colors.ON_SURFACE_VARIANT))
+    elif active and phase.started is not None:
         line = f"{files.human_size(phase.done)} of {files.human_size(phase.total)}{_speed(phase)}"
         eta = phase.eta()
         if eta is not None:
