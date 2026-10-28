@@ -292,3 +292,27 @@ def test_stall_note(monkeypatch):
     t.set_note("Paused: no connection.")
     t.watch(time.time() + 300)
     assert t.note == "Paused: no connection."  # an explained pause isn't overwritten
+
+
+def test_report_counts_skipped_files_and_sync_survives_a_report_error(tmp_path, monkeypatch):
+    p = tmp_path / "t.jsonl"
+    lines = [{"t": 0, "s": 0, "ev": "start", "title": "X", "job": "j"},
+             {"t": 1, "s": 1, "ev": "file", "path": "a.png", "bytes": 10, "skipped": True},
+             {"t": 2, "s": 2, "ev": "file", "path": "b.png", "bytes": 2000, "secs": 2.5}]
+    p.write_text("\n".join(json.dumps(x) for x in lines))
+    text = trace_report.report(trace_report.load(p))
+    assert "Files skipped (already in Drive): 1" in text and "Files uploaded: 1" in text and "2.5 s each" in text
+
+    fake = FakeDrive()
+    store = TraceStore(tmp_path / "diag")
+    a = store.new("a")
+    a.event("one")
+    sync = DiagnosticsSync(sync_app(tmp_path, fake), store)
+    monkeypatch.setattr(trace_report, "report", lambda *a, **k: 1 / 0)
+    assert sync.sync() == 1
+    a.event("two")
+    assert sync.sync() == 1
+    folder = next(i for i, it in fake.items.items() if it["name"] == FOLDER)
+    tree = fake.tree(folder)
+    assert len(tree) == 2  # one trace (replaced, not copied) and its summary
+    assert b"Couldn't summarize" in tree[a.path.stem + ".summary.txt"]

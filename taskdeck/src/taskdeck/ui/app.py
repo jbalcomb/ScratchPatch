@@ -377,8 +377,14 @@ class TaskDeckApp:
         import shutil
         import threading
 
-        for leftover in (self.store.path.parent / "extract-test",  # the old 7-Zip engine check's test extractions
-                         self.temp_dir):  # scratch space from an interrupted run
+        import os
+
+        leftovers = [self.store.path.parent / "extract-test"]  # the old 7-Zip engine check's test extractions
+        if self.temp_dir.is_dir():  # scratch space from an interrupted run, but not this process's: after a
+            # reload, a task of the previous app instance may still be using its folder (task-<id>-<pid>)
+            leftovers += [p for p in self.temp_dir.iterdir()
+                          if not p.name.endswith(f"-{os.getpid()}") and p.name != "diagnostics"]
+        for leftover in leftovers:
             if leftover.exists():
                 threading.Thread(target=shutil.rmtree, args=(leftover,), kwargs={"ignore_errors": True},
                                  daemon=True).start()

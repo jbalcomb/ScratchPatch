@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+import traceback
 from typing import TYPE_CHECKING, Any
 
 from taskdeck.core import trace_report
@@ -102,13 +103,18 @@ class DiagnosticsSync:
                 size = snap.stat().st_size
                 _, old_id, old_summary = (list(synced.get(path.name) or []) + [None, None, None])[:3]
                 file_id = self._upload(drive, snap, folder, path.name, old_id)
-                # A short readable report next to it (a long trace is too big to read through quickly).
-                summary = snapshot_dir / (path.stem + ".summary.txt")
-                summary.write_text(f"{path.name}\n{trace_report.report(trace_report.load(snap))}\n", encoding="utf-8")
-                summary_id = self._upload(drive, summary, folder, summary.name, old_summary)
-                synced[path.name] = [size, file_id, summary_id]
+                synced[path.name] = [size, file_id, old_summary]  # recorded at once: replaced next time, not copied
                 self.app.store.set(SYNCED, synced)
                 count += 1
+                # A short readable report next to it (a long trace is too big to read through quickly).
+                summary = snapshot_dir / (path.stem + ".summary.txt")
+                try:
+                    text = trace_report.report(trace_report.load(snap))
+                except Exception:  # a report bug must not stop the traces themselves from syncing
+                    text = "Couldn't summarize this trace:\n" + traceback.format_exc()
+                summary.write_text(f"{path.name}\n{text}\n", encoding="utf-8")
+                synced[path.name][2] = self._upload(drive, summary, folder, summary.name, old_summary)
+                self.app.store.set(SYNCED, synced)
         finally:
             shutil.rmtree(snapshot_dir, ignore_errors=True)
         self.last_error = ""

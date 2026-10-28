@@ -91,12 +91,20 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
                 say(f"  … {len(errors) - 20} more")
 
     # ---- files
-    files = [e for e in events if e["ev"] == "file"]
+    skipped = [e for e in events if e["ev"] == "file" and e.get("skipped")]
+    files = [e for e in events if e["ev"] == "file" and not e.get("skipped") and "secs" in e]
+    if skipped:
+        say("")
+        say(f"Files skipped (already in Drive): {len(skipped)}, {mb(sum(e.get('bytes', 0) for e in skipped))}")
     if files:
         total = sum(e["bytes"] for e in files)
         secs = sum(e["secs"] for e in files)
+        small = [e for e in files if e["bytes"] < 1_000_000]
         say("")
         say(f"Files uploaded: {len(files)}, {mb(total)} in {clock(secs)} = {rate(total, secs)} overall")
+        if small:
+            per = sum(e["secs"] for e in small) / len(small)
+            say(f"  {len(small)} files under 1 MB: {per:.1f} s each on average (per-file overhead)")
         for e in sorted(files, key=lambda e: -e["secs"])[:5]:
             say(f"  {e['secs']:8.1f} s  {mb(e['bytes']):>10}  {rate(e['bytes'], e['secs']):>11}  {e['path']}")
 

@@ -369,3 +369,17 @@ def test_drive_rerun_skips_files_already_uploaded(tmp_path):
     assert second.message.startswith("Uploaded 2 files") and "Skipped 1 already there" in second.message
     assert fake.tree(root) == CONTENT and fake.puts > puts
     assert second.phases[1].complete
+
+
+def test_startup_keeps_this_process_temp_folders(tmp_path):
+    mine = tmp_path / "tmp" / f"task-1-{os.getpid()}"
+    stale = tmp_path / "tmp" / "task-1-1"
+    for d in (mine, stale):
+        d.mkdir(parents=True)
+        (d / "a.png").write_text("x")
+    make_app(tmp_path)  # a reload in the same process: a task of the old instance may still use `mine`
+    for _ in range(50):
+        if not stale.exists():
+            break
+        time.sleep(0.02)
+    assert not stale.exists() and (mine / "a.png").exists()
