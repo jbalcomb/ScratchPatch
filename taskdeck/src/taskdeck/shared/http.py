@@ -200,12 +200,6 @@ def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str
         return raw
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None  # hand 3xx back to the caller (e.g. Google's "308 Resume Incomplete")
-
-
-_RAW_OPENER = urllib.request.build_opener(_HTTPHandler(), _HTTPSHandler(context=_SSL), _NoRedirect())
 
 
 @dataclass
@@ -225,24 +219,70 @@ class Response:
         return 200 <= self.status < 300
 
 
-def send(method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
+# Connections kept open per thread and host (HTTP keep-alive). A new HTTPS connection costs a TLS
+# handshake, 1-2 s on a phone; uploading thousands of small files to Drive was mostly handshakes.
+_pool = threading.local()
+_STALE = (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+def _pooled(parts: urllib.parse.SplitResult, timeout: float) -> http.client.HTTPConnection:
+    conns = _pool.__dict__.setdefault("conns", {})
+    key = (parts.scheme, parts.hostname, parts.port)
+    conn = conns.get(key)
+    if conn is None:
+        if parts.scheme == "https":
+            conn = _HTTPSConnection(parts.hostname, parts.port, timeout=timeout, context=_SSL)
+        else:
+            conn = _HTTPConnection(parts.hostname, parts.port, timeout=timeout)
+        conns[key] = conn
+    conn.timeout = timeout
+    if conn.sock is not None:
+        conn.sock.settimeout(timeout)
+    return conn
+
+
+def _drop(parts: urllib.parse.SplitResult) -> None:
+    conn = getattr(_pool, "conns", {}).pop((parts.scheme, parts.hostname, parts.port), None)
+    if conn is not None:
+        conn.close()
+
+
+def send(method: str, url: str, body: Any = None, headers: dict[str, str] | None = None,
          timeout: float = 60) -> Response:
     """One request; any HTTP status comes back as a Response (no raising, no redirects followed).
-    Network failures raise HttpError, like :func:`request`."""
-    req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    Network failures raise HttpError, like :func:`request`. The connection is kept open for the
+    thread's next request to the same host.
+
+    ``body`` is bytes or a sized file-like (read as it is sent, e.g. gdrive.Piece)."""
+    parts = urllib.parse.urlsplit(url)
+    target = parts.path or "/"
+    if parts.query:
+        target += "?" + parts.query
     started = _enter(url)
-    sent = len(body) if body is not None else 0  # bytes, or a sized file-like (sent as it is read)
-    try:
-        with _RAW_OPENER.open(req, timeout=timeout) as resp:
-            out = Response(resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read())
-    except urllib.error.HTTPError as exc:
-        out = Response(exc.code, {k.lower(): v for k, v in (exc.headers or {}).items()}, exc.read() or b"")
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:  # incl. a cut connection
-        err = _network_error(exc, url, timeout)
-        _record(method, url, started, sent=sent, error=str(err))
-        raise err from None
-    _record(method, url, started, out.status, sent, len(out.body))
-    return out
+    sent = len(body) if body is not None else 0
+    for attempt in (1, 2):
+        conn = _pooled(parts, timeout)
+        reused = conn.sock is not None
+        try:
+            conn.request(method, target, body=body, headers=headers or {})
+            resp = conn.getresponse()
+            data = resp.read()
+        except (OSError, http.client.HTTPException) as exc:  # incl. a cut connection
+            _drop(parts)
+            if reused and attempt == 1 and isinstance(exc, _STALE):
+                # The server closed the idle connection before this request reached it: try a new one.
+                if hasattr(body, "seek"):
+                    body.seek(0)
+                continue
+            err = _network_error(exc, url, timeout)
+            _record(method, url, started, sent=sent, error=str(err))
+            raise err from None
+        if resp.will_close:
+            _drop(parts)
+        out = Response(resp.status, {k.lower(): v for k, v in resp.getheaders()}, data)
+        _record(method, url, started, out.status, sent, len(out.body))
+        return out
+    raise AssertionError("unreachable")
 
 
 def reachable(url: str, timeout: float = 3) -> bool:

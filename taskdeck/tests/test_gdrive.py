@@ -87,6 +87,7 @@ class FakeDrive:
         self.faults = []  # (method, "network" | status) applied to the next matching request
         self.next_id = 0
         self.puts = 0
+        self.single = 0  # small files uploaded in one request
 
     def _new_id(self):
         self.next_id += 1
@@ -120,7 +121,13 @@ class FakeDrive:
                 del self.faults[i]
                 if fault == "network":
                     raise http.HttpError("Can't reach www.googleapis.com: connection reset")
+                if fault == "lost":  # done on Google's side, but the answer never arrives
+                    self._route(method, url, body, headers)
+                    raise http.HttpError("Can't reach www.googleapis.com: connection reset")
                 return resp(fault, {"error": {"message": "fault", "errors": [{"reason": "backendError"}]}})
+        return self._route(method, url, body, headers)
+
+    def _route(self, method, url, body, headers):
         u = urllib.parse.urlsplit(url)
         q = urllib.parse.parse_qs(u.query)
         if u.netloc == "upload.test":  # an upload session
@@ -137,6 +144,20 @@ class FakeDrive:
             if meta["parents"][0] != "root" and meta["parents"][0] not in self.items:
                 return resp(404, {"error": {"message": "File not found"}})
             return resp(200, {"id": self.add_folder(meta["name"], meta["parents"][0]), "name": meta["name"]})
+        if q.get("uploadType") == ["multipart"]:  # one request: metadata and content
+            self.single += 1
+            boundary = headers["Content-Type"].split("boundary=")[1].encode()
+            parts = body.split(b"--" + boundary)
+            meta = json.loads(parts[1].split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0])
+            data = parts[2].split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0]
+            fid = self._new_id()
+            self.items[fid] = {"name": meta["name"], "parent": meta["parents"][0], "folder": False, "data": data}
+            return resp(200, {"id": fid})
+        if q.get("uploadType") == ["media"] and method == "PATCH":  # new content for an existing file
+            self.single += 1
+            fid = u.path.rsplit("/", 1)[1]
+            self.items[fid]["data"] = bytes(body)
+            return resp(200, {"id": fid})
         if "uploadType" in q:
             sid = f"s{len(self.sessions) + 1}"
             meta = json.loads(body or b"{}")
@@ -271,6 +292,31 @@ def test_waiting_offline_stops_on_cancel_and_covers_api_calls(tmp_path):
     assert d.create_folder("y").name == "y"
 
 
+def test_small_files_go_up_in_one_request(tmp_path):
+    fake = FakeDrive()
+    d = client(fake, chunk=gdrive.CHUNK)
+    f = tmp_path / "a.png"
+    f.write_bytes(b"\x89PNG" + bytes(range(256)) * 10)
+    seen = []
+    fid = d.upload(f, "root", progress=lambda n: seen.append(n) and False)
+    assert fake.items[fid]["data"] == f.read_bytes() and fake.single == 1 and fake.puts == 0 and not fake.sessions
+    assert seen[-1] == f.stat().st_size
+    f.write_bytes(b"new")
+    assert d.upload(f, "root", replace=fid) == fid and fake.items[fid]["data"] == b"new" and fake.single == 2
+
+    # the answer is lost after Google created the file: no second copy
+    fake.faults = [("POST", "lost")]
+    g = tmp_path / "b.png"
+    g.write_bytes(b"bbbb")
+    gid = d.upload(g, "root")
+    assert [it["name"] for it in fake.items.values()].count("b.png") == 1 and fake.items[gid]["data"] == b"bbbb"
+    # dropped before it got there: sent again
+    fake.faults = [("POST", "network"), ("POST", 503)]
+    h = tmp_path / "c.png"
+    h.write_bytes(b"cc")
+    assert fake.items[d.upload(h, "root")]["data"] == b"cc"
+
+
 # ---- extracting to Drive ------------------------------------------------------------------------------
 
 def run_inline():
@@ -323,7 +369,7 @@ def test_extract_to_drive_cancel_and_failure(tmp_path):
     assert t.status == CANCELLED and t.message == "Stopped. 1 file was uploaded to Google Drive › My Drive › P."
 
     paused = FakeDrive()
-    paused.faults = [("PUT", "network")] * 6
+    paused.faults = [("POST", "network")] * 6  # small files: one POST each
     notes = []
     tm.listeners.append(lambda task: notes.append(task.note))
     t = tm.start("x", "j", lambda t: logic.extract_to_drive(t, FIX / "plain.7z", None, client(paused),

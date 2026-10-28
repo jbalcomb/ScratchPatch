@@ -23,6 +23,7 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 ROOT = "root"  # My Drive
 CHUNK = 8 * 1024 * 1024  # upload piece size; Google requires a multiple of 256 KiB
 RETRIES = 5
+SMALL = 5 * 1024 * 1024  # files up to this size go up in one request (no upload session)
 
 
 class DriveError(Exception):
@@ -201,6 +202,8 @@ class DriveClient:
         progress(bytes sent) returns True to cancel. Returns the file id."""
         size = os.path.getsize(path)
         name = name or path.name
+        if size <= min(SMALL, self.chunk):
+            return self._upload_small(path, parent, name, size, progress, replace)
         session = self._start_session(name, parent, size, replace)
         offset, restarts, failures = 0, 0, 0
         with open(path, "rb") as fh:
@@ -240,6 +243,54 @@ class DriveClient:
                     offset = self._resume_offset(session, size)
                     continue
                 raise _explain(resp, f"upload “{name}”")
+
+    def _upload_small(self, path: Path, parent: str, name: str, size: int,
+                      progress: Callable[[int], bool] | None, replace: str | None) -> str:
+        """One request instead of two (session + content): most of the time for small files is per request."""
+        data = path.read_bytes()
+        if replace:  # new content for an existing file: safe to simply send again after a failure
+            method, url, ctype = "PATCH", f"{UPLOAD}/{replace}?uploadType=media&fields=id", "application/octet-stream"
+            payload = data
+        else:
+            method, url = "POST", f"{UPLOAD}?uploadType=multipart&fields=id"
+            boundary = f"taskdeck{os.urandom(12).hex()}"
+            meta = json.dumps({"name": name, "parents": [parent]}).encode()
+            payload = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode() + meta
+                       + f"\r\n--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n".encode() + data
+                       + f"\r\n--{boundary}--\r\n".encode())
+            ctype = f"multipart/related; boundary={boundary}"
+        attempt = server_errors = 0
+        while True:
+            body = Piece(payload, (lambda n: progress(min(n, size))) if progress else None)
+            try:
+                hdrs = {"Authorization": f"Bearer {self.token()}", "Content-Type": ctype,
+                        "Content-Length": str(len(payload))}
+                resp = self.send(method, url, body, hdrs, 60)
+            except http.HttpError:
+                if not self._wait_offline(attempt):
+                    raise
+                attempt += 1
+                if not replace:  # the file may have been created before the connection dropped
+                    found = self._find_file(name, parent, size)
+                    if found:
+                        return found
+                continue
+            self._online()
+            if resp.ok:
+                if progress and progress(size):
+                    raise UploadCancelled()
+                return str((resp.json() or {}).get("id", ""))
+            if resp.status in (429, 500, 502, 503, 504) and server_errors < RETRIES:
+                server_errors += 1
+                self.sleep(min(2 ** server_errors, 30))
+                continue
+            raise _explain(resp, f"upload “{name}”")
+
+    def _find_file(self, name: str, parent: str, size: int) -> str | None:
+        """The id of a file with this name and size in parent, if there is one."""
+        _, files = self.children_sized(parent)
+        fid, found_size = files.get(name, (None, -1))
+        return fid if fid and found_size == size else None
 
     def _start_session(self, name: str, parent: str, size: int, replace: str | None = None) -> str:
         if replace:  # new content for an existing file (same id, same place)

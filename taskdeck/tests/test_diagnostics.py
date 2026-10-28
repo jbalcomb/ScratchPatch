@@ -153,17 +153,16 @@ def test_wait_for_wifi(tmp_path):
 
 def test_scope_only_gates_wifi_only_jobs(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(http, "_RAW_OPENER", SimpleNamespace(open=lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(
-        http.urllib.error.URLError("down"))))
-    off = monitor(tmp_path, wifi_only=False)
-    off.set_types(["mobile"])
-    with off.scope("j", lambda: True, lambda n: None), pytest.raises(http.HttpError):
-        http.send("GET", "http://example.invalid/")  # not Wi-Fi only: goes out on mobile data
-    on = monitor(tmp_path)
-    on.set_types(["mobile"])
-    with on.scope("j", lambda: True, lambda n: None), pytest.raises(Cancelled):
-        http.send("GET", "http://example.invalid/")  # waits for Wi-Fi; cancelled
-    assert calls == [1]
+    with http.scope(trace=lambda ev, **f: calls.append(f)):
+        off = monitor(tmp_path, wifi_only=False)
+        off.set_types(["mobile"])
+        with off.scope("j", lambda: True, lambda n: None), pytest.raises(http.HttpError):
+            http.send("GET", "http://127.0.0.1:9/")  # not Wi-Fi only: goes out on mobile data (refused here)
+        on = monitor(tmp_path)
+        on.set_types(["mobile"])
+        with on.scope("j", lambda: True, lambda n: None), pytest.raises(Cancelled):
+            http.send("GET", "http://127.0.0.1:9/")  # waits for Wi-Fi; cancelled before connecting
+    assert len(calls) == 1
 
 
 # ---- the Drive copy ------------------------------------------------------------------------------------
@@ -217,7 +216,7 @@ def test_extract_to_drive_trace_and_report(tmp_path):
     from taskdeck.jobs.extract_archive import logic
 
     fake = FakeDrive()
-    fake.faults = [("PUT", "network")] * 3
+    fake.faults = [("POST", "network")] * 3
     tm = TaskManager(start_thread=lambda fn: fn(), traces=TraceStore(tmp_path / "diag"),
                      around=lambda t: http.scope(trace=t.trace))
     drive = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=lambda s: None, chunk=256 * 1024)
@@ -316,3 +315,35 @@ def test_report_counts_skipped_files_and_sync_survives_a_report_error(tmp_path, 
     tree = fake.tree(folder)
     assert len(tree) == 2  # one trace (replaced, not copied) and its summary
     assert b"Couldn't summarize" in tree[a.path.stem + ".summary.txt"]
+
+
+def test_connections_are_kept_open_and_renewed_when_stale():
+    connections = []
+
+    class Handler(http_server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"  # keep-alive
+
+        def setup(self):
+            super().setup()
+            connections.append(1)
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *a):
+            pass
+    srv = http_server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/x?a=1"
+    try:
+        for _ in range(5):
+            assert http.send("GET", url).body == b"ok"
+        assert len(connections) == 1  # one handshake for all five
+        http.abort_connections()  # e.g. the server dropped the idle connection
+        assert http.send("GET", url).status == 200  # renewed transparently
+        assert len(connections) == 2
+    finally:
+        srv.shutdown()

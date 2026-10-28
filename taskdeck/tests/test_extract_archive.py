@@ -362,12 +362,12 @@ def test_drive_rerun_skips_files_already_uploaded(tmp_path):
     by_name = {it["name"]: i for i, it in fake.items.items() if not it["folder"]}
     fake.items[by_name["big.txt"]]["data"] = b"partial"  # an upload cut short: different size
     del fake.items[by_name["readme.txt"]]  # never got there
-    puts = fake.puts
+    single = fake.single
 
     second = run()
     assert second.status == DONE, second.message
     assert second.message.startswith("Uploaded 2 files") and "Skipped 1 already there" in second.message
-    assert fake.tree(root) == CONTENT and fake.puts > puts
+    assert fake.tree(root) == CONTENT and fake.single == single + 2
     assert second.phases[1].complete
 
 
