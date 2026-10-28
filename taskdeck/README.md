@@ -62,6 +62,8 @@ This creates `src/taskdeck/jobs/word_freq/__init__.py`. Fill in the fields and s
 `python -m taskdeck.review`. The job appears in All jobs and the palette automatically. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the plugin contract.
 
+Planned work: [TODO.md](TODO.md).
+
 Saving to Google Drive needs a one-time setup: [docs/GOOGLE_DRIVE_SETUP.md](docs/GOOGLE_DRIVE_SETUP.md).
 
 Credentials (settings marked `secret=True`) are kept in a vault your fingerprint unlocks: see

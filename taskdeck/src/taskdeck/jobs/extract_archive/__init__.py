@@ -7,7 +7,7 @@ See docs/jobs/extract_archive_SPEC.md.
 
 from pathlib import Path
 
-from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Stage, StepError, Task, step
+from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Problem, Stage, StepError, Task, step
 from taskdeck.shared import archive, steps
 
 from . import logic
@@ -46,6 +46,7 @@ class ExtractArchive(JobPlugin):
         Field.text("destination", "Extract into (folder)", help="Leave empty for a new folder next to the archive."),
         Field.text("password", "Password (if encrypted)", secret=True),
     )
+    settings = (WIFI_ONLY,)  # only matters when extracting to Google Drive
     run_label = "Extract"
 
     def check_ready(self, settings):

@@ -87,6 +87,7 @@ class FakeDrive:
         self.faults = []  # (method, "network" | status) applied to the next matching request
         self.next_id = 0
         self.puts = 0
+        self.single = 0  # small files uploaded in one request
 
     def _new_id(self):
         self.next_id += 1
@@ -113,12 +114,20 @@ class FakeDrive:
         return out
 
     def send(self, method, url, body=None, headers=None, timeout=60):
+        if hasattr(body, "read"):  # an upload piece (gdrive.Piece): read it like http.client does
+            body = b"".join(iter(lambda: body.read(8192), b""))
         for i, (m, fault) in enumerate(self.faults):
             if m == method:
                 del self.faults[i]
                 if fault == "network":
                     raise http.HttpError("Can't reach www.googleapis.com: connection reset")
+                if fault == "lost":  # done on Google's side, but the answer never arrives
+                    self._route(method, url, body, headers)
+                    raise http.HttpError("Can't reach www.googleapis.com: connection reset")
                 return resp(fault, {"error": {"message": "fault", "errors": [{"reason": "backendError"}]}})
+        return self._route(method, url, body, headers)
+
+    def _route(self, method, url, body, headers):
         u = urllib.parse.urlsplit(url)
         q = urllib.parse.parse_qs(u.query)
         if u.netloc == "upload.test":  # an upload session
@@ -126,7 +135,8 @@ class FakeDrive:
         if method == "GET" and u.path.endswith("/files"):
             parent = re.search(r"'([^']+)' in parents", q["q"][0]).group(1)
             only_folders = "mimeType='application/vnd.google-apps.folder'" in q["q"][0]
-            files = [{"id": i, "name": it["name"], "mimeType": gdrive.FOLDER_MIME if it["folder"] else "text/plain"}
+            files = [{"id": i, "name": it["name"], "mimeType": gdrive.FOLDER_MIME if it["folder"] else "text/plain",
+                      **({} if it["folder"] else {"size": str(len(it["data"]))})}
                      for i, it in self.items.items() if it["parent"] == parent and (it["folder"] or not only_folders)]
             return resp(200, {"files": sorted(files, key=lambda f: f["name"])})
         if method == "POST" and u.path.endswith("/drive/v3/files") and "uploadType" not in q:
@@ -134,6 +144,20 @@ class FakeDrive:
             if meta["parents"][0] != "root" and meta["parents"][0] not in self.items:
                 return resp(404, {"error": {"message": "File not found"}})
             return resp(200, {"id": self.add_folder(meta["name"], meta["parents"][0]), "name": meta["name"]})
+        if q.get("uploadType") == ["multipart"]:  # one request: metadata and content
+            self.single += 1
+            boundary = headers["Content-Type"].split("boundary=")[1].encode()
+            parts = body.split(b"--" + boundary)
+            meta = json.loads(parts[1].split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0])
+            data = parts[2].split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0]
+            fid = self._new_id()
+            self.items[fid] = {"name": meta["name"], "parent": meta["parents"][0], "folder": False, "data": data}
+            return resp(200, {"id": fid})
+        if q.get("uploadType") == ["media"] and method == "PATCH":  # new content for an existing file
+            self.single += 1
+            fid = u.path.rsplit("/", 1)[1]
+            self.items[fid]["data"] = bytes(body)
+            return resp(200, {"id": fid})
         if "uploadType" in q:
             sid = f"s{len(self.sessions) + 1}"
             meta = json.loads(body or b"{}")
@@ -182,13 +206,14 @@ def test_folders(tmp_path):
 
 def test_upload_in_pieces_with_progress(tmp_path):
     fake = FakeDrive()
-    data = bytes(range(256)) * 4096  # 1 MiB -> 4 pieces of 256 KiB
+    data = bytes(range(256)) * 4096  # 1 MiB -> 2 pieces of 512 KiB
     f = tmp_path / "big.bin"
     f.write_bytes(data)
     seen = []
-    fid = client(fake).upload(f, "root", progress=lambda n: seen.append(n) and False)
-    assert fake.items[fid]["data"] == data and fake.puts == 4
-    assert seen == [262144, 524288, 786432, 1048576]
+    fid = client(fake, chunk=512 * 1024).upload(f, "root", progress=lambda n: seen.append(n) and False)
+    assert fake.items[fid]["data"] == data and fake.puts == 2
+    # every 256 KiB as it is sent, then as Google confirms each piece
+    assert seen == [262144, 524288, 524288, 786432, 1048576, 1048576]
 
 
 def test_upload_resumes_after_network_drop_and_server_error(tmp_path):
@@ -229,6 +254,69 @@ def test_upload_cancel_and_errors(tmp_path):
         client(full).create_folder("x")
 
 
+def test_upload_waits_through_long_network_loss(tmp_path):
+    """Switching apps cuts the network: with keep_waiting the upload pauses, then carries on."""
+    fake = FakeDrive()
+    fake.faults = [("PUT", "network")] * 40  # the piece and many status checks fail
+    f = tmp_path / "big.bin"
+    f.write_bytes(b"w" * 600_000)
+    states, sleeps = [], []
+    d = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=sleeps.append, chunk=256 * 1024,
+                           keep_waiting=lambda: True, on_offline=states.append)
+    fid = d.upload(f, "root")
+    assert fake.items[fid]["data"] == b"w" * 600_000
+    assert states == [True, False] and max(sleeps) == gdrive.OFFLINE_RETRY_MAX
+    # without it, the old behaviour: give up after a few tries
+    fake.faults = [("PUT", "network")] * 40
+    with pytest.raises(gdrive.DriveError, match="Lost the connection"):
+        client(fake).upload(f, "root")
+
+
+def test_waiting_offline_stops_on_cancel_and_covers_api_calls(tmp_path):
+    fake = FakeDrive()
+    fake.faults = [("POST", "network")] * 10
+    states, cancel = [], []
+    d = gdrive.DriveClient(lambda: "AT", send=fake.send, sleep=lambda s: cancel.append(1),
+                           keep_waiting=lambda: len(cancel) < 3, on_offline=states.append)
+    with pytest.raises(gdrive.UploadCancelled):
+        d.create_folder("x")
+    assert states == [True]
+
+    def token():  # refreshing the sign-in needs the network too
+        if fake.faults:
+            fake.faults.pop()
+            raise http.HttpError("Can't reach oauth2.googleapis.com")
+        return "AT"
+    fake.faults = [("x", "network")] * 3
+    d = gdrive.DriveClient(token, send=fake.send, sleep=lambda s: None, keep_waiting=lambda: True)
+    assert d.create_folder("y").name == "y"
+
+
+def test_small_files_go_up_in_one_request(tmp_path):
+    fake = FakeDrive()
+    d = client(fake, chunk=gdrive.CHUNK)
+    f = tmp_path / "a.png"
+    f.write_bytes(b"\x89PNG" + bytes(range(256)) * 10)
+    seen = []
+    fid = d.upload(f, "root", progress=lambda n: seen.append(n) and False)
+    assert fake.items[fid]["data"] == f.read_bytes() and fake.single == 1 and fake.puts == 0 and not fake.sessions
+    assert seen[-1] == f.stat().st_size
+    f.write_bytes(b"new")
+    assert d.upload(f, "root", replace=fid) == fid and fake.items[fid]["data"] == b"new" and fake.single == 2
+
+    # the answer is lost after Google created the file: no second copy
+    fake.faults = [("POST", "lost")]
+    g = tmp_path / "b.png"
+    g.write_bytes(b"bbbb")
+    gid = d.upload(g, "root")
+    assert [it["name"] for it in fake.items.values()].count("b.png") == 1 and fake.items[gid]["data"] == b"bbbb"
+    # dropped before it got there: sent again
+    fake.faults = [("POST", "network"), ("POST", 503)]
+    h = tmp_path / "c.png"
+    h.write_bytes(b"cc")
+    assert fake.items[d.upload(h, "root")]["data"] == b"cc"
+
+
 # ---- extracting to Drive ------------------------------------------------------------------------------
 
 def run_inline():
@@ -249,6 +337,7 @@ def test_extract_to_drive(tmp_path):
     assert t.message == "Uploaded 3 files (3.0 KB) to Google Drive › My Drive › Backups › Pics"
     pics = next(i for i, it in fake.items.items() if it["name"] == "Pics")
     assert fake.tree(pics) == CONTENT and t.result.folder_id == pics
+    assert [(p.label, p.complete) for p in t.phases] == [("Unpacking", True), ("Uploading to Google Drive", True)]
     assert not any((tmp_path / "tmp").iterdir())  # temporary copy removed
 
     # again into the same folder: files replaced, folders reused (no duplicates)
@@ -278,6 +367,15 @@ def test_extract_to_drive_cancel_and_failure(tmp_path):
 
     t = tm.start("x", "j", cancel_after_first_file)
     assert t.status == CANCELLED and t.message == "Stopped. 1 file was uploaded to Google Drive › My Drive › P."
+
+    paused = FakeDrive()
+    paused.faults = [("POST", "network")] * 6  # small files: one POST each
+    notes = []
+    tm.listeners.append(lambda task: notes.append(task.note))
+    t = tm.start("x", "j", lambda t: logic.extract_to_drive(t, FIX / "plain.7z", None, client(paused),
+                                                           DriveLocation(), "Q", tmp_path / "tmp"))
+    assert t.status == DONE and logic.PAUSED in notes and t.note == ""
+    tm.listeners.clear()
 
     broken = FakeDrive()
     broken.faults = [("POST", 404)]  # the chosen folder disappeared
@@ -346,3 +444,49 @@ def test_screen_extracts_to_drive(tmp_path, monkeypatch):
     assert screen.task.status == DONE, screen.task.message
     plain = next(i for i, it in fake.items.items() if it["name"] == "plain")
     assert fake.tree(plain) == CONTENT
+
+
+def test_device_flow_survives_network_loss(monkeypatch):
+    """Approving happens in a browser; meanwhile TaskDeck's network can drop (DNS: Errno 7)."""
+    code = google_oauth.DeviceCode("DEV", "X", "u", 9e18, 0)
+    answers = [http.HttpError("Can't reach oauth2.googleapis.com: [Errno 7] No address associated with hostname"),
+               resp(503, b"unavailable"),
+               resp(428, {"error": "authorization_pending"}),
+               resp(200, {"access_token": "AT", "refresh_token": "RT", "id_token": id_token("j@x")})]
+
+    def send(*a):
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(http, "send", send)
+    offline = []
+    tokens = google_oauth.wait("CID", "S", code, sleep=lambda s: None, on_offline=offline.append)
+    assert tokens.refresh_token == "RT" and offline == [True, True, False, False]
+
+
+@needs_engine
+def test_two_runs_with_the_same_task_id_use_separate_temp_folders(tmp_path):
+    """After a reload the old instance's task 1 may still run while the new instance starts its own task 1."""
+    from taskdeck.jobs.extract_archive import logic
+
+    seen = []
+    fake = FakeDrive()
+
+    def watched():
+        drive = client(fake)
+        real = drive.upload
+
+        def upload(path, *a, **k):
+            seen.append(path.parent.parent if path.parent.name == "notes" else path.parent)
+            return real(path, *a, **k)
+        drive.upload = upload
+        return drive
+    tm1, tm2 = run_inline(), run_inline()  # two app instances: both number their first task 1
+    for tm, dest in ((tm1, "P"), (tm2, "Q")):
+        t = tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
+            t, FIX / "plain.7z", None, watched(), DriveLocation(), dest, tmp_path / "tmp"))
+        assert t.id == 1 and t.status == DONE
+    folders = {p.relative_to(tmp_path / "tmp").parts[0] for p in seen}
+    assert len(folders) == 2 and all(f.startswith("task-1-") for f in folders)

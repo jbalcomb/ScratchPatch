@@ -194,6 +194,7 @@ def make_app(tmp_path):
     from taskdeck.ui.app import TaskDeckApp
 
     app = TaskDeckApp(FakePage(), store=JsonStore(tmp_path / "state.json"), vault_backend=None)
+    app.tasks.notify_in_background = False  # listeners run at once, so tests can check right after
     app.toasts = []
     app.toast = app.toasts.append
     return app
@@ -253,3 +254,133 @@ def test_home_strip_shows_running_tasks(tmp_path):
     t.report(50, 100)
     strip = app.running_strip()
     assert len(strip) == 1 and "Extracting big.7z · 50%" in strip[0].content.controls[1].value
+
+
+def test_task_phases():
+    tm = TaskManager(start_thread=lambda fn: None)
+    t = tm.start("x", "j", lambda t: "")
+    t.set_phases(("Unpacking", 100), ("Uploading", 100))
+    assert t.total == 200 and t.current_phase.label == "Unpacking"
+    t.advance(0, 50)
+    assert t.done == 50 and t.phases[0].fraction == 0.5 and t.phases[1].started is None
+    t.advance(1, 20)  # unpacking counts as finished once uploading starts
+    assert t.phases[0].complete and t.done == 120 and t.current_phase.label == "Uploading"
+    t.phases[1].started -= 10
+    assert t.phases[1].eta() == pytest.approx(40.0, abs=1)
+
+
+def test_human_speed():
+    assert [files.human_speed(n) for n in (0, 512, 1536, 3.4 * 2**20, 1.1 * 2**30, 5 * 2**40, -3)] == [
+        "0 B/s", "512 B/s", "1.5 KB/s", "3.4 MB/s", "1.1 GB/s", "5.0 TB/s", "0 B/s"]
+
+
+def test_current_speed():
+    from taskdeck.core.tasks import SPEED_WINDOW, Speedometer
+
+    m = Speedometer()
+    assert m.speed(0) is None
+    m.add(0, 100.0)
+    m.add(1000, 100.5)
+    assert m.speed(100.5) is None  # under a second of data
+    for i in range(2, 31):  # 1000 bytes every half second for 15 s = 2000 B/s
+        m.add(i * 1000, 100 + i / 2)
+    assert m.speed(115.0) == pytest.approx(2000, rel=0.05)
+    assert m.samples[0][0] <= 115.0 - SPEED_WINDOW  # older samples dropped, one kept as the base
+    assert m.speed(135.0) < 1000  # stalled: falls towards 0
+    m.add(10, 136.0)  # went backwards (upload restarted): starts over
+    assert m.speed(140.0) is None
+
+
+def test_screen_shows_a_bar_per_phase(tmp_path):
+    import flet as ft
+
+    from taskdeck.shared.gdrive import DriveLocation
+
+    app = make_app(tmp_path)
+    app.tasks._start = lambda fn: None
+    app.open_job("extract_archive")
+    screen = app.stack[-1]
+    t = app.tasks.start("Extracting x.7z to Google Drive", "extract_archive", lambda t: "", result=DriveLocation())
+    t.set_phases(("Unpacking", 1000), ("Uploading to Google Drive", 1000))
+    t.advance(1, 250)
+    screen.task = t
+    screen.render(update=False)
+    bars = [c for c in screen.progress_box.controls if isinstance(c, ft.ProgressBar)]
+    assert [b.value for b in bars] == [1.0, 0.25]
+    texts = [c.controls[1].value for c in screen.progress_box.controls if isinstance(c, ft.Row) and len(c.controls) == 2
+             and isinstance(c.controls[1], ft.Text)]
+    assert texts[:2] == ["✓ Done", "25%"]
+
+    t.phases[1].meter.samples = [(time.time() - 10, 0), (time.time(), 250)]  # 25 B/s lately
+    screen.render(update=False)
+    lines = [c.value for c in screen.progress_box.controls if isinstance(c, ft.Text)]
+    assert any(str(v).startswith("250 bytes of 1,000 bytes · 2") and str(v).endswith(" B/s") for v in lines), lines
+
+
+def test_reload_waits_for_running_tasks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    reloads = []
+    app = make_app(tmp_path)
+    monkeypatch.setattr(app_module, "boot", SimpleNamespace(reload=lambda page: reloads.append(page)))
+    monkeypatch.setattr(app_module.time, "sleep", lambda s: None)
+    app.tasks._start = lambda fn: None  # stays running until finished by hand
+    t = app.tasks.start("Extracting x.7z to Google Drive", "extract_archive", lambda t: "")
+
+    app.reload_app()
+    dialog = app.page.dialogs[-1]
+    assert reloads == [] and "Extracting x.7z" in dialog.content.value
+    cancel, now, later = dialog.actions
+    later.on_click(None)
+    assert app.reload_pending and not app.page.dialogs and reloads == []
+
+    t.status = DONE  # the task ends: the waited-for reload happens
+    app.tasks._notify(t)
+    assert reloads == [app.page] and not app.reload_pending
+
+    t2 = app.tasks.start("Another", "extract_archive", lambda t: "")
+    app.reload_app()
+    app.page.dialogs[-1].actions[1].on_click(None)  # Reload now
+    assert len(reloads) == 2 and t2.running
+    app.tasks.forget(t)
+
+
+@needs_engine
+def test_drive_rerun_skips_files_already_uploaded(tmp_path):
+    from test_gdrive import FakeDrive, client
+
+    from taskdeck.shared.gdrive import DriveLocation
+
+    fake = FakeDrive()
+    tm = TaskManager(start_thread=lambda fn: fn())
+    run = lambda: tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
+        t, FIX / "plain.7z", None, client(fake), DriveLocation(), "P", tmp_path / "tmp"))
+    first = run()
+    assert first.status == DONE and "Skipped" not in first.message
+    root = next(i for i, it in fake.items.items() if it["name"] == "P")
+    by_name = {it["name"]: i for i, it in fake.items.items() if not it["folder"]}
+    fake.items[by_name["big.txt"]]["data"] = b"partial"  # an upload cut short: different size
+    del fake.items[by_name["readme.txt"]]  # never got there
+    single = fake.single
+
+    second = run()
+    assert second.status == DONE, second.message
+    assert second.message.startswith("Uploaded 2 files") and "Skipped 1 already there" in second.message
+    assert fake.tree(root) == CONTENT and fake.single == single + 2
+    assert second.phases[1].complete
+
+
+def test_startup_keeps_this_process_temp_folders(tmp_path):
+    mine = tmp_path / "tmp" / f"task-1-{os.getpid()}"
+    stale = tmp_path / "tmp" / "task-1-1"
+    for d in (mine, stale):
+        d.mkdir(parents=True)
+        (d / "a.png").write_text("x")
+    make_app(tmp_path)  # a reload in the same process: a task of the old instance may still use `mine`
+    for _ in range(50):
+        if not stale.exists():
+            break
+        time.sleep(0.02)
+    assert not stale.exists() and (mine / "a.png").exists()

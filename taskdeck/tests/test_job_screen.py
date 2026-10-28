@@ -55,7 +55,7 @@ def run_screen(screen, report):
     screen.view.update = lambda: None
     screen._show_report = lambda r: None
     screen.app.job_settings = lambda job_id: {}
-    screen.app.page = SimpleNamespace(schedule_update=lambda: None)
+    screen.app.page = SimpleNamespace(update=lambda: None)
     screen.app.history = SimpleNamespace(add=lambda *a: None)
     screen.app.on_history_changed = lambda: None
     asyncio.run(screen.run())

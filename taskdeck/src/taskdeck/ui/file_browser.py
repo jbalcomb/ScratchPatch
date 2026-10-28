@@ -241,7 +241,7 @@ class FileBrowser:
             if self.drive_trail and self.drive_trail[-1] == here:
                 self.drive_folders, self.drive_error = folders, error
                 self.refresh(update=False)
-                self.app.page.schedule_update()
+                self.app.page.update()
 
         self.app.page.run_thread(work)
 

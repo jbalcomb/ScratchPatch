@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,6 +98,8 @@ def extract(task: Task, path: Path, dest: Path, password: str | None) -> str:
             entries = a.entries()
             count = sum(1 for e in entries if not e.is_dir)
             total = sum(e.size for e in entries if not e.is_dir)
+            task.log("archive", name=path.name, format=a.format, size=path.stat().st_size, files=count,
+                     bytes=total, encrypted=bool(password))
             task.report(0, total)
 
             def progress(done: int, total_bytes: int) -> bool:
@@ -131,23 +135,36 @@ def drive_problems(s: Scan, name: str | None, password: str, connected: bool, te
     return out
 
 
+PAUSED = "Paused: no connection. Open TaskDeck to continue."
+
+
 def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive.DriveClient,
                      location: DriveLocation, name: str | None, temp_root: Path) -> str:
     """Unpack into a temporary folder on the phone, upload everything, delete the temporary copy.
 
-    Same-named files in Drive are replaced and same-named folders reused, like extracting on the phone."""
-    temp = temp_root / f"task-{task.id}-{os.getpid()}"
-    count = sent = 0
+    Same-named folders in Drive are reused. A same-named file of the same size is taken as already
+    uploaded and skipped (so running it again after a cancel or crash only sends what's missing);
+    one of a different size is replaced, like extracting on the phone."""
+    # Unique per run: after a reload, a task of the previous app instance (same process, task ids
+    # starting again at 1) may still be using its own folder.
+    temp = temp_root / f"task-{task.id}-{secrets.token_hex(4)}-{os.getpid()}"
+    count = sent = skipped = skipped_bytes = 0
+    # Android cuts the network of apps in the background: wait for it instead of failing.
+    drive.keep_waiting = lambda: not task.cancel_requested
+    drive.on_offline = lambda offline: task.set_note(PAUSED if offline else "")
     target = location.display(name)
     try:
         with archive.Archive(path, password or None) as a:
-            total = sum(e.size for e in a.entries() if not e.is_dir)
-            task.detail = "Unpacking…"
-            task.report(0, total * 2)  # first half: unpacking; second half: uploading
-            a.extract(temp, progress=lambda done, _t: (task.report(done), task.cancel_requested)[1],
+            entries = a.entries()
+            total = sum(e.size for e in entries if not e.is_dir)
+            task.log("archive", name=path.name, format=a.format, size=path.stat().st_size,
+                     files=sum(1 for e in entries if not e.is_dir), bytes=total, encrypted=bool(password))
+            task.set_phases(("Unpacking", total), ("Uploading to Google Drive", total))
+            unpack_started = time.monotonic()
+            a.extract(temp, progress=lambda done, _t: (task.advance(0, done), task.cancel_requested)[1],
                       password=password or None)
-        task.detail = "Uploading to Google Drive…"
-        task.report(total)
+            task.log("unpacked", secs=round(time.monotonic() - unpack_started, 2))
+        task.advance(1, 0)
         root_id = location.folder_id
         if name:
             existing, _ = drive.children(root_id)
@@ -158,18 +175,31 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             dirnames.sort()
             here = Path(dirpath).relative_to(temp)
             parent_id = folder_ids[here]
-            sub_folders, sub_files = drive.children(parent_id)
+            sub_folders, sub_files = drive.children_sized(parent_id)
             for d in dirnames:
                 folder_ids[here / d] = sub_folders.get(d) or drive.create_folder(d, parent_id).id
             for f in sorted(filenames):
                 local = Path(dirpath) / f
-                size, base = local.stat().st_size, sent
+                size, base = local.stat().st_size, sent + skipped_bytes
+                existing_id, existing_size = sub_files.get(f, (None, -1))
+                if existing_id and existing_size == size:  # already there (an earlier, interrupted run)
+                    task.log("file", path=str(here / f), bytes=size, skipped=True)
+                    local.unlink()
+                    skipped += 1
+                    skipped_bytes += size
+                    task.advance(1, base + size)
+                    if task.cancel_requested:
+                        raise gdrive.UploadCancelled()
+                    continue
 
                 def progress(n: int, base=base) -> bool:
-                    task.report(total + base + n)
+                    task.advance(1, base + n)
                     return task.cancel_requested
 
-                drive.upload(local, parent_id, f, progress=progress, replace=sub_files.get(f))
+                file_started = time.monotonic()
+                drive.upload(local, parent_id, f, progress=progress, replace=existing_id)
+                task.log("file", path=str(here / f), bytes=size, secs=round(time.monotonic() - file_started, 3),
+                         replaced=bool(existing_id))
                 local.unlink()  # free the space as we go
                 sent += size
                 count += 1
@@ -179,14 +209,17 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
         if exc.code == archive.E_CANCELLED:
             raise Cancelled("Stopped before uploading anything.") from None
         raise RuntimeError(str(exc)) from None
-    except gdrive.UploadCancelled:
+    except (gdrive.UploadCancelled, Cancelled):  # Cancel, also while paused or waiting for Wi-Fi
         raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
     except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
         done = f" {_were_uploaded(count)} before that." if count else ""
         raise RuntimeError(f"{exc}{done}") from None
     finally:
         shutil.rmtree(temp, ignore_errors=True)
-    return f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+    message = f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+    if skipped:
+        message += f". Skipped {skipped:,} already there ({files.human_size(skipped_bytes)})."
+    return message
 
 
 def _were_uploaded(count: int) -> str:

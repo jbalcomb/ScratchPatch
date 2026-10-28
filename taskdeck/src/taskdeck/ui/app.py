@@ -18,11 +18,16 @@ from taskdeck.core import (
     PluginRegistry, SecretBackend, Task, TaskManager, Vault, VaultError, default_data_dir,
 )
 from taskdeck.core.tasks import DONE
+from taskdeck.core.trace import TraceStore
+from taskdeck.shared import http
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
 from . import accounts
+from .background import BackgroundKeeper
+from .diagnostics import DiagnosticsSync
+from .network import NetworkMonitor
 from .palette import CommandPalette
 from .vault_backend import make_backend
 
@@ -54,8 +59,16 @@ class TaskDeckApp:
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
         run_thread = getattr(page, "run_thread", None)
-        self.tasks = TaskManager(start_thread=run_thread)
+        traces = TraceStore(self.store.path.parent / "diagnostics")  # one trace file per task, for analysis
+        self.tasks = TaskManager(start_thread=run_thread, traces=traces,
+                                 around=lambda task: http.scope(trace=task.trace))  # every request is recorded
+        self.tasks.notify_in_background = True  # uploads never wait for the screen to redraw
         self.tasks.listeners.append(self.on_task)
+        self.background = BackgroundKeeper(self)  # foreground service while tasks run (APK with the extension)
+        self.tasks.listeners.append(self.background.on_task)
+        self.diagnostics = DiagnosticsSync(self, traces)  # traces are copied to Google Drive as they grow
+        self.tasks.listeners.append(self.diagnostics.on_task)
+        self.network = NetworkMonitor(self)  # Wi-Fi or mobile data, for the jobs' Wi-Fi-only setting
         self.google = accounts.GoogleAccount(self)
         self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
@@ -77,6 +90,9 @@ class TaskDeckApp:
         page.on_keyboard_event = self.on_key
         page.on_view_pop = self.on_view_pop
         page.on_app_lifecycle_state_change = self.on_lifecycle
+        if getattr(page, "run_task", None):
+            page.run_task(self.network.start)
+        self.diagnostics.sync_soon()  # anything a closed or killed app didn't get to upload
 
         self.body = ft.Container(expand=True, padding=ft.Padding.symmetric(horizontal=16))
         self.nav = ft.NavigationBar(
@@ -94,6 +110,7 @@ class TaskDeckApp:
         self.register_commands()
         self.render()
         self.update_status = ""
+        self.reload_pending = False  # "Reload when it finishes" was chosen
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
@@ -226,7 +243,13 @@ class TaskDeckApp:
         self.page.update()
         self.toast("Credentials locked")
 
+    @property
+    def hidden(self) -> bool:
+        """TaskDeck isn't on screen (another app, or the phone is locked)."""
+        return self._hidden_at is not None
+
     def on_lifecycle(self, e) -> None:
+        self.tasks.log_running("app", state=getattr(e.state, "value", str(e.state)))
         if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
             self._hidden_at = self._hidden_at or time.time()
         elif e.state in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):
@@ -337,6 +360,8 @@ class TaskDeckApp:
 
     def on_task(self, task: Task) -> None:
         """Background task changed (worker thread): refresh Home, announce the end."""
+        if not task.running:
+            self._reload_if_pending()
         if not self.stack and self.tab == "home":
             self.render()
         if not task.running:
@@ -344,7 +369,7 @@ class TaskDeckApp:
             if getattr(getattr(top, "plugin", None), "id", None) != task.job_id:  # its screen isn't showing it
                 self.toast(task.message if task.status == DONE else f"{task.title}: {task.message}")
         try:
-            self.page.schedule_update()
+            self.page.update()
         except Exception:
             pass
 
@@ -353,8 +378,14 @@ class TaskDeckApp:
         import shutil
         import threading
 
-        for leftover in (self.store.path.parent / "extract-test",  # the old 7-Zip engine check's test extractions
-                         self.temp_dir):  # scratch space from an interrupted run
+        import os
+
+        leftovers = [self.store.path.parent / "extract-test"]  # the old 7-Zip engine check's test extractions
+        if self.temp_dir.is_dir():  # scratch space from an interrupted run, but not this process's: after a
+            # reload, a task of the previous app instance may still be using its folder (task-<id>-<pid>)
+            leftovers += [p for p in self.temp_dir.iterdir()
+                          if not p.name.endswith(f"-{os.getpid()}") and p.name != "diagnostics"]
+        for leftover in leftovers:
             if leftover.exists():
                 threading.Thread(target=shutil.rmtree, args=(leftover,), kwargs={"ignore_errors": True},
                                  daemon=True).start()
@@ -499,6 +530,7 @@ class TaskDeckApp:
                 section_title("Accounts"),
                 *self.google.settings_rows(),
                 *self.credentials_section(),
+                *([section_title("Background work"), *self.background.settings_rows()] if self.background.enabled else []),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
                 *self.updates_section(),
@@ -558,8 +590,42 @@ class TaskDeckApp:
             duration=ft.Duration(seconds=10),
         ))
 
-    def reload_app(self) -> None:
+    def reload_app(self, force: bool = False) -> None:
+        """Restart on the newest code. Reloading ends running tasks (the new app can't see them), so
+        while one runs, ask first: reload when it finishes (the default), or now anyway."""
+        running = self.tasks.running()
+        if running and not force:
+            def later(e=None):
+                self.page.pop_dialog()
+                self.reload_pending = True
+                self.update_status = "Reloads when the running task finishes."
+                self.toast("TaskDeck will reload when the task finishes.")
+                self.render()
+                self.page.update()
+
+            def now(e=None):
+                self.page.pop_dialog()
+                self.reload_app(force=True)
+
+            names = "\n".join(f"• {t.title}" for t in running)
+            self.page.show_dialog(ft.AlertDialog(
+                title=ft.Text("A task is running"),
+                content=ft.Text(f"{names}\n\nReloading now would stop it. Reload when it finishes instead?"),
+                actions=[ft.TextButton("Cancel", on_click=lambda e: self.page.pop_dialog()),
+                         ft.TextButton("Reload now", on_click=now),
+                         ft.FilledButton("When it finishes", on_click=later)],
+            ))
+            return
+        self.reload_pending = False
         boot.reload(self.page)
+
+    def _reload_if_pending(self) -> None:
+        """Task listener: the waited-for reload, once nothing runs any more."""
+        if self.reload_pending and not self.tasks.running():
+            self.reload_pending = False
+            run_thread = getattr(self.page, "run_thread", None)
+            if run_thread:  # after the other listeners (notification, diagnostics) have seen the end
+                run_thread(lambda: (time.sleep(1), self.reload_app())[1])
 
     # ---- state changes ------------------------------------------------------------
 

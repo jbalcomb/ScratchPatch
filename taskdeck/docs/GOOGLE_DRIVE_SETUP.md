@@ -73,8 +73,14 @@ Extract Archive → **Extract to** → **Change…** → **Google Drive** tab �
 keep the default new folder named after the archive → **Use this** → **Extract**.
 
 TaskDeck unpacks into a temporary folder on the phone, uploads the files, and deletes the temporary copy as
-it goes. So the phone needs free space for the unpacked files, and the upload needs TaskDeck to stay open
-(Android may pause network access for apps in the background).
+it goes. So the phone needs free space for the unpacked files. While it works, TaskDeck shows a notification
+with the progress and keeps going when you use other apps (allow notifications and "unrestricted" battery when
+asked, or later in Settings → Background work). If the connection still drops, the upload **pauses**
+("Paused: no connection") and carries on from where it stopped.
+
+Running the same extraction again into the same folder (e.g. after a cancel or a crash) skips files that are
+already there with the same name and size, and only uploads what's missing or different. Reloading TaskDeck
+while a task runs asks first, and by default waits until the task finishes.
 
 ## Disconnecting
 
@@ -91,5 +97,6 @@ Files TaskDeck already uploaded stay in your Drive.
 | `invalid_client` | Client ID or secret mistyped, or the client isn't the "TVs and Limited Input devices" type. Re-paste them. |
 | `access_denied` | You chose Cancel on the approval page, or your account isn't allowed (consent screen still in Testing without you as a test user). Publish the app (step 2.5) and connect again. |
 | "Google Drive API has not been used in project …" | Step 1 not done (or done in another project). |
+| "No connection right now. Still waiting…" while you approve | Normal: Android limits TaskDeck's network while you're in the browser. Come back to TaskDeck; it finishes by itself. (Older versions showed "Can't reach oauth2.googleapis.com [Errno 7]" and gave up: tap Connect again.) |
 | Asked to sign in again after a week | The consent screen is still in **Testing**. Publish it (step 2.5). |
-| Upload stops when the phone is locked | Keep TaskDeck open while uploading (see "Using it"). |
+| "Paused: no connection" while uploading | TaskDeck is in the background, or the phone is offline. Open TaskDeck; the upload continues by itself. (Older versions failed with "Lost the connection to Google Drive while uploading.") |

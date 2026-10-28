@@ -90,6 +90,13 @@ class Field:
         return raw
 
 
+# For jobs that use the internet: add to the job's ``settings``. On mobile data the job's network
+# work waits for Wi-Fi (the app's NetworkMonitor enforces it).
+WIFI_ONLY = Field.toggle("wifi_only", "Wi-Fi only",
+                         help="Only use the internet on Wi-Fi, not mobile data. On mobile data the job waits "
+                              "for Wi-Fi and then carries on by itself.")
+
+
 @dataclass(frozen=True)
 class QuickAction:
     """A preset that shows up in the command palette, e.g. "Convert: km → mi".
