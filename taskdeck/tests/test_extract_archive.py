@@ -314,3 +314,58 @@ def test_screen_shows_a_bar_per_phase(tmp_path):
     screen.render(update=False)
     lines = [c.value for c in screen.progress_box.controls if isinstance(c, ft.Text)]
     assert any(str(v).startswith("250 bytes of 1,000 bytes · 2") and str(v).endswith(" B/s") for v in lines), lines
+
+
+def test_reload_waits_for_running_tasks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    reloads = []
+    app = make_app(tmp_path)
+    monkeypatch.setattr(app_module, "boot", SimpleNamespace(reload=lambda page: reloads.append(page)))
+    monkeypatch.setattr(app_module.time, "sleep", lambda s: None)
+    app.tasks._start = lambda fn: None  # stays running until finished by hand
+    t = app.tasks.start("Extracting x.7z to Google Drive", "extract_archive", lambda t: "")
+
+    app.reload_app()
+    dialog = app.page.dialogs[-1]
+    assert reloads == [] and "Extracting x.7z" in dialog.content.value
+    cancel, now, later = dialog.actions
+    later.on_click(None)
+    assert app.reload_pending and not app.page.dialogs and reloads == []
+
+    t.status = DONE  # the task ends: the waited-for reload happens
+    app.tasks._notify(t)
+    assert reloads == [app.page] and not app.reload_pending
+
+    t2 = app.tasks.start("Another", "extract_archive", lambda t: "")
+    app.reload_app()
+    app.page.dialogs[-1].actions[1].on_click(None)  # Reload now
+    assert len(reloads) == 2 and t2.running
+    app.tasks.forget(t)
+
+
+@needs_engine
+def test_drive_rerun_skips_files_already_uploaded(tmp_path):
+    from test_gdrive import FakeDrive, client
+
+    from taskdeck.shared.gdrive import DriveLocation
+
+    fake = FakeDrive()
+    tm = TaskManager(start_thread=lambda fn: fn())
+    run = lambda: tm.start("x", "extract_archive", lambda t: logic.extract_to_drive(
+        t, FIX / "plain.7z", None, client(fake), DriveLocation(), "P", tmp_path / "tmp"))
+    first = run()
+    assert first.status == DONE and "Skipped" not in first.message
+    root = next(i for i, it in fake.items.items() if it["name"] == "P")
+    by_name = {it["name"]: i for i, it in fake.items.items() if not it["folder"]}
+    fake.items[by_name["big.txt"]]["data"] = b"partial"  # an upload cut short: different size
+    del fake.items[by_name["readme.txt"]]  # never got there
+    puts = fake.puts
+
+    second = run()
+    assert second.status == DONE, second.message
+    assert second.message.startswith("Uploaded 2 files") and "Skipped 1 already there" in second.message
+    assert fake.tree(root) == CONTENT and fake.puts > puts
+    assert second.phases[1].complete

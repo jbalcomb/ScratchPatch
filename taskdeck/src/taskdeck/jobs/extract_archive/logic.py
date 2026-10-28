@@ -141,9 +141,11 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
                      location: DriveLocation, name: str | None, temp_root: Path) -> str:
     """Unpack into a temporary folder on the phone, upload everything, delete the temporary copy.
 
-    Same-named files in Drive are replaced and same-named folders reused, like extracting on the phone."""
+    Same-named folders in Drive are reused. A same-named file of the same size is taken as already
+    uploaded and skipped (so running it again after a cancel or crash only sends what's missing);
+    one of a different size is replaced, like extracting on the phone."""
     temp = temp_root / f"task-{task.id}-{os.getpid()}"
-    count = sent = 0
+    count = sent = skipped = skipped_bytes = 0
     # Android cuts the network of apps in the background: wait for it instead of failing.
     drive.keep_waiting = lambda: not task.cancel_requested
     drive.on_offline = lambda offline: task.set_note(PAUSED if offline else "")
@@ -170,21 +172,31 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             dirnames.sort()
             here = Path(dirpath).relative_to(temp)
             parent_id = folder_ids[here]
-            sub_folders, sub_files = drive.children(parent_id)
+            sub_folders, sub_files = drive.children_sized(parent_id)
             for d in dirnames:
                 folder_ids[here / d] = sub_folders.get(d) or drive.create_folder(d, parent_id).id
             for f in sorted(filenames):
                 local = Path(dirpath) / f
-                size, base = local.stat().st_size, sent
+                size, base = local.stat().st_size, sent + skipped_bytes
+                existing_id, existing_size = sub_files.get(f, (None, -1))
+                if existing_id and existing_size == size:  # already there (an earlier, interrupted run)
+                    task.log("file", path=str(here / f), bytes=size, skipped=True)
+                    local.unlink()
+                    skipped += 1
+                    skipped_bytes += size
+                    task.advance(1, base + size)
+                    if task.cancel_requested:
+                        raise gdrive.UploadCancelled()
+                    continue
 
                 def progress(n: int, base=base) -> bool:
                     task.advance(1, base + n)
                     return task.cancel_requested
 
                 file_started = time.monotonic()
-                drive.upload(local, parent_id, f, progress=progress, replace=sub_files.get(f))
+                drive.upload(local, parent_id, f, progress=progress, replace=existing_id)
                 task.log("file", path=str(here / f), bytes=size, secs=round(time.monotonic() - file_started, 3),
-                         replaced=f in sub_files)
+                         replaced=bool(existing_id))
                 local.unlink()  # free the space as we go
                 sent += size
                 count += 1
@@ -201,7 +213,10 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
         raise RuntimeError(f"{exc}{done}") from None
     finally:
         shutil.rmtree(temp, ignore_errors=True)
-    return f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+    message = f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+    if skipped:
+        message += f". Skipped {skipped:,} already there ({files.human_size(skipped_bytes)})."
+    return message
 
 
 def _were_uploaded(count: int) -> str:

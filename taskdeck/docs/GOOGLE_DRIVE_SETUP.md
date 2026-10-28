@@ -78,6 +78,10 @@ with the progress and keeps going when you use other apps (allow notifications a
 asked, or later in Settings → Background work). If the connection still drops, the upload **pauses**
 ("Paused: no connection") and carries on from where it stopped.
 
+Running the same extraction again into the same folder (e.g. after a cancel or a crash) skips files that are
+already there with the same name and size, and only uploads what's missing or different. Reloading TaskDeck
+while a task runs asks first, and by default waits until the task finishes.
+
 ## Disconnecting
 
 * In TaskDeck: Settings → Accounts → Google Drive → **Disconnect** (forgets and revokes the sign-in).

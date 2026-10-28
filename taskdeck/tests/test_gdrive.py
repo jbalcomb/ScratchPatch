@@ -128,7 +128,8 @@ class FakeDrive:
         if method == "GET" and u.path.endswith("/files"):
             parent = re.search(r"'([^']+)' in parents", q["q"][0]).group(1)
             only_folders = "mimeType='application/vnd.google-apps.folder'" in q["q"][0]
-            files = [{"id": i, "name": it["name"], "mimeType": gdrive.FOLDER_MIME if it["folder"] else "text/plain"}
+            files = [{"id": i, "name": it["name"], "mimeType": gdrive.FOLDER_MIME if it["folder"] else "text/plain",
+                      **({} if it["folder"] else {"size": str(len(it["data"]))})}
                      for i, it in self.items.items() if it["parent"] == parent and (it["folder"] or not only_folders)]
             return resp(200, {"files": sorted(files, key=lambda f: f["name"])})
         if method == "POST" and u.path.endswith("/drive/v3/files") and "uploadType" not in q:

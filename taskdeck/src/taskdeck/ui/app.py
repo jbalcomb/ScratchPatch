@@ -109,6 +109,7 @@ class TaskDeckApp:
         self.register_commands()
         self.render()
         self.update_status = ""
+        self.reload_pending = False  # "Reload when it finishes" was chosen
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
@@ -358,6 +359,8 @@ class TaskDeckApp:
 
     def on_task(self, task: Task) -> None:
         """Background task changed (worker thread): refresh Home, announce the end."""
+        if not task.running:
+            self._reload_if_pending()
         if not self.stack and self.tab == "home":
             self.render()
         if not task.running:
@@ -580,8 +583,42 @@ class TaskDeckApp:
             duration=ft.Duration(seconds=10),
         ))
 
-    def reload_app(self) -> None:
+    def reload_app(self, force: bool = False) -> None:
+        """Restart on the newest code. Reloading ends running tasks (the new app can't see them), so
+        while one runs, ask first: reload when it finishes (the default), or now anyway."""
+        running = self.tasks.running()
+        if running and not force:
+            def later(e=None):
+                self.page.pop_dialog()
+                self.reload_pending = True
+                self.update_status = "Reloads when the running task finishes."
+                self.toast("TaskDeck will reload when the task finishes.")
+                self.render()
+                self.page.update()
+
+            def now(e=None):
+                self.page.pop_dialog()
+                self.reload_app(force=True)
+
+            names = "\n".join(f"• {t.title}" for t in running)
+            self.page.show_dialog(ft.AlertDialog(
+                title=ft.Text("A task is running"),
+                content=ft.Text(f"{names}\n\nReloading now would stop it. Reload when it finishes instead?"),
+                actions=[ft.TextButton("Cancel", on_click=lambda e: self.page.pop_dialog()),
+                         ft.TextButton("Reload now", on_click=now),
+                         ft.FilledButton("When it finishes", on_click=later)],
+            ))
+            return
+        self.reload_pending = False
         boot.reload(self.page)
+
+    def _reload_if_pending(self) -> None:
+        """Task listener: the waited-for reload, once nothing runs any more."""
+        if self.reload_pending and not self.tasks.running():
+            self.reload_pending = False
+            run_thread = getattr(self.page, "run_thread", None)
+            if run_thread:  # after the other listeners (notification, diagnostics) have seen the end
+                run_thread(lambda: (time.sleep(1), self.reload_app())[1])
 
     # ---- state changes ------------------------------------------------------------
 

@@ -159,12 +159,17 @@ class DriveClient:
 
     def children(self, parent: str) -> tuple[dict[str, str], dict[str, str]]:
         """(folders, files) directly in parent, as name -> id (TaskDeck's own only, with drive.file)."""
+        folders, files = self.children_sized(parent)
+        return folders, {name: fid for name, (fid, _size) in files.items()}
+
+    def children_sized(self, parent: str) -> tuple[dict[str, str], dict[str, tuple[str, int]]]:
+        """(folders as name -> id, files as name -> (id, size in bytes))."""
         q = f"trashed=false and '{parent}' in parents"
         folders: dict[str, str] = {}
-        files: dict[str, str] = {}
+        files: dict[str, tuple[str, int]] = {}
         page = ""
         while True:
-            params = {"q": q, "fields": "nextPageToken,files(id,name,mimeType)", "pageSize": "1000"}
+            params = {"q": q, "fields": "nextPageToken,files(id,name,mimeType,size)", "pageSize": "1000"}
             if page:
                 params["pageToken"] = page
             resp = self._call("GET", f"{API}?{urllib.parse.urlencode(params)}")
@@ -172,7 +177,10 @@ class DriveClient:
                 raise _explain(resp, "read a folder")
             data = resp.json() or {}
             for f in data.get("files", []):
-                (folders if f.get("mimeType") == FOLDER_MIME else files)[f["name"]] = f["id"]
+                if f.get("mimeType") == FOLDER_MIME:
+                    folders[f["name"]] = f["id"]
+                else:
+                    files[f["name"]] = (f["id"], int(f.get("size") or -1))  # Google Docs have no size
             page = data.get("nextPageToken", "")
             if not page:
                 return folders, files
