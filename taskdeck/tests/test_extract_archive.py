@@ -268,6 +268,28 @@ def test_task_phases():
     assert t.phases[1].eta() == pytest.approx(40.0, abs=1)
 
 
+def test_human_speed():
+    assert [files.human_speed(n) for n in (0, 512, 1536, 3.4 * 2**20, 1.1 * 2**30, 5 * 2**40, -3)] == [
+        "0 B/s", "512 B/s", "1.5 KB/s", "3.4 MB/s", "1.1 GB/s", "5.0 TB/s", "0 B/s"]
+
+
+def test_current_speed():
+    from taskdeck.core.tasks import SPEED_WINDOW, Speedometer
+
+    m = Speedometer()
+    assert m.speed(0) is None
+    m.add(0, 100.0)
+    m.add(1000, 100.5)
+    assert m.speed(100.5) is None  # under a second of data
+    for i in range(2, 31):  # 1000 bytes every half second for 15 s = 2000 B/s
+        m.add(i * 1000, 100 + i / 2)
+    assert m.speed(115.0) == pytest.approx(2000, rel=0.05)
+    assert m.samples[0][0] <= 115.0 - SPEED_WINDOW  # older samples dropped, one kept as the base
+    assert m.speed(135.0) < 1000  # stalled: falls towards 0
+    m.add(10, 136.0)  # went backwards (upload restarted): starts over
+    assert m.speed(140.0) is None
+
+
 def test_screen_shows_a_bar_per_phase(tmp_path):
     import flet as ft
 
@@ -287,3 +309,8 @@ def test_screen_shows_a_bar_per_phase(tmp_path):
     texts = [c.controls[1].value for c in screen.progress_box.controls if isinstance(c, ft.Row) and len(c.controls) == 2
              and isinstance(c.controls[1], ft.Text)]
     assert texts[:2] == ["✓ Done", "25%"]
+
+    t.phases[1].meter.samples = [(time.time() - 10, 0), (time.time(), 250)]  # 25 B/s lately
+    screen.render(update=False)
+    lines = [c.value for c in screen.progress_box.controls if isinstance(c, ft.Text)]
+    assert any(str(v).startswith("250 bytes of 1,000 bytes · 2") and str(v).endswith(" B/s") for v in lines), lines

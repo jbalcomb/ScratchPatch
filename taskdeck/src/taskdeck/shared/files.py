@@ -149,6 +149,16 @@ def human_size(n: float) -> str:
     return str(n)
 
 
+def human_speed(bytes_per_second: float) -> str:
+    """512 B/s, 1.2 KB/s, 3.4 MB/s, 1.1 GB/s... (same 1024 steps as human_size)."""
+    n = max(0.0, bytes_per_second)
+    for unit in ("B/s", "KB/s", "MB/s", "GB/s", "TB/s"):
+        if n < 1024 or unit == "TB/s":
+            return f"{int(n)} {unit}" if unit == "B/s" else f"{n:.1f} {unit}"
+        n /= 1024
+    return str(n)
+
+
 def human_duration(seconds: float) -> str:
     if seconds < 60:
         return "less than a minute" if seconds >= 30 else "a few seconds"

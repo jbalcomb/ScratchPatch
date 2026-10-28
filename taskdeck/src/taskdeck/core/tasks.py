@@ -22,6 +22,33 @@ from .trace import Trace, TraceStore, environment
 
 RUNNING, DONE, FAILED, CANCELLED = "running", "done", "failed", "cancelled"
 NOTIFY_EVERY = 0.25  # seconds between progress notifications
+SPEED_WINDOW = 10.0  # seconds the current speed is averaged over
+
+
+class Speedometer:
+    """Current speed: bytes moved over (at least) the last SPEED_WINDOW seconds, up to now, so it
+    falls towards 0 when progress stops."""
+
+    def __init__(self) -> None:
+        self.samples: list[tuple[float, int]] = []  # (time, done), oldest first
+
+    def add(self, done: int, now: float) -> None:
+        if self.samples and done < self.samples[-1][1]:  # went backwards (e.g. restarted): start over
+            self.samples = []
+        self.samples.append((now, done))
+        # keep one sample at or before the window's start, as the base
+        while len(self.samples) > 2 and self.samples[1][0] <= now - SPEED_WINDOW:
+            self.samples.pop(0)
+
+    def speed(self, now: float | None = None) -> float | None:
+        """Bytes per second, or None until there are two samples a moment apart."""
+        if len(self.samples) < 2:
+            return None
+        now = now or time.time()
+        base_t, base_done = self.samples[0]
+        if now - base_t < 1:
+            return None
+        return (self.samples[-1][1] - base_done) / (now - base_t)
 
 
 @dataclass
@@ -32,6 +59,10 @@ class Phase:
     total: int = 0
     done: int = 0
     started: float | None = None
+    meter: Speedometer = field(default_factory=Speedometer, repr=False, compare=False)
+
+    def speed(self, now: float | None = None) -> float | None:
+        return self.meter.speed(now)
 
     @property
     def fraction(self) -> float | None:
@@ -68,6 +99,7 @@ class Task:
     _last_notify: float = field(default=0.0, repr=False, compare=False)
     _logged_phase: int = field(default=-1, repr=False, compare=False)
     _beat_done: int = field(default=0, repr=False, compare=False)
+    meter: Speedometer = field(default_factory=Speedometer, repr=False, compare=False)
 
     def log(self, ev: str, **fields: Any) -> None:
         """Add an event to the task's diagnostics trace (if it has one)."""
@@ -105,6 +137,7 @@ class Task:
             if i == index:
                 phase.started = phase.started or now
                 phase.done = done
+                phase.meter.add(done, now)
         if index != self._logged_phase:
             self._logged_phase = index
             self.log("phase", index=index, label=self.phases[index].label if index < len(self.phases) else "",
@@ -135,11 +168,15 @@ class Task:
     def current_phase(self) -> Phase | None:
         return next((p for p in self.phases if not p.complete), None)
 
+    def speed(self, now: float | None = None) -> float | None:
+        return self.meter.speed(now)
+
     def report(self, done: int, total: int | None = None) -> None:
         self.done = done
         if total is not None:
             self.total = total
         now = time.time()
+        self.meter.add(done, now)
         if self._manager and now - self._last_notify >= NOTIFY_EVERY:
             self._last_notify = now
             self._manager._notify(self)

@@ -316,7 +316,8 @@ class ExtractScreen:
                 pct = f" {t.fraction * 100:.0f}%" if t.fraction is not None else ""
                 lines = [ft.Text(f"Extracting…{pct}", weight=ft.FontWeight.W_600),
                          ft.ProgressBar(value=t.fraction),
-                         ft.Text(f"{files.human_size(t.done)} of {files.human_size(t.total)}" if t.total else "Starting…")]
+                         ft.Text(f"{files.human_size(t.done)} of {files.human_size(t.total)}{_speed(t)}"
+                                 if t.total else "Starting…")]
                 eta = t.eta()
                 if eta is not None:
                     lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(),
@@ -354,6 +355,12 @@ class ExtractScreen:
         self.render()
 
 
+def _speed(progress) -> str:
+    """The current speed of a Task or Phase as " · 1.2 MB/s", or nothing until it is known."""
+    speed = progress.speed()
+    return "" if speed is None else f" · {files.human_speed(speed)}"
+
+
 def _phase_rows(phase, active: bool) -> list[ft.Control]:
     """A phase's label and state, its bar, and (while it runs) size and time left."""
     if phase.complete:
@@ -368,7 +375,7 @@ def _phase_rows(phase, active: bool) -> list[ft.Control]:
         ft.ProgressBar(value=phase.fraction if phase.started is not None or phase.complete else 0),
     ]
     if active and phase.started is not None:
-        line = f"{files.human_size(phase.done)} of {files.human_size(phase.total)}"
+        line = f"{files.human_size(phase.done)} of {files.human_size(phase.total)}{_speed(phase)}"
         eta = phase.eta()
         if eta is not None:
             line += f" · {files.human_duration(eta)} left"
