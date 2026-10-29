@@ -161,8 +161,17 @@ def report(events: list[dict[str, Any]], per_minute: bool = False) -> str:
                 f"({clock(st[-1]['s'] - st[0]['s'] + 30)}), phase {st[0].get('phase', '?')}, note {st[0].get('note', '') or '-'}")
 
     # ---- what happened around it
-    context = [e for e in events if e["ev"] in ("phase", "note", "app", "network", "service", "cancel_requested",
-                                                "corrupt")]
+    workers = [e for e in events if e["ev"] == "workers"]
+    throttles = [e for e in events if e["ev"] == "throttle"]
+    if workers or throttles:
+        say("")
+        limits = [e["limit"] for e in workers]
+        say(f"Uploads at once: started at {workers[0]['was'] if workers else '?'}, ended at "
+            f"{limits[-1] if limits else '?'}, most {max(limits) if limits else '?'}; Google asked to slow down "
+            f"{len(throttles)} time{'s' * (len(throttles) != 1)}"
+            + (f" (longest pause {max(e.get('pause', 0) for e in throttles):.0f} s)" if throttles else ""))
+    context = [e for e in events if e["ev"] in ("phase", "phase_set", "note", "app", "network", "service",
+                                                "cancel_requested", "workers", "corrupt")]
     if context:
         say("")
         say("Timeline:")

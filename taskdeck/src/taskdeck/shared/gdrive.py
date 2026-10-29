@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
+import random
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -86,6 +89,38 @@ def _retryable(resp: http.Response) -> bool:
     return resp.status == 403 and b"ateLimitExceeded" in resp.body  # rateLimitExceeded, userRateLimitExceeded
 
 
+class Throttle:
+    """Shared by all uploads of one DriveClient: when Google says "slow down" (429, or 403 with a
+    rate-limit reason) or is busy (5xx), every upload pauses together, for 1, 2, 4 ... up to 64 s
+    (with some randomness, so they don't all come back at the same instant) as long as it keeps
+    saying so. ``hits`` counts the signals, for adapting how many uploads run at once."""
+
+    BASE, MAX = 1.0, 64.0
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, rand: Callable[[], float] = random.random):
+        self.clock, self.rand = clock, rand
+        self._lock = threading.Lock()
+        self._until = 0.0
+        self._streak = 0
+        self.hits = 0
+
+    def hit(self) -> float:
+        with self._lock:
+            self.hits += 1
+            self._streak += 1
+            wait = min(self.MAX, self.BASE * 2 ** (self._streak - 1)) * (0.75 + 0.5 * self.rand())
+            self._until = max(self._until, self.clock() + wait)
+            return wait
+
+    def ok(self) -> None:
+        with self._lock:
+            self._streak = 0
+
+    def remaining(self) -> float:
+        with self._lock:
+            return max(0.0, self._until - self.clock())
+
+
 OFFLINE_RETRY_MAX = 15  # seconds between tries while waiting for the network to come back
 
 
@@ -106,6 +141,32 @@ class DriveClient:
         self.keep_waiting = keep_waiting
         self.on_offline = on_offline or (lambda offline: None)
         self._offline = False
+        self.throttle = Throttle()
+        self.on_throttle: Callable[[float, int], None] = lambda wait, status: None  # e.g. into the task's trace
+
+    def _pace(self) -> None:
+        """Before each request: sit out a pause Google asked for (any upload may have triggered it)."""
+        left = self.throttle.remaining()
+        for i in range(math.ceil(left / 2)):  # in steps, so Cancel isn't stuck behind a long pause
+            if self.keep_waiting is not None and not self.keep_waiting():
+                raise UploadCancelled()
+            self.sleep(min(2.0, left - 2 * i))
+
+    def _busy(self, resp: http.Response, tries: int) -> bool:
+        """Google said slow down / busy: start (or extend) the shared pause. True = try again. When
+        uploads wait for the network (keep_waiting), this never gives up: rate limits only slow the job."""
+        wait = self.throttle.hit()
+        self.on_throttle(wait, resp.status)
+        if self.keep_waiting is None:
+            return tries < RETRIES - 1
+        if not self.keep_waiting():
+            raise UploadCancelled()
+        return True
+
+    def _answered(self, resp: http.Response) -> None:
+        self._online()
+        if not _retryable(resp):
+            self.throttle.ok()
 
     def _wait_offline(self, attempt: int) -> bool:
         """The network is down: pause and say so. False = stop trying (raise the error)."""
@@ -130,8 +191,9 @@ class DriveClient:
     def _call(self, method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
               timeout: float = 60) -> http.Response:
         """One API call with the access token; retries rate limits, server errors and network hiccups."""
-        attempt = 0
+        attempt = busy = 0
         while True:
+            self._pace()
             try:
                 hdrs = {"Authorization": f"Bearer {self.token()}", **(headers or {})}  # refreshing needs the network too
                 resp = self.send(method, url, body, hdrs, timeout)
@@ -140,10 +202,9 @@ class DriveClient:
                     raise
                 attempt += 1
                 continue
-            self._online()
-            if _retryable(resp) and attempt < RETRIES - 1:
-                self.sleep(min(2 ** attempt, 30))
-                attempt += 1
+            self._answered(resp)
+            if _retryable(resp) and self._busy(resp, busy):
+                busy += 1
                 continue
             return resp
 
@@ -215,8 +276,7 @@ class DriveClient:
         offset, restarts, failures = 0, 0, 0
         with open(path, "rb") as fh:
             while True:
-                if failures > RETRIES:
-                    raise DriveError(f"Google Drive kept failing while uploading “{name}”. Try again later.")
+                self._pace()
                 fh.seek(offset)
                 piece = fh.read(self.chunk)
                 end = offset + len(piece) - 1
@@ -228,9 +288,11 @@ class DriveClient:
                 except http.HttpError:
                     if self.keep_waiting is None:  # when waiting, a dropped network is a pause, not a failure
                         failures += 1
+                    if failures > RETRIES:
+                        raise DriveError(f"Lost the connection to Google Drive while uploading “{name}”.")
                     offset = self._resume_offset(session, size)  # connection dropped: ask Google what arrived
                     continue
-                self._online()
+                self._answered(resp)
                 if resp.status in (200, 201):
                     if progress:
                         progress(size)
@@ -245,8 +307,9 @@ class DriveClient:
                     session, offset = self._start_session(name, parent, size, replace), 0
                     continue
                 if _retryable(resp):
+                    if not self._busy(resp, failures):
+                        raise DriveError(f"Google Drive kept failing while uploading “{name}”. Try again later.")
                     failures += 1
-                    self.sleep(min(2 ** failures, 30))
                     offset = self._resume_offset(session, size)
                     continue
                 raise _explain(resp, f"upload “{name}”")
@@ -268,6 +331,7 @@ class DriveClient:
             ctype = f"multipart/related; boundary={boundary}"
         attempt = server_errors = 0
         while True:
+            self._pace()
             body = Piece(payload, (lambda n: progress(min(n, size))) if progress else None)
             try:
                 hdrs = {"Authorization": f"Bearer {self.token()}", "Content-Type": ctype,
@@ -282,14 +346,13 @@ class DriveClient:
                     if found:
                         return found
                 continue
-            self._online()
+            self._answered(resp)
             if resp.ok:
                 if progress and progress(size):
                     raise UploadCancelled()
                 return str((resp.json() or {}).get("id", ""))
-            if _retryable(resp) and server_errors < RETRIES:
+            if _retryable(resp) and self._busy(resp, server_errors):
                 server_errors += 1
-                self.sleep(min(2 ** server_errors, 30))
                 continue
             raise _explain(resp, f"upload “{name}”")
 
@@ -314,6 +377,7 @@ class DriveClient:
         """Ask how much of an interrupted upload Google has (retrying while the network is down)."""
         attempt, server_errors = 0, 0
         while server_errors < RETRIES:
+            self._pace()
             try:
                 resp = self.send("PUT", session, b"", {"Content-Length": "0", "Content-Range": f"bytes */{size}"}, 60)
             except http.HttpError:
@@ -321,11 +385,17 @@ class DriveClient:
                     break
                 attempt += 1
                 continue
-            self._online()
+            self._answered(resp)
             if resp.status == 308:
                 return _range_end(resp.headers.get("range")) + 1
             if resp.status in (200, 201):
                 return size
+            if _retryable(resp):
+                if not self._busy(resp, server_errors):
+                    break
+                if self.keep_waiting is None:  # otherwise: as long as it takes
+                    server_errors += 1
+                continue
             self.sleep(min(2 ** server_errors, 30))
             server_errors += 1
         raise DriveError("Lost the connection to Google Drive while uploading.")

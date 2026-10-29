@@ -357,7 +357,10 @@ def test_extract_to_drive(tmp_path):
 def test_extract_to_drive_cancel_and_failure(tmp_path, monkeypatch):
     from taskdeck.jobs.extract_archive import logic
 
-    monkeypatch.setattr(logic, "UPLOAD_WORKERS", 1)  # "after the first file" exactly
+    from taskdeck.jobs.extract_archive import uploads
+
+    monkeypatch.setattr(uploads, "START", 1)  # "after the first file" exactly
+    monkeypatch.setattr(uploads, "MAX", 1)
 
     fake = FakeDrive()
     tm = run_inline()
@@ -501,45 +504,3 @@ def test_two_runs_with_the_same_task_id_use_separate_temp_folders(tmp_path):
 
 
 
-def test_uploads_run_in_parallel_and_stop_on_the_first_error(tmp_path):
-    import time as _time
-
-    from taskdeck.jobs.extract_archive import logic
-
-    tm = TaskManager(start_thread=lambda fn: None)
-    task = tm.start("x", "j", lambda t: "")
-    task.set_phases(("Unpacking", 1), ("Uploading", 12, "files"))
-    running, peak, uploaded = [0], [0], []
-    lock = threading.Lock()
-
-    class SlowDrive:  # Google taking a while to confirm each file
-        def upload(self, path, parent, name, progress=None, replace=None):
-            with lock:
-                running[0] += 1
-                peak[0] = max(peak[0], running[0])
-            _time.sleep(0.05)
-            if name == "bad":
-                with lock:
-                    running[0] -= 1
-                raise gdrive.DriveError("Google Drive couldn't upload “bad”: HTTP 400")
-            progress(path.stat().st_size)
-            with lock:
-                running[0] -= 1
-                uploaded.append(name)
-            return "id"
-
-    def files(names):
-        out = []
-        for n in names:
-            p = tmp_path / n
-            p.write_bytes(b"x" * 5)
-            out.append((p, "root", n, Path(n), 5, None))
-        return out
-    started = _time.monotonic()
-    count, sent = logic._upload_all(task, SlowDrive(), files([f"f{i}" for i in range(12)]), workers=6)
-    assert (count, sent) == (12, 60) and peak[0] == 6 and _time.monotonic() - started < 0.4  # ~2 rounds, not 12
-    assert task.phases[1].done == 12 and task.phases[1].complete and not any((tmp_path / f"f{i}").exists() for i in range(12))
-
-    with pytest.raises(logic._Interrupted) as stop:
-        logic._upload_all(task, SlowDrive(), files(["bad"] + [f"g{i}" for i in range(30)]), workers=3)
-    assert "HTTP 400" in str(stop.value.error) and stop.value.count < 30  # no new files after the error

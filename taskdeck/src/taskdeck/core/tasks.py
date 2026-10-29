@@ -62,6 +62,9 @@ class Phase:
     unit: str = "bytes"  # or "files": what total and done count (and what the speed is in)
     started: float | None = None
     meter: Speedometer = field(default_factory=Speedometer, repr=False, compare=False)
+    # A job's own estimate of the seconds left (e.g. uploads: per-file time and bandwidth), used before
+    # the generic one from the current speed.
+    estimate: Callable[[], float | None] | None = field(default=None, repr=False, compare=False)
 
     def speed(self, now: float | None = None) -> float | None:
         return self.meter.speed(now)
@@ -78,6 +81,13 @@ class Phase:
         """Seconds left at the current speed (falls back to the average since the phase started)."""
         if self.started is None or not self.total or self.done <= 0:
             return None
+        if self.estimate is not None:
+            try:
+                own = self.estimate()
+            except Exception:  # a broken estimate must not break the screen
+                own = None
+            if own is not None:
+                return own
         now = now or time.time()
         speed = self.meter.speed(now)
         if speed is not None:
