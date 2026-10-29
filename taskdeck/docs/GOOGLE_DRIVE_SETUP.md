@@ -79,7 +79,10 @@ asked, or later in Settings → Background work). If the connection still drops,
 ("Paused: no connection") and carries on from where it stopped.
 
 Running the same extraction again into the same folder (e.g. after a cancel or a crash) skips files that are
-already there with the same name and size, and only uploads what's missing or different. Reloading TaskDeck
+already there with the same content (name, size and checksum) and only uploads what's missing. A same-named
+file with other content is a leftover of an interrupted run: TaskDeck uploads a fresh copy, then moves the
+leftover (and any duplicates of the name) to Drive's trash. An extraction is a one-time copy of a fixed
+archive, see [JOB_KINDS.md](JOB_KINDS.md). Reloading TaskDeck
 while a task runs asks first, and by default waits until the task finishes.
 
 ## Disconnecting

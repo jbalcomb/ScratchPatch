@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from taskdeck.core import Cancelled, Task
+from taskdeck.core import Cancelled, JobNature, Task, copying
 from taskdeck.shared import archive, files, gdrive, google_oauth, http
 from taskdeck.shared.gdrive import DriveLocation
 
@@ -137,6 +137,9 @@ def drive_problems(s: Scan, name: str | None, password: str, connected: bool, te
     return out
 
 
+# An archive is a fixed snapshot: extracting it to Drive is a one-time copy (see taskdeck.core.copying).
+NATURE = JobNature.ONE_TIME_COPY
+
 PAUSED = "Paused: no connection. Open TaskDeck to continue."
 
 
@@ -144,9 +147,10 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
                      location: DriveLocation, name: str | None, temp_root: Path) -> str:
     """Unpack into a temporary folder on the phone, upload everything, delete the temporary copy.
 
-    Same-named folders in Drive are reused. A same-named file of the same size is taken as already
-    uploaded and skipped (so running it again after a cancel or crash only sends what's missing);
-    one of a different size is replaced, like extracting on the phone."""
+    A one-time copy (NATURE): same-named folders in Drive are reused; a same-named file with the same
+    content (size and MD5 checksum) is already done and skipped, so running it again after a cancel or
+    crash only sends what's missing. Any other same-named file is a broken leftover of an earlier run:
+    the file is uploaded fresh and the leftover (and any duplicates) then goes to Drive's trash."""
     # Unique per run: after a reload, a task of the previous app instance (same process, task ids
     # starting again at 1) may still be using its own folder.
     temp = temp_root / f"task-{task.id}-{secrets.token_hex(4)}-{os.getpid()}"
@@ -183,7 +187,7 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             dirnames.sort()
             here = Path(dirpath).relative_to(temp)
             parent_id = folder_ids[here]
-            sub_folders, sub_files = drive.children_sized(parent_id)
+            sub_folders, sub_files = drive.children_files(parent_id)
             for d in dirnames:
                 folder_ids[here / d] = sub_folders.get(d) or drive.create_folder(d, parent_id).id
                 if task.cancel_requested:
@@ -191,14 +195,16 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
             for f in sorted(filenames):
                 local = Path(dirpath) / f
                 size = local.stat().st_size
-                existing_id, existing_size = sub_files.get(f, (None, -1))
-                if existing_id and existing_size == size:  # already there (an earlier, interrupted run)
-                    task.log("file", path=str(here / f), bytes=size, skipped=True)
+                plan = copying.plan(NATURE, size, lambda: copying.md5_of(local), sub_files.get(f, []))
+                if not plan.upload:  # already there, the same content (an earlier, interrupted run)
+                    for leftover in plan.trash:  # duplicates of the name
+                        drive.trash(leftover)
+                    task.log("file", path=str(here / f), bytes=size, skipped=True, trashed=len(plan.trash))
                     local.unlink()
                     skipped += 1
                     skipped_bytes += size
                     continue
-                todo.append((local, parent_id, f, here / f, size, existing_id))
+                todo.append((local, parent_id, f, here / f, size, plan.replace, plan.trash))
         label = "Uploading to Google Drive" + (f" ({skipped:,} already there)" if skipped else "")
         task.set_phase(1, label=label, total=len(todo))
         count, sent = uploads.upload_all(task, drive, todo)

@@ -305,6 +305,8 @@ with the fix.
 2. Leaving TaskDeck during long extractions: **v1 without a foreground service.**
 3. Google Drive: **`drive.file` now, plan for full Drive** (§1.4).
 4. Dropbox: **Full Dropbox.**
-5. Existing files: **overwrite.**
+5. Existing files: **overwrite** (on the phone). In Google Drive the job is a one-time copy
+   ([../JOB_KINDS.md](../JOB_KINDS.md)): same content is skipped, anything else of the same name is a leftover,
+   uploaded fresh and then moved to the trash.
 6. Delete archive afterwards: **no.**
 7. "Open with TaskDeck" from other apps: **no.**

@@ -1,5 +1,6 @@
 """Google sign-in (device flow), the Drive client, and extracting to Google Drive — against fakes."""
 
+import hashlib
 import json
 import re
 import threading
@@ -89,6 +90,7 @@ class FakeDrive:
         self.next_id = 0
         self.puts = 0
         self.single = 0  # small files uploaded in one request
+        self.trashed = []
         self.lock = threading.RLock()
 
     def _new_id(self):
@@ -101,12 +103,12 @@ class FakeDrive:
         return fid
 
     def tree(self, root):
-        """{path: bytes} of files under root, like files_under() on disk."""
+        """{path: bytes} of files under root, like files_under() on disk (trash left out)."""
         out = {}
 
         def walk(fid, prefix):
             for cid, item in self.items.items():
-                if item["parent"] == fid:
+                if item["parent"] == fid and not item.get("trashed"):
                     path = f"{prefix}{item['name']}"
                     if item["folder"]:
                         walk(cid, path + "/")
@@ -142,14 +144,23 @@ class FakeDrive:
             parent = re.search(r"'([^']+)' in parents", q["q"][0]).group(1)
             only_folders = "mimeType='application/vnd.google-apps.folder'" in q["q"][0]
             files = [{"id": i, "name": it["name"], "mimeType": gdrive.FOLDER_MIME if it["folder"] else "text/plain",
-                      **({} if it["folder"] else {"size": str(len(it["data"]))})}
-                     for i, it in self.items.items() if it["parent"] == parent and (it["folder"] or not only_folders)]
+                      **({} if it["folder"] else {"size": str(len(it["data"])),
+                                                  "md5Checksum": hashlib.md5(it["data"]).hexdigest()})}
+                     for i, it in self.items.items()
+                     if it["parent"] == parent and not it.get("trashed") and (it["folder"] or not only_folders)]
             return resp(200, {"files": sorted(files, key=lambda f: f["name"])})
         if method == "POST" and u.path.endswith("/drive/v3/files") and "uploadType" not in q:
             meta = json.loads(body)
             if meta["parents"][0] != "root" and meta["parents"][0] not in self.items:
                 return resp(404, {"error": {"message": "File not found"}})
             return resp(200, {"id": self.add_folder(meta["name"], meta["parents"][0]), "name": meta["name"]})
+        if method == "PATCH" and "uploadType" not in q:  # e.g. move to the trash
+            fid = u.path.rsplit("/", 1)[1]
+            if fid not in self.items:
+                return resp(404, {"error": {"message": "File not found"}})
+            self.items[fid].update(json.loads(body))
+            self.trashed.append(fid)
+            return resp(200, {"id": fid})
         if q.get("uploadType") == ["multipart"]:  # one request: metadata and content
             self.single += 1
             boundary = headers["Content-Type"].split("boundary=")[1].encode()
@@ -321,6 +332,18 @@ def test_small_files_go_up_in_one_request(tmp_path):
     h = tmp_path / "c.png"
     h.write_bytes(b"cc")
     assert fake.items[d.upload(h, "root")]["data"] == b"cc"
+
+
+def test_lost_reply_never_mistakes_a_leftover_for_the_new_file(tmp_path):
+    fake = FakeDrive()
+    d = client(fake, chunk=gdrive.CHUNK)
+    f = tmp_path / "a.png"
+    f.write_bytes(b"new!")
+    leftover = d.upload(f, "root")
+    f.write_bytes(b"NEW!")  # same name and size, other content
+    fake.faults = [("POST", "network")]  # dropped before it got there
+    fid = d.upload(f, "root", not_ids=[leftover])
+    assert fid != leftover and fake.items[fid]["data"] == b"NEW!"
 
 
 # ---- extracting to Drive ------------------------------------------------------------------------------

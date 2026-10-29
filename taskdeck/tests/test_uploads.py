@@ -30,7 +30,7 @@ class FakeDrive:
         self.running = self.peak = 0
         self.order = []
 
-    def upload(self, path, parent, name, progress=None, replace=None):
+    def upload(self, path, parent, name, progress=None, replace=None, not_ids=()):
         with self.lock:
             self.running += 1
             self.peak = max(self.peak, self.running)

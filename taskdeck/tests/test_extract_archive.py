@@ -375,10 +375,23 @@ def test_drive_rerun_skips_files_already_uploaded(tmp_path):
     del fake.items[by_name["readme.txt"]]  # never got there
     single = fake.single
 
+    old_big = by_name["big.txt"]
     second = run()
     assert second.status == DONE, second.message
     assert second.message.startswith("Uploaded 2 files") and "Skipped 1 already there" in second.message
     assert fake.tree(root) == CONTENT and fake.single == single + 2
+    assert fake.trashed == [old_big]  # the broken leftover: a fresh copy, then the leftover to the trash
+
+    # same size, different bytes (a corrupt copy) and a duplicate of a good one
+    by_name = {it["name"]: i for i, it in fake.items.items() if not it["folder"] and not it.get("trashed")}
+    fake.items[by_name["a.txt"]]["data"] = b"note b\n"  # same length as "note a\n"
+    readme = fake.items[by_name["readme.txt"]]
+    fake.items["dup"] = dict(readme)  # a second "readme.txt" next to it
+    third = run()
+    assert third.status == DONE, third.message
+    assert third.message.startswith("Uploaded 1 file ")
+    assert fake.tree(root) == CONTENT  # exactly one of each, the right content
+    assert by_name["a.txt"] in fake.trashed and len(fake.trashed) == 3
     assert second.phases[1].complete
 
 

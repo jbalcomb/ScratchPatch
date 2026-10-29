@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, ClassVar, Iterable
 
+from .copying import JobNature
 from .pipeline import Context, Pipeline, ProgressFn, RunReport, StepError
 
 log = logging.getLogger(__name__)
@@ -171,6 +172,9 @@ class JobPlugin:
     settings_actions: ClassVar[tuple[SettingsAction, ...]] = ()
     # Use another job's stored settings (same fields) instead of keeping a separate copy.
     settings_from: ClassVar[str] = ""
+    # Jobs that copy files somewhere declare which kind of copy they are; it decides what happens to a
+    # same-named file already at the destination (see taskdeck.core.copying and docs/JOB_KINDS.md).
+    nature: ClassVar[JobNature | None] = None
     run_label: ClassVar[str] = "Run"
     # Two-phase jobs: the pipeline must be side-effect free and produce a preview whose
     # ``Result.payload`` is passed to :meth:`commit` once the user confirms.

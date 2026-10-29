@@ -6,6 +6,7 @@ With the ``drive.file`` scope TaskDeck only sees folders and files it created it
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -16,7 +17,9 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Collection
+
+from taskdeck.core.copying import Existing
 
 from . import http
 
@@ -228,17 +231,23 @@ class DriveClient:
 
     def children(self, parent: str) -> tuple[dict[str, str], dict[str, str]]:
         """(folders, files) directly in parent, as name -> id (TaskDeck's own only, with drive.file)."""
-        folders, files = self.children_sized(parent)
-        return folders, {name: fid for name, (fid, _size) in files.items()}
+        folders, files = self.children_files(parent)
+        return folders, {name: copies[0].id for name, copies in files.items()}
 
     def children_sized(self, parent: str) -> tuple[dict[str, str], dict[str, tuple[str, int]]]:
         """(folders as name -> id, files as name -> (id, size in bytes))."""
+        folders, files = self.children_files(parent)
+        return folders, {name: (copies[0].id, copies[0].size) for name, copies in files.items()}
+
+    def children_files(self, parent: str) -> tuple[dict[str, str], dict[str, list[Existing]]]:
+        """(folders as name -> id, files as name -> every copy with that name: id, size, MD5 checksum).
+        Drive allows several files with the same name in a folder."""
         q = f"trashed=false and '{parent}' in parents"
         folders: dict[str, str] = {}
-        files: dict[str, tuple[str, int]] = {}
+        files: dict[str, list[Existing]] = {}
         page = ""
         while True:
-            params = {"q": q, "fields": "nextPageToken,files(id,name,mimeType,size)", "pageSize": "1000"}
+            params = {"q": q, "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum)", "pageSize": "1000"}
             if page:
                 params["pageToken"] = page
             resp = self._call("GET", f"{API}?{urllib.parse.urlencode(params)}")
@@ -248,11 +257,19 @@ class DriveClient:
             for f in data.get("files", []):
                 if f.get("mimeType") == FOLDER_MIME:
                     folders[f["name"]] = f["id"]
-                else:
-                    files[f["name"]] = (f["id"], int(f.get("size") or -1))  # Google Docs have no size
+                else:  # Google Docs have no size or checksum
+                    files.setdefault(f["name"], []).append(
+                        Existing(f["id"], int(f.get("size") or -1), f.get("md5Checksum", "")))
             page = data.get("nextPageToken", "")
             if not page:
                 return folders, files
+
+    def trash(self, file_id: str) -> None:
+        """Move a file to Drive's trash (recoverable there for 30 days). Already gone is fine."""
+        resp = self._call("PATCH", f"{API}/{file_id}?fields=id", json.dumps({"trashed": True}).encode(),
+                          {"Content-Type": "application/json; charset=UTF-8"})
+        if not resp.ok and resp.status != 404:
+            raise _explain(resp, "move a leftover copy to the trash")
 
     def create_folder(self, name: str, parent: str = ROOT) -> Folder:
         body = json.dumps({"name": name, "mimeType": FOLDER_MIME, "parents": [parent]}).encode()
@@ -265,13 +282,15 @@ class DriveClient:
     # ---- uploads -------------------------------------------------------------------------
 
     def upload(self, path: Path, parent: str, name: str | None = None,
-               progress: Callable[[int], bool] | None = None, replace: str | None = None) -> str:
+               progress: Callable[[int], bool] | None = None, replace: str | None = None,
+               not_ids: Collection[str] = ()) -> str:
         """Upload a file (resumable, in pieces); with ``replace`` (a file id) its content is replaced instead.
-        progress(bytes sent) returns True to cancel. Returns the file id."""
+        progress(bytes sent) returns True to cancel. Returns the file id. ``not_ids``: same-named files
+        already there (e.g. leftovers), never to be mistaken for this upload."""
         size = os.path.getsize(path)
         name = name or path.name
         if size <= min(SMALL, self.chunk):
-            return self._upload_small(path, parent, name, size, progress, replace)
+            return self._upload_small(path, parent, name, size, progress, replace, not_ids)
         session = self._start_session(name, parent, size, replace)
         offset, restarts, failures = 0, 0, 0
         with open(path, "rb") as fh:
@@ -315,7 +334,8 @@ class DriveClient:
                 raise _explain(resp, f"upload “{name}”")
 
     def _upload_small(self, path: Path, parent: str, name: str, size: int,
-                      progress: Callable[[int], bool] | None, replace: str | None) -> str:
+                      progress: Callable[[int], bool] | None, replace: str | None,
+                      not_ids: Collection[str] = ()) -> str:
         """One request instead of two (session + content): most of the time for small files is per request."""
         data = path.read_bytes()
         if replace:  # new content for an existing file: safe to simply send again after a failure
@@ -342,7 +362,7 @@ class DriveClient:
                     raise
                 attempt += 1
                 if not replace:  # the file may have been created before the connection dropped
-                    found = self._find_file(name, parent, size)
+                    found = self._find_file(name, parent, size, data, not_ids)
                     if found:
                         return found
                 continue
@@ -356,11 +376,14 @@ class DriveClient:
                 continue
             raise _explain(resp, f"upload “{name}”")
 
-    def _find_file(self, name: str, parent: str, size: int) -> str | None:
-        """The id of a file with this name and size in parent, if there is one."""
-        _, files = self.children_sized(parent)
-        fid, found_size = files.get(name, (None, -1))
-        return fid if fid and found_size == size else None
+    def _find_file(self, name: str, parent: str, size: int, data: bytes, not_ids: Collection[str] = ()) -> str | None:
+        """The id of a file with this name and content in parent (other than ``not_ids``), if there is one."""
+        _, files = self.children_files(parent)
+        md5 = hashlib.md5(data).hexdigest()
+        for f in files.get(name, []):
+            if f.id not in not_ids and f.size == size and f.md5 in (md5, ""):
+                return f.id
+        return None
 
     def _start_session(self, name: str, parent: str, size: int, replace: str | None = None) -> str:
         if replace:  # new content for an existing file (same id, same place)

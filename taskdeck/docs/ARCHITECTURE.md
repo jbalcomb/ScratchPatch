@@ -44,6 +44,10 @@ Python values and raises `StepError` with a message the user can act on.
 `quick_actions` are presets: each one becomes its own palette entry that opens the job with inputs
 pre-filled.
 
+Jobs that copy files somewhere set `nature` to `JobNature.ONE_TIME_COPY` (a fixed snapshot, e.g. an
+archive: mismatching files there are broken leftovers, uploaded fresh) or `JobNature.ONGOING_SYNC` (files
+that keep changing: older versions are updated in place). See [JOB_KINDS.md](JOB_KINDS.md).
+
 ## Pipeline (`core/pipeline.py`)
 
 A `Pipeline` is an ordered list of `Step`s that share a `Context`:

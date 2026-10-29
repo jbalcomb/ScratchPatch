@@ -65,6 +65,8 @@ This creates `src/taskdeck/jobs/word_freq/__init__.py`. Fill in the fields and s
 Planned work: [TODO.md](TODO.md).
 
 Saving to Google Drive needs a one-time setup: [docs/GOOGLE_DRIVE_SETUP.md](docs/GOOGLE_DRIVE_SETUP.md).
+Jobs that copy files are either a one-time copy of a fixed snapshot or an ongoing sync, and that decides what
+happens to files already there: [docs/JOB_KINDS.md](docs/JOB_KINDS.md).
 
 Credentials (settings marked `secret=True`) are kept in a vault your fingerprint unlocks: see
 [docs/CREDENTIALS.md](docs/CREDENTIALS.md).

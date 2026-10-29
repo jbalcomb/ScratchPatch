@@ -33,7 +33,9 @@ LARGE = 2  # large-file uploads at once
 ADJUST_EVERY = 30.0  # seconds between adjustments of the fast lane
 SLOWER = 2.0  # each file this many times slower than the best seen so far counts as "too many at once"
 
-Item = tuple  # (local path, parent folder id, name, path in the archive, size, id to replace or None)
+# (local path, parent folder id, name, path in the archive, size, id to replace in place or None,
+#  ids of leftover copies to move to the trash once this one is uploaded)
+Item = tuple
 
 
 class Interrupted(Exception):
@@ -106,7 +108,7 @@ class Uploads:
         me = threading.get_ident()
         with http.scope(**scope):
             while (item := self._take(big)) is not None:
-                local, parent_id, name, rel, size, replace = item
+                local, parent_id, name, rel, size, replace, trash = (tuple(item) + ((),))[:7]
 
                 if big:
                     self.big_in_flight[me] = (size, 0)
@@ -118,7 +120,9 @@ class Uploads:
 
                 started = self.clock()
                 try:
-                    self.drive.upload(local, parent_id, name, progress=progress, replace=replace)
+                    self.drive.upload(local, parent_id, name, progress=progress, replace=replace, not_ids=trash)
+                    for leftover in trash:  # only after the fresh copy is safely in Drive
+                        self.drive.trash(leftover)
                 except BaseException as exc:  # noqa: BLE001 - handed to the task thread
                     with self.lock:
                         self.errors.append(exc)
@@ -128,7 +132,8 @@ class Uploads:
                         self.lock.notify_all()
                     return
                 secs = self.clock() - started
-                self.task.log("file", path=str(rel), bytes=size, secs=round(secs, 3), replaced=bool(replace))
+                self.task.log("file", path=str(rel), bytes=size, secs=round(secs, 3), replaced=bool(replace),
+                              trashed=len(trash))
                 local.unlink()  # free the space as we go
                 with self.lock:
                     self.count += 1

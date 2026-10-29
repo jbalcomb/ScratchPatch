@@ -47,6 +47,7 @@ class ExtractArchive(JobPlugin):
         Field.text("password", "Password (if encrypted)", secret=True),
     )
     settings = (WIFI_ONLY,)  # only matters when extracting to Google Drive
+    nature = logic.NATURE  # a one-time copy of a fixed snapshot (taskdeck.core.copying)
     run_label = "Extract"
 
     def check_ready(self, settings):
