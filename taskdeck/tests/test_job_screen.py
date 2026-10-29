@@ -123,3 +123,37 @@ def test_job_without_inputs_and_shared_settings(tmp_path):
     screen = JobScreen(fake_app(tmp_path), reconcile_job.PLUGIN)
     assert screen.fields == {}
     assert reconcile_job.PLUGIN.settings_id == "daily_log"
+
+
+def test_background_task_shows_its_progress_and_outcome(tmp_path):
+    """A job that hands long work to a background task (Parse executable's Drive upload) gets Extract
+    Archive's progress: a bar per phase while it runs (Run disabled), then the outcome with Open in Drive."""
+    import flet as ft
+
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+    from taskdeck.shared.gdrive import DriveLocation, Folder
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    seen = {}
+
+    def work(t):
+        t.set_phases(("Checking what's already in Google Drive", 3, "files"), ("Uploading to Google Drive", 3, "files"))
+        t.advance(1, 1)
+        t.result = DriveLocation().child(Folder("f1", "GAME.EXE"))
+        seen["running"] = [c.value for c in screen.task_box.controls if isinstance(c, ft.Text)]
+        seen["run_disabled"] = screen.blocked
+        return "Uploaded 3 files to Google Drive › My Drive › GAME.EXE."
+
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    task = screen._start_task("Uploading GAME.EXE to Google Drive", work)
+    assert task.status == "done"
+    assert "Uploading GAME.EXE to Google Drive" in seen["running"] and seen["run_disabled"]
+    card = screen.task_box.controls[0].content.controls
+    assert card[0].controls[1].value == task.message
+    assert [b.content for b in card[1].controls] == ["Open in Drive", "Close"]
+    assert not screen.blocked
+    screen.dismiss_task()
+    assert screen.task_box.controls == []

@@ -38,6 +38,13 @@ SLOWER = 2.0  # each file this many times slower than the best seen so far count
 Item = tuple
 
 
+PAUSED = "Paused: no connection. Open TaskDeck to continue."  # the task's note while the network is gone
+
+
+def were_uploaded(count: int) -> str:
+    return "1 file was uploaded" if count == 1 else f"{count:,} files were uploaded"
+
+
 class Interrupted(Exception):
     """The uploads stopped (cancel or error) after ``count`` files / ``sent`` bytes."""
 

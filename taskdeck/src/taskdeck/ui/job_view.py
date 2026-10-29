@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from taskdeck.core import Context, JobPlugin, Problem, RunReport, Stage
+from taskdeck.core import Context, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.shared.gdrive import DriveLocation
 
+from . import task_view
 from .common import plugin_icon, screen_view
 from .forms import FieldControl
 
@@ -54,6 +56,13 @@ class JobScreen:
         self.status = ft.Text("Restored what you entered last time." if restored else "", size=12,
                               color=ft.Colors.ON_SURFACE_VARIANT)
         self.output = ft.Column(spacing=8)
+        # Long work a job handed to a background task (e.g. a Google Drive upload): its progress, then outcome.
+        self.task_box = ft.Column(spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        tasks = getattr(app, "tasks", None)
+        latest = tasks.latest(plugin.id) if tasks else None
+        self.task: Task | None = latest if latest and latest.running else None
+        if tasks:
+            tasks.listeners.append(self._on_task)
         self.steps_list = ft.Column([self._step_row(s) for s in self.pipeline], spacing=2)
 
         self.pin_button = ft.IconButton(
@@ -84,6 +93,7 @@ class JobScreen:
                 self.progress,
                 ft.Semantics(content=self.status, live_region=True),
                 ft.Semantics(content=self.output, live_region=True),
+                self.task_box,
                 ft.ExpansionTile(
                     title=ft.Text("Pipeline", size=14),
                     subtitle=ft.Text(" › ".join(s.value for s in self.pipeline.shape), size=12),
@@ -92,12 +102,13 @@ class JobScreen:
                 ),
             ],
         )
+        self._render_task()
 
     # ---- readiness ------------------------------------------------------------------
 
     @property
     def blocked(self) -> bool:
-        return self.checking or any(p.blocking for p in self.problems)
+        return self.checking or any(p.blocking for p in self.problems) or bool(self.task and self.task.running)
 
     def check_ready(self) -> None:
         """Run the job's checks: offline ones now, network ones in the background."""
@@ -239,7 +250,7 @@ class JobScreen:
         raw = self.raw_inputs()
         self.app.drafts.save(self.plugin.id, raw)
         generation = self.generation
-        self.ctx = Context({}, services=self.app.services())
+        self.ctx = Context({}, services={**self.app.services(), "start_task": self._start_task})
         self._set_running(True)
         steps = list(self.pipeline)
 
@@ -268,6 +279,66 @@ class JobScreen:
         self.app.history.add(self.plugin.id, report.ok, _summary(report), raw)
         self.app.on_history_changed()
         self.view.update()
+
+    # ---- background tasks ------------------------------------------------------------
+
+    def _start_task(self, title: str, work) -> Task:
+        """``Context.services["start_task"]``: run work(task) in the background under the job's Wi-Fi-only
+        setting, shown on this screen (and in the notification) like Extract Archive."""
+        network, settings_id = getattr(self.app, "network", None), self.plugin.settings_id
+
+        def run(t: Task) -> str:
+            if network is None:
+                return work(t)
+            with network.scope(settings_id, lambda: t.cancel_requested, t.set_note):  # Wi-Fi only
+                return work(t)
+
+        self.task = self.app.tasks.start(title, self.plugin.id, run, inputs=self.raw_inputs())
+        return self.task
+
+    def _on_task(self, task: Task) -> None:
+        if task.job_id != self.plugin.id or (self.task and task is not self.task and self.task.running):
+            return
+        self.task = task
+        self._render_task()
+        self._render_readiness()
+        self._update()
+
+    def _render_task(self) -> None:
+        t = self.task
+        if not t:
+            self.task_box.controls = []
+        elif t.running:
+            self.task_box.controls = task_view.running_rows(t, self.cancel_task)
+        else:
+            buttons: list[ft.Control] = [ft.TextButton("Close", on_click=self.dismiss_task)]
+            if isinstance(t.result, DriveLocation):
+                url = task_view.drive_url(t.result)
+                buttons.insert(0, ft.FilledTonalButton("Open in Drive", icon=ft.Icons.OPEN_IN_NEW,
+                                                       on_click=lambda e: self.app.open_url(url)))
+            self.task_box.controls = [task_view.finished_card(t, buttons)]
+
+    def cancel_task(self, e=None) -> None:
+        task = self.task
+        if not task or not task.running:
+            return
+
+        def stop(e=None):
+            self.app.page.pop_dialog()
+            self.app.tasks.cancel(task)
+
+        self.app.page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"Stop {task.title[:1].lower()}{task.title[1:]}?"),
+            content=ft.Text("What's already done stays."),
+            actions=[ft.TextButton("Keep going", on_click=lambda e: self.app.page.pop_dialog()),
+                     ft.FilledButton("Stop", on_click=stop)]))
+
+    def dismiss_task(self, e=None) -> None:
+        if self.task and not self.task.running:
+            self.app.tasks.forget(self.task)
+            self.task = None
+        self._render_task()
+        self._update()
 
     def _network_scoped(self, fn, ctx):
         """fn, run under the job's Wi-Fi-only setting (in the worker thread): network requests wait for Wi-Fi,

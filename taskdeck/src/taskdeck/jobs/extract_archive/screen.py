@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING
 import flet as ft
 
 from taskdeck.core import Task
-from taskdeck.core.tasks import CANCELLED, DONE, FAILED
+from taskdeck.core.tasks import DONE
 from taskdeck.shared import files
-from taskdeck.shared.gdrive import ROOT, DriveLocation
-from taskdeck.ui import file_access
+from taskdeck.shared.gdrive import DriveLocation
+from taskdeck.ui import file_access, task_view
 from taskdeck.ui.common import plugin_icon, screen_view, section_title
 from taskdeck.ui.file_browser import FileBrowser
 
@@ -332,88 +332,23 @@ class ExtractScreen:
             self.progress_box.controls = []
             return
         if t.running:
-            if t.phases:  # e.g. Unpacking, then Uploading to Google Drive: one bar each
-                lines = [ft.Text(t.title, weight=ft.FontWeight.W_600, max_lines=2)]
-                for phase in t.phases:
-                    lines += _phase_rows(phase, active=phase is t.current_phase)
-            else:
-                pct = f" {t.fraction * 100:.0f}%" if t.fraction is not None else ""
-                lines = [ft.Text(f"Extracting…{pct}", weight=ft.FontWeight.W_600),
-                         ft.ProgressBar(value=t.fraction),
-                         ft.Text(f"{files.human_size(t.done)} of {files.human_size(t.total)}{_speed(t)}"
-                                 if t.total else "Starting…")]
-                eta = t.eta()
-                if eta is not None:
-                    lines.append(ft.Text(f"{files.human_duration(eta)} left".capitalize(),
-                                         color=ft.Colors.ON_SURFACE_VARIANT))
-            if t.note and not t.cancel_requested:
-                lines.append(ft.Row([ft.Icon(ft.Icons.CLOUD_OFF, size=18, color=ft.Colors.ERROR),
-                                     ft.Text(t.note, expand=True, color=ft.Colors.ERROR)]))
-            if t.cancel_requested:
-                lines.append(ft.Text("Stopping…", color=ft.Colors.ON_SURFACE_VARIANT))
-            lines += [ft.Row([ft.OutlinedButton("Cancel", icon=ft.Icons.STOP, on_click=self.cancel,
-                                                disabled=t.cancel_requested)]),
-                      ft.Text("You can keep using TaskDeck.", size=13, color=ft.Colors.ON_SURFACE_VARIANT)]
-            self.progress_box.controls = lines
+            self.progress_box.controls = task_view.running_rows(t, self.cancel, heading="Extracting…")
             return
-        color = {DONE: ft.Colors.PRIMARY_CONTAINER, FAILED: ft.Colors.ERROR_CONTAINER}.get(t.status, ft.Colors.SURFACE_CONTAINER_HIGH)
-        icon = {DONE: ft.Icons.CHECK_CIRCLE, FAILED: ft.Icons.ERROR_OUTLINE, CANCELLED: ft.Icons.STOP_CIRCLE}[t.status]
         buttons = [ft.TextButton("Close", on_click=self.dismiss)]
         if t.status == DONE and isinstance(t.result, Path):
             buttons.insert(0, ft.FilledTonalButton("Show files", icon=ft.Icons.FOLDER_OPEN,
                                                    on_click=lambda e: FileBrowser.show(self.app, t.result, self.set_archive)))
         elif t.status == DONE and isinstance(t.result, DriveLocation):
-            fid = t.result.folder_id
-            url = "https://drive.google.com/drive/my-drive" if fid == ROOT else f"https://drive.google.com/drive/folders/{fid}"
+            url = task_view.drive_url(t.result)
             buttons.insert(0, ft.FilledTonalButton("Open in Drive", icon=ft.Icons.OPEN_IN_NEW,
                                                    on_click=lambda e: self.app.open_url(url)))
-        self.progress_box.controls = [ft.Container(ft.Column([
-            ft.Row([ft.Icon(icon), ft.Text(t.message, expand=True, selectable=True)]),
-            ft.Row(buttons, wrap=True),
-        ], spacing=8), bgcolor=color, border_radius=12, padding=12)]
+        self.progress_box.controls = [task_view.finished_card(t, buttons)]
 
     def dismiss(self, e=None) -> None:
         if self.task and not self.task.running:
             self.app.tasks.forget(self.task)
             self.task = None
         self.render()
-
-
-def _speed(progress) -> str:
-    """The current speed of a Task or Phase as " · 1.2 MB/s", or nothing until it is known."""
-    speed = progress.speed()
-    return "" if speed is None else f" · {files.human_speed(speed)}"
-
-
-def _phase_rows(phase, active: bool) -> list[ft.Control]:
-    """A phase's label and state, its bar, and (while it runs) size and time left."""
-    if phase.complete:
-        state = "✓ Done"
-    elif active and phase.started is not None and not phase.total:
-        state = "…"  # total not known yet (e.g. still checking what's already in Drive)
-    elif active and phase.started is not None:
-        state = f"{(phase.fraction or 0) * 100:.0f}%"
-    else:
-        state = "Waiting"
-    rows: list[ft.Control] = [
-        ft.Row([ft.Text(phase.label, expand=True, weight=ft.FontWeight.W_500 if active else None),
-                ft.Text(state, color=ft.Colors.ON_SURFACE_VARIANT)]),
-        ft.ProgressBar(value=phase.fraction if phase.started is not None or phase.complete else 0),
-    ]
-    if active and phase.started is not None and phase.unit == "files":
-        speed = phase.speed()
-        line = f"{phase.done:,} of {phase.total:,} files" + (f" · {files.human_rate(speed)}" if speed else "")
-        eta = phase.eta()
-        if eta is not None:
-            line += f" · {files.human_duration(eta)} left"
-        rows.append(ft.Text(line, size=13, color=ft.Colors.ON_SURFACE_VARIANT))
-    elif active and phase.started is not None:
-        line = f"{files.human_size(phase.done)} of {files.human_size(phase.total)}{_speed(phase)}"
-        eta = phase.eta()
-        if eta is not None:
-            line += f" · {files.human_duration(eta)} left"
-        rows.append(ft.Text(line, size=13, color=ft.Colors.ON_SURFACE_VARIANT))
-    return rows
 
 
 def _notice(lines: list[str]) -> ft.Control:

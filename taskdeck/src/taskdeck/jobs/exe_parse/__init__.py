@@ -12,8 +12,8 @@ optionally a mirror of it in Google Drive. See docs/jobs/exe_parse.md.
 
 from pathlib import Path
 
-from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, step
-from taskdeck.shared import files, gdrive, google_oauth, http, steps
+from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
+from taskdeck.shared import files, steps
 
 from . import drive, formats, layout
 
@@ -67,15 +67,23 @@ def write(ctx):
         raise StepError(f"Couldn't write {files.display_path(ctx['dest'])}: {exc.strerror or exc}") from None
 
 
-@step(Stage.EXECUTE, name="push to Google Drive")
+@step(Stage.EXECUTE, name="start the Google Drive upload")
 def push(ctx):
     if not ctx.get("drive"):
         return
     folder = ctx.settings.get("drive_folder") or "/".join(OUTPUT_FOLDER)
-    try:
-        ctx["drive_result"] = drive.push(ctx.services["google_drive"](), ctx["dest"], folder,
-                                         cancelled=lambda: ctx._cancelled)
-    except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError) as exc:
+    client, dest = ctx.services["google_drive"](), ctx["dest"]
+
+    def work(task: Task) -> str:
+        return drive.push(task, client, dest, folder)
+
+    start = ctx.services.get("start_task")
+    if start:  # in the app: a background task with its own progress (and notification), like Extract Archive
+        ctx["upload_task"] = start(f"Uploading {dest.name} to Google Drive", work)
+        return
+    try:  # no app (tests, scripts): upload now
+        ctx["upload_message"] = work(Task(0, "upload", "exe_parse"))
+    except RuntimeError as exc:
         raise StepError(f"Saved on the phone, but the Google Drive upload stopped: {exc}") from None
 
 
@@ -91,11 +99,10 @@ def present(ctx):
             "Saved to": files.display_path(ctx["dest"])}
     if exe.entry:
         rows["Entry point"] = exe.entry[1]
-    if ctx.get("drive_result"):
-        location, sent, skipped, trashed = ctx["drive_result"]
-        rows["Google Drive"] = location.display()
-        rows["Uploaded"] = f"{sent:,} new or changed, {skipped:,} already there" + (
-            f", {trashed:,} stale moved to trash" if trashed else "")
+    if ctx.get("upload_task"):
+        rows["Google Drive"] = "Uploading in the background: progress below."
+    elif ctx.get("upload_message"):
+        rows["Google Drive"] = ctx["upload_message"]
     ctx["result_rows"] = rows
     steps.present_rows("result_rows", title=f"Parsed {exe.format}")(ctx)
     if exe.warnings:

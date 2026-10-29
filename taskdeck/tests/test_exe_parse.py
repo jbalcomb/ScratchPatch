@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from taskdeck.core import Context, Pipeline
+from taskdeck.core import Cancelled, Context, Task, TaskManager
+from taskdeck.core.tasks import DONE
 from taskdeck.jobs import exe_parse
 from taskdeck.jobs.exe_parse import drive, formats, layout
-from taskdeck.core.copying import Existing, md5_of
+from taskdeck.core.copying import Existing
+from taskdeck.shared import gdrive
 
 
 def dos_exe(overlay: bytes = b"FBOV" + b"\x00" * 60) -> bytes:
@@ -259,38 +261,74 @@ class FakeDrive:
         return out
 
 
+def new_task() -> Task:
+    return Task(0, "upload", "exe_parse")
+
+
 def test_push_mirrors_the_folder_and_skips_what_is_there(tmp_path):
     _, out = run_job(tmp_path, dos_exe())
-    fake = FakeDrive()
-    location, sent, skipped, trashed = drive.push(fake, out, "TaskDeck/Executables")
+    fake, task = FakeDrive(), new_task()
+    message = drive.push(task, fake, out, "TaskDeck/Executables")
     local = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
-    assert location.display() == "Google Drive › My Drive › TaskDeck › Executables › GAME.EXE"
+    assert task.result.display() == "Google Drive › My Drive › TaskDeck › Executables › GAME.EXE"
+    assert message.startswith(f"Uploaded {len(local)} files") and "Skipped" not in message
     assert fake.tree() == {"TaskDeck/Executables/GAME.EXE/" + p for p in local}
-    assert (sent, skipped, trashed) == (len(local), 0, 0)
     assert all(p.is_file() for p in (out / f for f in local))  # the local folder is kept
+    checking, uploading = task.phases
+    assert (checking.done, checking.total, uploading.done, uploading.total) == (len(local),) * 4
 
-    fake.uploads = 0
-    _, sent, skipped, _ = drive.push(fake, out, "TaskDeck/Executables")
-    assert (sent, skipped, fake.uploads) == (0, len(local), 0)
+    fake.uploads, task = 0, new_task()
+    message = drive.push(task, fake, out, "TaskDeck/Executables")
+    assert fake.uploads == 0 and f"Skipped {len(local)} already there" in message
+    assert task.phases[1].label == f"Uploading to Google Drive ({len(local)} already there)"
 
 
 def test_push_trashes_chunks_of_an_earlier_parse(tmp_path):
     fake = FakeDrive()
     _, out = run_job(tmp_path, dos_exe(overlay=b"FBOV" + bytes(3000)))
-    drive.push(fake, out, "X")
+    drive.push(new_task(), fake, out, "X")
     run_job(tmp_path, dos_exe(overlay=b"FBOV" + bytes(3000)), chunk="4 KB")
-    _, sent, _, trashed = drive.push(fake, out, "X")
+    message = drive.push(new_task(), fake, out, "X")
     local = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
-    assert trashed > 0 and fake.tree() == {"X/GAME.EXE/" + p for p in local}
+    assert "left from an earlier parse to the trash" in message
+    assert fake.tree() == {"X/GAME.EXE/" + p for p in local}
 
 
-def test_job_pushes_with_the_apps_drive_client(tmp_path):
+def test_push_cancel_and_errors_say_what_was_uploaded(tmp_path):
+    _, out = run_job(tmp_path, dos_exe())
+    task = new_task()
+    task.cancel_requested = True
+    with pytest.raises(Cancelled, match="Stopped. 0 files were uploaded"):
+        drive.push(task, FakeDrive(), out, "X")
+
+    class Broken(FakeDrive):
+        def upload(self, *a, **kw):
+            raise gdrive.DriveError("Your Google Drive is full.")
+
+    with pytest.raises(RuntimeError, match="Your Google Drive is full"):
+        drive.push(new_task(), Broken(), out, "X")
+
+
+def test_job_pushes_in_a_background_task_in_the_app(tmp_path):
+    src = tmp_path / "GAME.EXE"
+    src.write_bytes(dos_exe())
+    fake, manager = FakeDrive(), TaskManager(start_thread=lambda fn: fn())
+    ctx = Context({}, services={"google_drive": lambda: fake,
+                                "start_task": lambda title, work: manager.start(title, "exe_parse", work)})
+    report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
+    assert report.ok, report.error
+    assert dict(report.result.rows)["Google Drive"].startswith("Uploading in the background")
+    task = manager.latest("exe_parse")
+    assert task.status == DONE and task.title == "Uploading GAME.EXE to Google Drive"
+    assert task.result.display().endswith("TaskDeck › Executables › GAME.EXE")
+    assert any(p.startswith("TaskDeck/Executables/GAME.EXE/regions/") for p in fake.tree())
+
+
+def test_job_uploads_right_away_without_the_app(tmp_path):
     src = tmp_path / "GAME.EXE"
     src.write_bytes(dos_exe())
     fake = FakeDrive()
     ctx = Context({}, services={"google_drive": lambda: fake})
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
     assert report.ok, report.error
-    rows = dict(report.result.rows)
-    assert rows["Google Drive"].endswith("TaskDeck › Executables › GAME.EXE")
-    assert any(p.startswith("TaskDeck/Executables/GAME.EXE/regions/") for p in fake.tree())
+    assert dict(report.result.rows)["Google Drive"].startswith("Uploaded")

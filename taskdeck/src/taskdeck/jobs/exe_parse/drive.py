@@ -5,89 +5,101 @@ file with the same content is already done and skipped (parsing again and pushin
 changed), and a different one is a leftover, uploaded fresh. Unlike Extract Archive, files and folders in
 Drive that the local folder no longer has (e.g. chunks of an earlier parse with another chunk size) go to
 Drive's trash, so the agent never reads a stale chunk.
+
+Runs as a background task (taskdeck.core.tasks) with two phases, like Extract Archive's upload:
+checking what's already in Drive, then uploading (several files at once, see shared.drive_uploads).
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Callable
 
 from taskdeck.core import Cancelled, JobNature, Task, copying
-from taskdeck.shared import drive_uploads, gdrive
+from taskdeck.shared import drive_uploads, files, gdrive, google_oauth, http
 from taskdeck.shared.gdrive import DriveLocation
 
 NATURE = JobNature.ONE_TIME_COPY
 
 
-class _JobTask(Task):
-    """A Task for the uploader, cancelled with the job's own Cancel button (the pipeline's context)."""
-
-    def __init__(self, cancelled: Callable[[], bool]):
-        self._is_cancelled = cancelled
-        super().__init__(0, "push to Google Drive", "exe_parse")
-
-    @property
-    def cancel_requested(self) -> bool:
-        return self._is_cancelled()
-
-    @cancel_requested.setter
-    def cancel_requested(self, _value: bool) -> None:
-        pass  # Task's __init__ sets it; the context decides
-
-
-def folder(drive: gdrive.DriveClient, path: str) -> DriveLocation:
+def folder(client: gdrive.DriveClient, path: str) -> DriveLocation:
     """The Drive folder at ``path`` ("TaskDeck/Executables"), under My Drive, created where missing."""
     location = DriveLocation()
     for name in (p.strip() for p in path.replace("\\", "/").split("/")):
         if name:
-            folders, _ = drive.children(location.folder_id)
+            folders, _ = client.children(location.folder_id)
             found = folders.get(name)
-            location = location.child(gdrive.Folder(found, name) if found else drive.create_folder(name, location.folder_id))
+            location = location.child(gdrive.Folder(found, name) if found else client.create_folder(name, location.folder_id))
     return location
 
 
-def push(drive: gdrive.DriveClient, local: Path, parent_path: str,
-         cancelled: Callable[[], bool] = lambda: False) -> tuple[DriveLocation, int, int, int]:
-    """Mirror ``local`` into ``parent_path``/<local's name> in Drive.
-    Returns (the folder, files uploaded, files already there, stale items trashed)."""
-    task = _JobTask(cancelled)
-    drive.keep_waiting = lambda: not cancelled()
-    parent = folder(drive, parent_path)
-    folders, _ = drive.children(parent.folder_id)
-    root = parent.child(gdrive.Folder(folders[local.name], local.name) if local.name in folders
-                        else drive.create_folder(local.name, parent.folder_id))
-    ids = {Path("."): root.folder_id}
-    todo, skipped, trashed = [], 0, 0
-    for dirpath, dirnames, filenames in os.walk(local):
-        if cancelled():
-            raise Cancelled()
-        dirnames.sort()
-        here = Path(dirpath).relative_to(local)
-        sub_folders, sub_files = drive.children_files(ids[here])
-        for d in dirnames:
-            ids[here / d] = sub_folders.get(d) or drive.create_folder(d, ids[here]).id
-        for gone in set(sub_folders) - set(dirnames):
-            drive.trash(sub_folders[gone])
-            trashed += 1
-        for gone in set(sub_files) - set(filenames):
-            for copy in sub_files[gone]:
-                drive.trash(copy.id)
-                trashed += 1
-        for f in sorted(filenames):
-            path = Path(dirpath) / f
-            size = path.stat().st_size
-            plan = copying.plan(NATURE, size, lambda p=path: copying.md5_of(p), sub_files.get(f, []))
-            if not plan.upload:
-                for leftover in plan.trash:
-                    drive.trash(leftover)
-                skipped += 1
-                continue
-            todo.append((path, ids[here], f, here / f, size, plan.replace, plan.trash))
+def push(task: Task, client: gdrive.DriveClient, local: Path, parent_path: str) -> str:
+    """Mirror ``local`` into ``parent_path``/<local's name> in Drive. Sets ``task.result`` to that folder
+    (for "Open in Drive") and returns the message for the finished task."""
+    local_files = sum(len(names) for _, _, names in os.walk(local))
+    task.set_phases(("Checking what's already in Google Drive", local_files, "files"),
+                    ("Uploading to Google Drive", 0, "files"))
+    # Android cuts the network of apps in the background: wait for it instead of failing.
+    client.keep_waiting = lambda: not task.cancel_requested
+    client.on_offline = lambda offline: task.set_note(drive_uploads.PAUSED if offline else "")
+    client.on_throttle = lambda wait, status: task.log("throttle", status=status, pause=round(wait, 1))
+    count = skipped = trashed = 0
+    target = "Google Drive"
     try:
-        count, _ = drive_uploads.upload_all(task, drive, todo, keep=True)
+        parent = folder(client, parent_path)
+        folders, _ = client.children(parent.folder_id)
+        found = folders.get(local.name)
+        root = parent.child(gdrive.Folder(found, local.name) if found else client.create_folder(local.name, parent.folder_id))
+        task.result, target = root, root.display()
+        ids = {Path("."): root.folder_id}
+        todo, checked = [], 0
+        for dirpath, dirnames, filenames in os.walk(local):
+            if task.cancel_requested:
+                raise gdrive.UploadCancelled()
+            dirnames.sort()
+            here = Path(dirpath).relative_to(local)
+            sub_folders, sub_files = client.children_files(ids[here])
+            for d in dirnames:
+                ids[here / d] = sub_folders.get(d) or client.create_folder(d, ids[here]).id
+            for gone in set(sub_folders) - set(dirnames):  # left from an earlier parse
+                client.trash(sub_folders[gone])
+                trashed += 1
+            for gone in set(sub_files) - set(filenames):
+                for copy in sub_files[gone]:
+                    client.trash(copy.id)
+                    trashed += 1
+            for f in sorted(filenames):
+                path = Path(dirpath) / f
+                size = path.stat().st_size
+                plan = copying.plan(NATURE, size, lambda p=path: copying.md5_of(p), sub_files.get(f, []))
+                checked += 1
+                task.advance(0, checked)
+                if not plan.upload:
+                    for leftover in plan.trash:
+                        client.trash(leftover)
+                    skipped += 1
+                    continue
+                todo.append((path, ids[here], f, here / f, size, plan.replace, plan.trash))
+        label = "Uploading to Google Drive" + (f" ({skipped:,} already there)" if skipped else "")
+        task.set_phase(1, label=label, total=len(todo))
+        task.log("plan", files=local_files, upload=len(todo), skipped=skipped, trashed=trashed)
+        count, sent = drive_uploads.upload_all(task, client, todo, keep=True)
     except drive_uploads.Interrupted as stop:
+        count = stop.count
         if isinstance(stop.error, (gdrive.UploadCancelled, Cancelled)):
-            raise Cancelled() from None
-        raise stop.error from None
-    return root, count, skipped, trashed
+            raise Cancelled(f"Stopped. {drive_uploads.were_uploaded(count)} to {target}.") from None
+        raise RuntimeError(f"{stop.error}{_before(count)}") from None
+    except (gdrive.UploadCancelled, Cancelled):  # Cancel, also while paused or waiting for Wi-Fi
+        raise Cancelled(f"Stopped. {drive_uploads.were_uploaded(count)} to {target}.") from None
+    except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
+        raise RuntimeError(f"{exc}{_before(count)}") from None
+    message = f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
+    if skipped:
+        message += f". Skipped {skipped:,} already there"
+    if trashed:
+        message += f". Moved {trashed:,} left from an earlier parse to the trash"
+    return message + "."
+
+
+def _before(count: int) -> str:
+    return f" {drive_uploads.were_uploaded(count)} before that." if count else ""

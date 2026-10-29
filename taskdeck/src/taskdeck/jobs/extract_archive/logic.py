@@ -139,7 +139,7 @@ def drive_problems(s: Scan, name: str | None, password: str, connected: bool, te
 # An archive is a fixed snapshot: extracting it to Drive is a one-time copy (see taskdeck.core.copying).
 NATURE = JobNature.ONE_TIME_COPY
 
-PAUSED = "Paused: no connection. Open TaskDeck to continue."
+PAUSED = uploads.PAUSED
 
 
 def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive.DriveClient,
@@ -210,17 +210,17 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     except uploads.Interrupted as stop:
         count, sent = stop.count, stop.sent
         if isinstance(stop.error, (gdrive.UploadCancelled, Cancelled)):
-            raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
-        done = f" {_were_uploaded(count)} before that." if count else ""
+            raise Cancelled(f"Stopped. {uploads.were_uploaded(count)} to {target}.") from None
+        done = f" {uploads.were_uploaded(count)} before that." if count else ""
         raise RuntimeError(f"{stop.error}{done}") from None
     except archive.ArchiveError as exc:
         if exc.code == archive.E_CANCELLED:
             raise Cancelled("Stopped before uploading anything.") from None
         raise RuntimeError(str(exc)) from None
     except (gdrive.UploadCancelled, Cancelled):  # Cancel, also while paused or waiting for Wi-Fi
-        raise Cancelled(f"Stopped. {_were_uploaded(count)} to {target}.") from None
+        raise Cancelled(f"Stopped. {uploads.were_uploaded(count)} to {target}.") from None
     except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
-        done = f" {_were_uploaded(count)} before that." if count else ""
+        done = f" {uploads.were_uploaded(count)} before that." if count else ""
         raise RuntimeError(f"{exc}{done}") from None
     finally:
         shutil.rmtree(temp, ignore_errors=True)
@@ -228,7 +228,3 @@ def extract_to_drive(task: Task, path: Path, password: str | None, drive: gdrive
     if skipped:
         message += f". Skipped {skipped:,} already there ({files.human_size(skipped_bytes)})."
     return message
-
-
-def _were_uploaded(count: int) -> str:
-    return "1 file was uploaded" if count == 1 else f"{count:,} files were uploaded"

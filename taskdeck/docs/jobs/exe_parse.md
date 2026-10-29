@@ -61,6 +61,13 @@ and the old one trashed. Unlike Extract Archive, files and folders in Drive the 
 (e.g. chunks from an earlier parse with another chunk size) are moved to Drive's trash too, so an agent never
 reads a stale chunk. Uploads reuse Extract Archive's parallel uploader (`taskdeck/shared/drive_uploads.py`).
 
+The upload runs as a **background task**, like Extract Archive's: the parse result shows right away, and
+below it a bar for *Checking what's already in Google Drive* and one for *Uploading to Google Drive* (files
+done, speed, time left), "Paused: no connection" while the network is gone, Cancel, the notification while
+TaskDeck is in the background, and **Open in Drive** when it's done. Run is disabled until it finishes. The
+generic job screen offers this to any job (`Context.services["start_task"]`); the widgets are shared with
+Extract Archive (`taskdeck/ui/task_view.py`).
+
 ## Decided
 
 * **Chunk size stays at 2 KB** (the default) until there's data on how the job performs and how well the
