@@ -216,7 +216,7 @@ def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inpu
     fc.input.update = lambda: None
     screen._browse_file(fc)
     assert opened["title"] == "Choose Executable"
-    assert opened["accept"]("WIZARDS.EXE") and opened["accept"]("x.dll") and not opened["accept"]("notes.txt")
+    assert opened["accept"]("WIZARDS.EXE") and opened["accept"]("x.ovl") and not opened["accept"]("x.dll")
     opened["on_pick"](tmp_path / "MOM" / "WIZARDS.EXE")
     assert fc.value == str(tmp_path / "MOM" / "WIZARDS.EXE")
     assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _WIZARDS.EXE"

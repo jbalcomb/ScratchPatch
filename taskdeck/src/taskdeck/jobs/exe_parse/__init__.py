@@ -1,161 +1,30 @@
-"""Parse Executable: split a DOS or Windows executable into small, labelled text files that an AI agent
+"""Parse Executable: split a DOS or Windows program into small, labelled text files that an AI agent
 doing reverse engineering can walk through or search one piece at a time.
 
 The output is a folder next to the executable, named like it with "_" in front (``_WIZARDS.EXE/``), with
 a summary and layout, a metadata file, decoded headers and tables, hex-dump chunks per region and the
-strings, and optionally a mirror of it in Google Drive. See docs/jobs/exe_parse.md.
-
-    formats.py   reads the headers (MZ, PE, NE; LE/LX detected) into regions and tables
-    layout.py    writes the folder
-    drive.py     mirrors the folder to Google Drive
+strings, and optionally a mirror of it in Google Drive. See docs/jobs/exe_parse.md. The work is shared
+with Parse DLL: ``taskdeck.shared.binaries``.
 """
 
-from pathlib import Path
+from taskdeck.shared.binaries import job
 
-from taskdeck.core import GOOGLE_ACCOUNT, WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
-from taskdeck.shared import files, steps
-
-from . import drive, formats, layout
-
-CHUNKS = {"1 KB": 1024, "2 KB": 2048, "4 KB": 4096, "8 KB": 8192, "16 KB": 16384}
-MAX_BYTES = 64 * 1024 * 1024
-MAX_CHUNKS = 20_000
-DRIVE_FOLDER = "TaskDeck/Executables"  # default, under My Drive
-EXTENSIONS = (".exe", ".dll", ".com", ".ovl", ".drv", ".sys", ".ocx", ".scr", ".cpl", ".vxd", ".386")
+EXTENSIONS = (".exe", ".com", ".ovl", ".scr")
 
 
-def folder_name(exe_name: str) -> str:
-    """The output folder's name, the same on the phone and in Drive: "_WIZARDS.EXE" for WIZARDS.EXE (it
-    goes next to the executable, so it can't have exactly the same name)."""
-    return f"_{exe_name}"
-
-
-def drive_folder(settings: dict) -> str:
-    return (settings.get("drive_folder") or "").strip() or DRIVE_FOLDER
-
-
-@step(Stage.VALIDATE, name="check file")
-def check(ctx):
-    exe = Path(ctx["exe"]).expanduser()
-    if not exe.is_file():
-        raise StepError(f"File not found: {exe}")
-    size = exe.stat().st_size
-    if size > MAX_BYTES:
-        raise StepError(f"{exe.name} is {files.human_size(size)}; TaskDeck parses files up to "
-                        f"{files.human_size(MAX_BYTES)}.")
-    chunk = CHUNKS[ctx["chunk"]]
-    if size / chunk > MAX_CHUNKS:
-        raise StepError(f"That makes over {MAX_CHUNKS:,} chunk files. Choose a larger chunk size.")
-    parent = exe.parent
-    if ctx.get("output"):  # a relative folder is next to the executable too
-        parent = exe.parent / Path(ctx["output"]).expanduser()
-    dest = parent / folder_name(exe.name)
-    if ctx.get("drive") and "google_drive" not in ctx.services:
-        raise StepError("Connect Google Drive first (Settings → Accounts), or switch off “Push to Google Drive”.")
-    ctx["path"], ctx["dest"], ctx["chunk_bytes"] = exe, dest, chunk
-
-
-@step(Stage.PREPARE, name="read headers")
-def read(ctx):
-    ctx["data"] = ctx["path"].read_bytes()
-    ctx["parsed"] = formats.parse(ctx["data"])
-
-
-@step(Stage.EXECUTE, name="write files")
-def write(ctx):
-    try:
-        ctx["written"] = layout.write(ctx["parsed"], ctx["data"], ctx["path"], ctx["dest"], ctx["chunk_bytes"],
-                                      min_string=max(2, int(ctx.get("min_string") or 4)),
-                                      cancelled=lambda: ctx._cancelled)
-    except layout.NotOurs as exc:
-        raise StepError(str(exc)) from None
-    except OSError as exc:
-        raise StepError(f"Couldn't write {files.display_path(ctx['dest'])}: {exc.strerror or exc}") from None
-
-
-@step(Stage.EXECUTE, name="start the Google Drive upload")
-def push(ctx):
-    if not ctx.get("drive"):
-        return
-    folder = drive_folder(ctx.settings)
-    client, dest = ctx.services["google_drive"](), ctx["dest"]
-    ctx["drive_target"] = drive.target(folder, dest.name)
-
-    def work(task: Task) -> str:
-        return drive.push(task, client, dest, folder)
-
-    start = ctx.services.get("start_task")
-    if start:  # in the app: a background task with its own progress (and notification), like Extract Archive
-        ctx["upload_task"] = start(f"Uploading {dest.name} to {drive.target(folder, '')}", work)
-        return
-    try:  # no app (tests, scripts): upload now
-        ctx["upload_message"] = work(Task(0, "upload", "exe_parse"))
-    except RuntimeError as exc:
-        raise StepError(f"Saved on the phone, but the Google Drive upload stopped: {exc}") from None
-
-
-@step(Stage.PRESENT, name="show result")
-def present(ctx):
-    exe, out = ctx["parsed"], ctx["written"]
-    rows = {"Format": exe.description or exe.format,
-            "Size": f"{exe.size:,} bytes",
-            "Regions": len(exe.regions),
-            "Chunk files": f"{out.chunks:,} of up to {files.human_size(ctx['chunk_bytes'])}",
-            "Strings": out.strings,
-            "Files written": f"{len(out.files):,} ({files.human_size(out.bytes)})",
-            "Saved to": files.display_path(ctx["dest"]),
-            "Full path": str(ctx["dest"])}
-    if exe.entry:
-        rows["Entry point"] = exe.entry[1]
-    if ctx.get("drive_target"):
-        rows["Google Drive"] = ctx["drive_target"]
-        rows["Upload"] = ctx.get("upload_message") or "In the background: progress below."
-    ctx["result_rows"] = rows
-    steps.present_rows("result_rows", title=f"Parsed {exe.format}")(ctx)
-    if exe.warnings:
-        ctx.result.warning = " ".join(exe.warnings)
-
-
-class ExeParse(JobPlugin):
+class ExeParse(job.BinaryJob):
     id = "exe_parse"
     title = "Parse executable"
     description = ("Split a DOS or Windows .exe into small text files (summary, layout, metadata, headers, "
                    "hex chunks, strings) for an AI agent to reverse engineer, optionally in Google Drive.")
-    category = "Tools"
     icon = "MEMORY"
-    tags = ("exe", "dll", "binary", "mz", "pe", "ne", "dos", "windows", "hex", "dump", "disassemble",
+    tags = ("exe", "binary", "mz", "pe", "ne", "dos", "windows", "hex", "dump", "disassemble",
             "reverse engineering", "strings", "header", "chunks", "agent")
-    fields = (
-        Field.file("exe", "Executable", required=True, help="A .exe, .dll, .com, .ovl ... file.",
-                   extensions=EXTENSIONS),
-        Field.text("output", "Save into (folder)",
-                   help="Leave empty to save next to the executable, in a folder named like it with “_” in front "
-                        "(_WIZARDS.EXE). A folder here gets that folder instead; a relative one is next to the "
-                        "executable."),
-        Field.choice("chunk", "Chunk size", tuple(CHUNKS), default="2 KB",
-                     help="Bytes per hex-dump file. 2 KB is 128 lines, roughly 4,000-5,000 tokens."),
-        Field.number("min_string", "Shortest string", default=4, help="Characters a run of text needs to count."),
-        Field.toggle("drive", "Push to Google Drive",
-                     help="Mirror the folder to Google Drive. Where it goes is shown below; the Drive folder is "
-                          "in this job's settings."),
-    )
-    settings = (
-        Field.text("drive_folder", "Google Drive folder", default=DRIVE_FOLDER,
-                   help="Under My Drive; created if missing. The executable's folder (_WIZARDS.EXE) goes inside it."),
-        WIFI_ONLY,
-    )
-    accounts = ((GOOGLE_ACCOUNT, "drive"),)  # unlocked before a run that pushes to Google Drive
-    nature = drive.NATURE  # pushing to Drive is a one-time copy of a fixed snapshot (taskdeck.core.copying)
-    run_label = "Parse"
-
-    def field_notes(self, raw, settings):
-        """The Drive path under the Push to Google Drive toggle."""
-        exe = Path(str(raw.get("exe") or "")).name or "EXECUTABLE.EXE"
-        where = drive.target(drive_folder(settings), folder_name(exe))
-        return {"drive": ("Goes to " if raw.get("drive") else "Would go to ") + where}
-
-    def build_pipeline(self):
-        return Pipeline([steps.require("exe"), check, read, write, push, present])
+    file_field = "exe"
+    example = "WIZARDS.EXE"
+    expects_dll = False
+    fields = job.fields("exe", "Executable", "A .exe, .com, .ovl ... file.", EXTENSIONS, example)
+    settings = job.settings(example)
 
 
 PLUGIN = ExeParse()

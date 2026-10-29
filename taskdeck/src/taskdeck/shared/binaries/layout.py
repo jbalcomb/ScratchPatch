@@ -6,9 +6,10 @@
       metadata.json                 hashes, sizes, format and decoded header fields (machine-readable)
       index.json                    every region and every file, with its byte range
       headers/headers.txt           all decoded header fields
-      tables/<table>-NNN.txt        relocations, sections, imports, exports, resources, segments
+      tables/<table>-NNN.txt        relocations, sections, imports, resources, segments
       regions/NN-<region>/<first>-<last>.txt   hex dump of the region, one file per chunk
       strings/ascii-NNN.txt, strings/utf16-NNN.txt   text found in the file, with offsets
+      exports/exports-NNN.txt, exports/exports.json  exported functions: ordinal, name, address, chunk
 
 Every chunk file starts with a short header naming the region, its byte range, and the previous and next
 chunk, so the agent can walk the file without the index. Nothing in the output depends on when it was
@@ -17,6 +18,7 @@ made, so parsing the same file again gives identical files (and a Drive upload s
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import re
@@ -30,10 +32,12 @@ from taskdeck.core import Cancelled
 
 from .formats import Exe, Region, h
 
-GENERATOR = "TaskDeck exe_parse 1"
+GENERATOR = "TaskDeck binary parser 2"
+EARLIER = ("TaskDeck exe_parse",)  # what earlier versions wrote in index.json: their folders are ours too
 LINES_PER_FILE = 1000  # table and string files
 BYTES_PER_LINE = 16
-MAX_STRING = 400  # characters kept of a very long string
+MAX_STRING = 400
+EXPORTS_IN_SUMMARY = 40  # characters kept of a very long string
 
 
 class NotOurs(Exception):
@@ -62,7 +66,7 @@ def chunk_name(start: int, end: int) -> str:
 
 def owned_by_us(folder: Path) -> bool:
     try:
-        return json.loads((folder / "index.json").read_text(encoding="utf-8")).get("generator", "").startswith("TaskDeck exe_parse")
+        return json.loads((folder / "index.json").read_text(encoding="utf-8")).get("generator", "").startswith(("TaskDeck binary parser", *EARLIER))
     except (OSError, ValueError, AttributeError):
         return False
 
@@ -108,6 +112,7 @@ class _Writer:
         for name, lines in self.exe.tables.items():
             self.index["tables"][name] = self._paged(f"tables/{slug(name)}", lines, f"{self.name} · {name}")
         self._strings()
+        self._exports()
         meta = self._metadata()
         self._put("metadata.json", json.dumps(meta, indent=2) + "\n")
         self._put("SUMMARY.md", self._summary(meta))
@@ -221,6 +226,7 @@ class _Writer:
                      "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")},
             "format": self.exe.format,
             "description": self.exe.description,
+            "dll": self.exe.dll,
             "entry_point": entry,
             "facts": self.exe.facts,
             "headers": {t: {n: v for n, v, _ in rows} for t, rows in self.exe.headers.items()},
@@ -231,8 +237,40 @@ class _Writer:
                        "strings": self.out.strings, "min_string_length": self.min_string},
         }
 
-    def _chunk_for(self, offset: int) -> str | None:
-        return next((self._chunk_rel(k) for k, (_, s, e) in enumerate(self.chunks) if s <= offset < e), None)
+    def _chunk_for(self, offset: int | None) -> str | None:
+        if offset is None:
+            return None
+        if not hasattr(self, "_starts"):
+            self._starts = [s for _, s, _ in self.chunks]
+        k = bisect.bisect_right(self._starts, offset) - 1
+        return self._chunk_rel(k) if k >= 0 and offset < self.chunks[k][2] else None
+
+    def _exports(self) -> None:
+        """Exports: what other modules link to. One line each (for grep), paged, plus exports.json."""
+        exe = self.exe
+        if not exe.exports:
+            return
+        rows = []
+        lines = ["# ordinal  file offset  address  name  chunk file (forwarders: the DLL.function they pass on to)"]
+        for e in exe.exports:
+            chunk = self._chunk_for(e.offset)
+            name = e.name or "(by ordinal only)"
+            where = h(e.offset, 8) if e.offset is not None else "-"
+            lines.append(f"{e.ordinal:6d}  {where:<10}  {e.address:<34}  {name}" + (f"  {chunk}" if chunk else ""))
+            row = {"ordinal": e.ordinal, "name": e.name, "file_offset": e.offset, "address": e.address,
+                   "chunk": chunk}
+            if e.rva is not None:
+                row["rva"] = e.rva
+            if e.forwarder:
+                row["forwarder"] = e.forwarder
+            if exe.format == "NE":
+                row["resident_name"] = e.resident
+            rows.append(row)
+        self.index["exports"] = self._paged("exports/exports", lines, f"{self.name} · exports")
+        self._put("exports/exports.json", json.dumps({
+            "file": self.name, "dll_name": exe.facts.get("export_dll_name") or exe.facts.get("module_name") or "",
+            "count": len(rows), "exports": rows}, indent=1) + "\n")
+        self.index["exports_json"] = "exports/exports.json"
 
     def _summary(self, meta: dict) -> str:
         exe, f = self.exe, meta["file"]
@@ -263,6 +301,22 @@ class _Writer:
             dlls = exe.facts["imports"]
             out += ["## Imports", "", f"{sum(dlls.values()):,} functions from {len(dlls)} DLLs "
                     f"(full list: `tables/imports-*.txt`)", ""] + [f"- {d}: {n}" for d, n in dlls.items()] + [""]
+        if exe.exports:
+            ex = exe.exports
+            named = sum(1 for e in ex if e.name)
+            fwd = sum(1 for e in ex if e.forwarder)
+            dll_name = exe.facts.get("export_dll_name") or exe.facts.get("module_name") or ""
+            out += ["## Exports", "",
+                    f"{len(ex):,} exports" + (f" of {dll_name}" if dll_name else "") + f": {named:,} by name, "
+                    f"{len(ex) - named:,} by ordinal only" + (f", {fwd:,} forwarded to other DLLs" if fwd else "") + ".",
+                    "Full list with addresses and the chunk file holding each: `exports/exports-*.txt` "
+                    "(one per line, for grep) and `exports/exports.json`.", ""]
+            shown = ex[:EXPORTS_IN_SUMMARY]
+            out += ["| Ordinal | Name | Address |", "|---|---|---|"]
+            out += [f"| {e.ordinal} | {e.name or '(by ordinal only)'} | {e.address} |" for e in shown]
+            if len(ex) > len(shown):
+                out.append(f"| … | {len(ex) - len(shown):,} more in `exports/` | |")
+            out.append("")
         if exe.facts.get("imported_modules"):
             out += ["## Imported modules", ""] + [f"- {m}" for m in exe.facts["imported_modules"]] + [""]
         if isinstance(exe.facts.get("resources"), dict):
@@ -271,6 +325,8 @@ class _Writer:
                 "- `headers/headers.txt`: every decoded header field" if exe.headers else "",
                 *(f"- `tables/{slug(t)}-*.txt`: {t} ({len(lines):,} lines)" for t, lines in exe.tables.items()),
                 *(f"- `strings/{k}-*.txt`: {sum(p['lines'] for p in v) - 1:,} {k} strings" for k, v in self.index["strings"].items()),
+                *([f"- `exports/exports-*.txt`, `exports/exports.json`: {len(exe.exports):,} exports"]
+                  if exe.exports else []),
                 "- `metadata.json`: hashes, header fields and facts, machine-readable",
                 "- `index.json`: every region and chunk file with its byte range",
                 "- `README.md`: how to walk and search this folder", ""]
@@ -319,7 +375,10 @@ segment).
   region. grep them first; they're much smaller than the hex dumps.
 - Bytes: grep the hex dumps for a pattern like `55 8B EC` (push bp; mov bp,sp). A pattern can be split
   across two lines (and, rarely, two chunk files); search with fewer bytes if you get no hit.
-- Tables (`tables/`): relocations, sections, imports, exports, resources, segments, depending on the format.
+- Exports (`exports/`): every exported function or variable, one per line: ordinal, file offset,
+  address, name, and the chunk file holding it. `exports/exports.json` has the same as JSON. Forwarded
+  exports name the DLL and function they pass on to.
+- Tables (`tables/`): relocations, sections, imports, resources, segments, depending on the format.
   Long tables are split into files of 1,000 lines.
 
 Paths in these files are relative to this folder.

@@ -9,7 +9,7 @@ import pytest
 from taskdeck.core import Cancelled, Context, Task, TaskManager
 from taskdeck.core.tasks import DONE
 from taskdeck.jobs import exe_parse
-from taskdeck.jobs.exe_parse import drive, formats, layout
+from taskdeck.shared.binaries import drive, formats, layout
 from taskdeck.core.copying import Existing
 from taskdeck.shared import gdrive
 

@@ -4,8 +4,9 @@ Splits an executable into small, labelled text files so an AI agent doing revers
 search it one piece at a time, instead of loading a whole binary into its context. Optionally mirrors the
 result to Google Drive, where the agent (or a person) can pick it up.
 
-Code: `src/taskdeck/jobs/exe_parse/` (`formats.py` reads headers, `layout.py` writes the folder, `drive.py`
-mirrors it). Tests: `tests/test_exe_parse.py`.
+Code: `src/taskdeck/shared/binaries/` (`formats.py` reads headers, `layout.py` writes the folder, `drive.py`
+mirrors it, `job.py` the fields and steps), shared with [Parse DLL](dll_parse.md); the job itself is
+`src/taskdeck/jobs/exe_parse/`. Tests: `tests/test_exe_parse.py`.
 
 ## Inputs
 

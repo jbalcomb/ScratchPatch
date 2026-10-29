@@ -80,6 +80,19 @@ class Region:
 
 
 @dataclass
+class Export:
+    """One exported function or variable: what other modules link to by name or ordinal."""
+
+    ordinal: int
+    name: str  # "" when exported by ordinal only
+    offset: int | None = None  # file offset of the code/data, None if not in the file (or forwarded)
+    address: str = ""  # as the format gives it: "RVA 0x00001234 (VA 0x10001234)", "segment 2:0034"
+    forwarder: str = ""  # PE: "KERNEL32.HeapAlloc" when the export is passed on to another DLL
+    rva: int | None = None  # PE only
+    resident: bool = True  # NE: name in the resident table (vs non-resident)
+
+
+@dataclass
 class Exe:
     """Everything read from one executable."""
 
@@ -94,6 +107,8 @@ class Exe:
     # Larger tables written to their own (chunked) files: name -> lines
     tables: dict[str, list[str]] = field(default_factory=dict)
     entry: tuple[int, str] | None = None  # (file offset, how it's written in the header)
+    exports: list[Export] = field(default_factory=list)  # sorted by ordinal
+    dll: bool = False  # a library (PE: IMAGE_FILE_DLL; NE: library module), not a program
     warnings: list[str] = field(default_factory=list)
 
     def region_at(self, offset: int) -> Region | None:
@@ -172,12 +187,6 @@ def _parse_mz(data: bytes, exe: Exe) -> None:
                                 for name, _, meaning in MZ_FIELDS]
     header_size = mz["e_cparhdr"] * 16
     image_end = mz["e_cp"] * 512 - ((512 - mz["e_cblp"]) if mz["e_cblp"] else 0)
-    if not 0 < image_end <= exe.size:
-        exe.warnings.append(f"The MZ header gives an image end of {h(image_end)}, outside the file "
-                            f"({h(exe.size)} bytes); using the file size.")
-        image_end = exe.size
-    header_size = min(header_size, image_end)
-
     new = _new_header(data, mz)
     if new:
         lfanew, sig = new
@@ -189,6 +198,12 @@ def _parse_mz(data: bytes, exe: Exe) -> None:
         {"PE": _parse_pe, "NE": _parse_ne, "LE": _parse_le, "LX": _parse_le}[sig](data, exe, lfanew)
         return
 
+    # A plain DOS program: the header's sizes describe the whole load image.
+    if not 0 < image_end <= exe.size:
+        exe.warnings.append(f"The MZ header gives an image end of {h(image_end)}, outside the file "
+                            f"({h(exe.size)} bytes); using the file size.")
+        image_end = exe.size
+    header_size = min(header_size, image_end)
     exe.format = "MZ"
     exe.description = "DOS executable (MZ)"
     exe.facts.update(header_bytes=header_size, image_end=image_end, load_module_bytes=image_end - header_size,
@@ -308,7 +323,8 @@ def _parse_pe(data: bytes, exe: Exe, pe: int) -> None:
             dirs.append(d)
         exe.headers["PE data directories"] = [(PE_DIRECTORIES[i], h(rva, 8), f"size {h(size)}" if rva or size else "-")
                                               for i, (rva, size) in enumerate(dirs)]
-    exe.description = (f"Windows {'DLL' if chars & 0x2000 else 'executable'} ({exe.format}, "
+    exe.dll = bool(chars & 0x2000)
+    exe.description = (f"Windows {'DLL' if exe.dll else 'executable'} ({exe.format}, "
                        f"{PE_MACHINES.get(machine, h(machine, 4))}, {PE_SUBSYSTEMS.get(o.get('Subsystem', 0), 'subsystem ?')})")
 
     sections = []
@@ -348,13 +364,14 @@ def _parse_pe(data: bytes, exe: Exe, pe: int) -> None:
         ep = o["AddressOfEntryPoint"]
         off = to_offset(ep)
         if off is not None:
-            exe.entry = (off, f"RVA {h(ep, 8)} (VA {h(o['ImageBase'] + ep, 8)})")
+            exe.entry = (off, ("DllMain at " if exe.dll else "") + f"RVA {h(ep, 8)} (VA {h(o['ImageBase'] + ep, 8)})")
 
     directory = dict(zip(PE_DIRECTORIES, (rva for rva, _ in dirs)))
+    sizes = dict(zip(PE_DIRECTORIES, (size for _, size in dirs)))
     if directory.get("import"):
         _pe_imports(data, exe, directory["import"], to_offset, plus)
     if directory.get("export"):
-        _pe_exports(data, exe, directory["export"], to_offset)
+        _pe_exports(data, exe, directory["export"], sizes["export"], to_offset, o.get("ImageBase") or 0)
     if directory.get("resource"):
         _pe_resources(data, exe, directory["resource"], to_offset)
     cert = directory.get("certificate", 0)  # the only directory given as a file offset, not an RVA
@@ -401,32 +418,49 @@ def _pe_imports(data: bytes, exe: Exe, rva: int, to_offset, plus: bool) -> None:
         exe.facts["imports"] = dlls
 
 
-def _pe_exports(data: bytes, exe: Exe, rva: int, to_offset) -> None:
+def _pe_exports(data: bytes, exe: Exe, rva: int, size: int, to_offset, image_base: int) -> None:
+    """The export directory: every exported function's ordinal, name (if any) and address. An address inside
+    the directory itself is a forwarder: the name of another DLL's export ("NTDLL.RtlAllocateHeap")."""
     at = to_offset(rva)
     d = _read(data, "IIHHIIIIIII", at) if at is not None else None
     if d is None:
+        exe.warnings.append("The export directory can't be read.")
         return
+    stamp, major, minor = d[1:4]
     name_rva, base, nfuncs, nnames, funcs_rva, names_rva, ords_rva = d[4:]
     name_off = to_offset(name_rva)
-    exe.facts["export_name"] = _cstr(data, name_off) if name_off is not None else ""
     funcs_off, names_off, ords_off = to_offset(funcs_rva), to_offset(names_rva), to_offset(ords_rva)
-    named = {}
+    names: dict[int, list[str]] = {}  # index into the address table -> names (usually one)
     for i in range(min(nnames, 65536)):
         n = _read(data, "I", names_off + 4 * i) if names_off is not None else None
         o = _read(data, "H", ords_off + 2 * i) if ords_off is not None else None
         if n is None or o is None:
+            exe.warnings.append(f"The export name table is cut off after {i} names.")
             break
         noff = to_offset(n[0])
-        named[o[0]] = _cstr(data, noff) if noff is not None else "?"
-    lines = ["ordinal  RVA         name"]
+        names.setdefault(o[0], []).append(_cstr(data, noff) if noff is not None else "?")
     for i in range(min(nfuncs, 65536)):
         f = _read(data, "I", funcs_off + 4 * i) if funcs_off is not None else None
         if f is None:
+            exe.warnings.append(f"The export address table is cut off after {i} entries.")
             break
-        if f[0]:
-            lines.append(f"{base + i:7d}  {h(f[0], 8)}  {named.get(i, '(no name)')}")
-    exe.tables["exports"] = lines
-    exe.facts["exports"] = len(lines) - 1
+        if not f[0]:
+            continue  # an unused ordinal
+        for name in names.get(i, [""]):
+            if rva <= f[0] < rva + size:
+                fwd_off = to_offset(f[0])
+                fwd = _cstr(data, fwd_off) if fwd_off is not None else "?"
+                exe.exports.append(Export(base + i, name, None, f"forwarded to {fwd}", fwd))
+            else:
+                exe.exports.append(Export(base + i, name, to_offset(f[0]),
+                                          f"RVA {h(f[0], 8)} (VA {h(image_base + f[0], 8)})", rva=f[0]))
+    exe.facts["export_dll_name"] = _cstr(data, name_off) if name_off is not None else ""
+    exe.facts["export_link_time"] = (datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+                                     if stamp else "")
+    exe.facts["export_ordinal_base"] = base
+    exe.facts["exports"] = len(exe.exports)
+    exe.facts["exports_by_name"] = sum(1 for e in exe.exports if e.name)
+    exe.facts["exports_forwarded"] = sum(1 for e in exe.exports if e.forwarder)
 
 
 def _pe_resources(data: bytes, exe: Exe, rva: int, to_offset) -> None:
@@ -492,7 +526,8 @@ def _parse_ne(data: bytes, exe: Exe, ne: int) -> None:
     n = dict(zip((name for name, _ in NE_FIELDS), v))
     exe.headers["NE header"] = [(k, val.decode("latin-1") if isinstance(val, bytes) else h(val),
                                  "file offset" if k == "ne_nrestab" else "") for k, val in n.items()]
-    exe.description = f"16-bit {NE_TARGET_OS.get(n['ne_exetyp'], 'NE')} executable (NE)"
+    exe.dll = bool(n["ne_flags"] & 0x8000)
+    exe.description = f"16-bit {NE_TARGET_OS.get(n['ne_exetyp'], 'NE')} {'DLL' if exe.dll else 'executable'} (NE)"
     tables_end = max(ne + n["ne_enttab"] + n["ne_cbenttab"], n["ne_nrestab"] + n["ne_cbnrestab"], ne + 0x40)
     exe.regions.append(Region("NE header and tables", "header", ne, min(tables_end, exe.size),
                               note="NE header; segment, resource, name, module and entry tables"))
@@ -524,7 +559,70 @@ def _parse_ne(data: bytes, exe: Exe, ne: int) -> None:
     exe.facts.update(target_os=NE_TARGET_OS.get(n["ne_exetyp"]), segments=n["ne_cseg"], imported_modules=modules,
                      module_name=_pascal(data, ne + n["ne_restab"]))
     if 0 < n["ne_cs"] <= len(seg_offsets):
-        exe.entry = (seg_offsets[n["ne_cs"] - 1] + n["ne_ip"], f"segment {n['ne_cs']}:{n['ne_ip']:04X}")
+        exe.entry = (seg_offsets[n["ne_cs"] - 1] + n["ne_ip"],
+                     ("LibMain at " if exe.dll else "") + f"segment {n['ne_cs']}:{n['ne_ip']:04X}")
+    _ne_exports(data, exe, ne, n, seg_offsets)
+
+
+def _ne_names(data: bytes, start: int, end: int) -> list[tuple[str, int]]:
+    """A resident or non-resident name table: (name, ordinal) entries, the first being the module
+    name (resident) or description (non-resident), with ordinal 0."""
+    out, at = [], start
+    while start <= at < min(end, len(data)) and data[at]:
+        name = data[at + 1:at + 1 + data[at]].decode("latin-1")
+        ordinal = _read(data, "H", at + 1 + data[at])
+        if ordinal is None:
+            break
+        out.append((name, ordinal[0]))
+        at += 3 + data[at]
+    return out
+
+
+def _ne_exports(data: bytes, exe: Exe, ne: int, n: dict, seg_offsets: list[int]) -> None:
+    """NE exports: the entry table gives each ordinal's segment:offset; the resident and non-resident
+    name tables give the names (entries without a name are exported by ordinal only)."""
+    resident = _ne_names(data, ne + n["ne_restab"], ne + n["ne_modtab"])
+    nonresident = _ne_names(data, n["ne_nrestab"], n["ne_nrestab"] + n["ne_cbnrestab"]) if n["ne_nrestab"] else []
+    if nonresident:
+        exe.facts["description"] = nonresident[0][0]
+    names: dict[int, tuple[str, bool]] = {}
+    for table, is_resident in ((resident[1:], True), (nonresident[1:], False)):
+        for name, ordinal in table:
+            names.setdefault(ordinal, (name, is_resident))
+    at, end, ordinal = ne + n["ne_enttab"], ne + n["ne_enttab"] + n["ne_cbenttab"], 1
+    entries: dict[int, tuple[int, int]] = {}  # ordinal -> (segment, offset)
+    while at + 2 <= min(end, len(data)):
+        count, kind = data[at], data[at + 1]
+        at += 2
+        if count == 0:
+            break
+        if kind == 0:  # unused ordinals
+            ordinal += count
+            continue
+        width = 6 if kind == 0xFF else 3
+        for _ in range(count):
+            if at + width > len(data):
+                break
+            if kind == 0xFF:  # movable: flags, INT 3Fh, segment, offset
+                seg, off = data[at + 3], struct.unpack_from("<H", data, at + 4)[0]
+            else:  # fixed: the bundle's segment; flags, offset
+                seg, off = kind, struct.unpack_from("<H", data, at + 1)[0]
+            entries[ordinal] = (seg, off)
+            ordinal, at = ordinal + 1, at + width
+    for ordinal in sorted(set(entries) | set(names)):
+        name, is_resident = names.get(ordinal, ("", True))
+        seg, off = entries.get(ordinal, (0, 0))
+        if not seg:
+            exe.exports.append(Export(ordinal, name, None, "no entry point", resident=is_resident))
+            continue
+        if seg == 0xFE:  # a constant, not an address
+            exe.exports.append(Export(ordinal, name, None, f"constant {off:04X}", resident=is_resident))
+            continue
+        offset = seg_offsets[seg - 1] + off if 0 < seg <= len(seg_offsets) and seg_offsets[seg - 1] else None
+        exe.exports.append(Export(ordinal, name, offset, f"segment {seg}:{off:04X}", resident=is_resident))
+    if exe.exports:
+        exe.facts["exports"] = len(exe.exports)
+        exe.facts["exports_by_name"] = sum(1 for e in exe.exports if e.name)
 
 
 def _pascal(data: bytes, at: int) -> str:
