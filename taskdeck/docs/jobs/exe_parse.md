@@ -12,19 +12,28 @@ mirrors it, `job.py` the fields and steps), shared with [Parse DLL](dll_parse.md
 
 | Field | |
 |---|---|
-| Executable | `.exe`, `.dll`, `.com`, `.ovl` ... up to 64 MB. **Browse…** opens TaskDeck's own file browser (real paths; Android's picker would hand back a copy in the app's cache). |
-| Save into (folder) | Parent folder. Default: the executable's own folder. A relative folder is next to the executable too. |
+| Executable | `.exe`, `.com`, `.ovl`, `.scr` (DLLs: [Parse DLL](dll_parse.md), or as supporting DLLs below), up to 64 MB. **Browse…** opens TaskDeck's own file browser (real paths; Android's picker would hand back a copy in the app's cache). |
+| Supporting DLLs | Optional. One per line; **Add…** opens the file browser in the executable's folder. Each is parsed into its own folder next to the executable's, and the executable's imports are matched to their exports. The note under the field lists the DLLs the executable imports, and which of them are next to it. |
+| Save into (folder) | The **base folder** for all results. Default: `_` + the executable's name without extension, next to it (`Caster.exe` → `_Caster`). A relative folder is next to the executable too. The note under the field shows the full path. |
 | Chunk size | Bytes per hex-dump file: 1, 2 (default), 4, 8 or 16 KB. 2 KB is 128 lines, about 4,000-5,000 tokens. |
 | Shortest string | Minimum run of printable characters listed as a string (default 4). |
-| Push to Google Drive | Mirror the folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). The full Drive path is shown under the switch. Needs Google Drive connected (Settings → Accounts). |
+| Push to Google Drive | Mirror the base folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). The full Drive path is shown under the switch. Needs Google Drive connected (Settings → Accounts). |
 
 ## Output
 
-A folder named like the executable with `_` in front, the same on the phone and in Drive (`_WIZARDS.EXE/`;
-exactly the executable's name can't sit next to it):
+A base folder (same name on the phone and in Drive) with one folder per parsed file, named exactly like the
+file, and the set's overview:
 
 ```
-_WIZARDS.EXE/
+_Caster/
+  PARSED.md                 what's here and how the files use each other (start here)
+  parsed.json               the same, machine-readable
+  cross-reference/imports-NNN.txt   each import resolved to a supporting DLL's export: ordinal, file
+                            offset, chunk file (or NOT EXPORTED); imports from other DLLs are counted
+  Caster.exe/               the executable's results, as below
+  FOO.DLL/                  each supporting DLL's, the same way (exports, base relocations...)
+
+Caster.exe/
   README.md                 how to walk and search the folder (written for the agent)
   SUMMARY.md                summary and layout: format, hashes, entry point and the chunk holding it,
                             every region with its byte range, imports/resources, warnings

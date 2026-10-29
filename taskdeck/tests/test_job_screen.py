@@ -210,7 +210,7 @@ def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inpu
     app.job_settings = lambda job_id: {"drive_folder": "RE"}
     screen = JobScreen(app, exe_parse.PLUGIN)
     screen.view.update = lambda: None
-    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _EXECUTABLE.EXE"
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _EXECUTABLE"
 
     fc = screen.fields["exe"]
     fc.input.update = lambda: None
@@ -219,8 +219,9 @@ def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inpu
     assert opened["accept"]("WIZARDS.EXE") and opened["accept"]("x.ovl") and not opened["accept"]("x.dll")
     opened["on_pick"](tmp_path / "MOM" / "WIZARDS.EXE")
     assert fc.value == str(tmp_path / "MOM" / "WIZARDS.EXE")
-    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _WIZARDS.EXE"
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _WIZARDS"
     screen.fields["drive"].input.value = True
     screen.invalidate()
-    assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS.EXE"
+    assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS"
     assert screen.notes["drive"].visible and not screen.notes["exe"].visible
+    assert screen.notes["output"].value == f"Saves into {tmp_path / 'MOM' / '_WIZARDS'}"

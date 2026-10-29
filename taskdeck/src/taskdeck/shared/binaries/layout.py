@@ -56,6 +56,20 @@ class Written:
         return sum((self.root / f).stat().st_size for f in self.files)
 
 
+def paged(root: Path, prefix: str, lines: list[str], title: str) -> list[dict]:
+    """Long lists split into files of LINES_PER_FILE lines: prefix-001.txt, prefix-002.txt... under root."""
+    pages = [lines[i:i + LINES_PER_FILE] for i in range(0, len(lines), LINES_PER_FILE)] or [[]]
+    out = []
+    for n, page in enumerate(pages, 1):
+        rel = f"{prefix}-{n:03d}.txt"
+        first = n * LINES_PER_FILE - LINES_PER_FILE + 1
+        head = f"# {title} · lines {first:,}-{first + len(page) - 1:,} of {len(lines):,} (file {n} of {len(pages)})\n"
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(head + "\n".join(page) + "\n", encoding="utf-8", newline="\n")
+        out.append({"file": rel, "first_line": first, "lines": len(page)})
+    return out
+
+
 def slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.]+", "-", text).strip("-").lower() or "region"
 
@@ -132,15 +146,8 @@ class _Writer:
         self.out.files.append(Path(rel))
 
     def _paged(self, prefix: str, lines: list[str], title: str) -> list[dict]:
-        """Long lists split into files of LINES_PER_FILE lines: prefix-001.txt, prefix-002.txt..."""
-        pages = [lines[i:i + LINES_PER_FILE] for i in range(0, len(lines), LINES_PER_FILE)] or [[]]
-        out = []
-        for n, page in enumerate(pages, 1):
-            rel = f"{prefix}-{n:03d}.txt"
-            first = n * LINES_PER_FILE - LINES_PER_FILE + 1
-            head = f"# {title} · lines {first:,}-{first + len(page) - 1:,} of {len(lines):,} (file {n} of {len(pages)})\n"
-            self._put(rel, head + "\n".join(page) + "\n")
-            out.append({"file": rel, "first_line": first, "lines": len(page)})
+        out = paged(self.root, prefix, lines, title)
+        self.out.files += [Path(page["file"]) for page in out]
         return out
 
     # ---- regions as hex dumps -----------------------------------------------------------------------

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Collection
 
 from taskdeck.core import Cancelled, JobNature, Task, copying
 from taskdeck.shared import drive_uploads, files, gdrive, google_oauth, http
@@ -41,10 +42,20 @@ def folder(client: gdrive.DriveClient, path: str) -> DriveLocation:
     return location
 
 
-def push(task: Task, client: gdrive.DriveClient, local: Path, parent_path: str) -> str:
-    """Mirror ``local`` into ``parent_path``/<local's name> in Drive. Sets ``task.result`` to that folder
-    (for "Open in Drive") and returns the message for the finished task."""
-    local_files = sum(len(names) for _, _, names in os.walk(local))
+def push(task: Task, client: gdrive.DriveClient, local: Path, parent_path: str,
+         include: Collection[str] | None = None) -> str:
+    """Mirror ``local`` into ``parent_path``/<local's name> in Drive. With ``include``, only those entries of
+    ``local`` (the folders and files this run wrote; the base folder may hold other things) are mirrored,
+    and anything else in the Drive folder (an earlier run's) is trashed. Sets ``task.result`` to the Drive
+    folder (for "Open in Drive") and returns the message for the finished task."""
+    def walk():
+        for dirpath, dirnames, filenames in os.walk(local):
+            if include is not None and Path(dirpath) == local:
+                dirnames[:] = [d for d in dirnames if d in include]
+                filenames = [f for f in filenames if f in include]
+            yield dirpath, dirnames, filenames
+
+    local_files = sum(len(names) for _, _, names in walk())
     task.set_phases(("Checking what's already in Google Drive", local_files, "files"),
                     ("Uploading to Google Drive", 0, "files"))
     # Android cuts the network of apps in the background: wait for it instead of failing.
@@ -61,7 +72,7 @@ def push(task: Task, client: gdrive.DriveClient, local: Path, parent_path: str) 
         task.result, target = root, root.display()
         ids = {Path("."): root.folder_id}
         todo, checked = [], 0
-        for dirpath, dirnames, filenames in os.walk(local):
+        for dirpath, dirnames, filenames in walk():
             if task.cancel_requested:
                 raise gdrive.UploadCancelled()
             dirnames.sort()

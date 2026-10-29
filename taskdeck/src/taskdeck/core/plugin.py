@@ -29,6 +29,7 @@ class FieldKind(str, Enum):
     CHOICE = "choice"
     TOGGLE = "toggle"
     FILE = "file"  # a path on the device, with a Browse button
+    FILES = "files"  # several paths, one per line, with an Add button; coerced to a list
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class Field:
     secret: bool = False  # masked in the UI; for settings such as API keys
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
-    extensions: tuple[str, ...] = ()  # FILE fields: the files Browse offers (".exe", ...); empty = any file
+    extensions: tuple[str, ...] = ()  # FILE(S) fields: the files Browse offers (".exe", ...); empty = any file
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -70,6 +71,11 @@ class Field:
         return cls(name, label, FieldKind.FILE, **kw)
 
     @classmethod
+    def files(cls, name: str, label: str, **kw: Any) -> "Field":
+        kw.setdefault("default", "")
+        return cls(name, label, FieldKind.FILES, **kw)
+
+    @classmethod
     def toggle(cls, name: str, label: str, **kw: Any) -> "Field":
         kw.setdefault("default", False)
         return cls(name, label, FieldKind.TOGGLE, **kw)
@@ -78,6 +84,11 @@ class Field:
         """Convert a raw UI value into the field's Python type."""
         if self.kind == FieldKind.TOGGLE:
             return bool(raw)
+        if self.kind == FieldKind.FILES:
+            paths = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
+            if self.required and not paths:
+                raise StepError(f"{self.label} is required")
+            return paths
         if raw is None or (isinstance(raw, str) and raw.strip() == ""):
             if self.required:
                 raise StepError(f"{self.label} is required")

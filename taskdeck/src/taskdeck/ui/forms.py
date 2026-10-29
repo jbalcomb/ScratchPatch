@@ -30,9 +30,10 @@ class FieldControl:
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )
-        if field.kind == FieldKind.FILE:
+        if field.kind in (FieldKind.FILE, FieldKind.FILES):
+            button = "Add…" if field.kind == FieldKind.FILES else "Browse…"
             self.control = ft.Column(
-                [self.input, ft.Row([ft.TextButton("Browse…", icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])],
+                [self.input, ft.Row([ft.TextButton(button, icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])],
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )
@@ -64,6 +65,12 @@ class FieldControl:
                 self._on_change(None)
 
     def picked(self, path: str) -> None:
+        """A file chosen with Browse (replaces the value) or Add (FILES: added as a new line, once)."""
+        if self.field.kind == FieldKind.FILES:
+            lines = [line for line in str(self.input.value or "").splitlines() if line.strip()]
+            if path not in lines:
+                lines.append(path)
+            path = "\n".join(lines)
         self.input.value = path
         self.input.update()
         if self._on_change:
@@ -113,7 +120,7 @@ def _build(field: Field, value: Any, on_change: Handler, on_submit: Handler) -> 
             helper_text=helper,
             on_select=on_change,
         )
-    if field.kind == FieldKind.MULTILINE:
+    if field.kind in (FieldKind.MULTILINE, FieldKind.FILES):
         return ft.TextField(label=label, value=display(value), multiline=True, min_lines=field.lines,
                             max_lines=max(field.lines, 10) + 10, helper=helper, on_change=on_change,
                             text_size=16)

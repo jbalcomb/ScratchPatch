@@ -142,13 +142,13 @@ def run_job(tmp_path, data: bytes, name="GAME.EXE", **inputs):
     src.parent.mkdir(exist_ok=True)
     src.write_bytes(data)
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "chunk": "1 KB", **inputs})
-    return report, tmp_path / "out" / f"_{name}"
+    return report, tmp_path / "out" / name  # "out" is the base folder
 
 
-def test_writes_a_folder_named_like_the_executable_with_an_underscore(tmp_path):
+def test_writes_a_folder_for_the_executable_in_the_base_folder(tmp_path):
     report, out = run_job(tmp_path, dos_exe())
     assert report.ok, report.error
-    assert out.name == "_GAME.EXE"
+    assert out == tmp_path / "out" / "GAME.EXE"
     for f in ("README.md", "SUMMARY.md", "metadata.json", "index.json", "headers/headers.txt",
               "tables/relocations-001.txt", "strings/ascii-001.txt"):
         assert (out / f).is_file(), f
@@ -187,8 +187,8 @@ def test_rerun_is_identical(tmp_path):
 
 
 def test_never_overwrites_a_folder_it_did_not_make(tmp_path):
-    (tmp_path / "out" / "_GAME.EXE").mkdir(parents=True)
-    (tmp_path / "out" / "_GAME.EXE" / "mine.txt").write_text("keep me")
+    (tmp_path / "out" / "GAME.EXE").mkdir(parents=True)
+    (tmp_path / "out" / "GAME.EXE" / "mine.txt").write_text("keep me")
     report, out = run_job(tmp_path, dos_exe())
     assert not report.ok and "wasn't made by TaskDeck" in report.error
     assert (out / "mine.txt").read_text() == "keep me"
@@ -200,8 +200,9 @@ def test_saves_next_to_the_executable_by_default(tmp_path):
     src.write_bytes(dos_exe())
     report = exe_parse.PLUGIN.run({"exe": str(src)})
     assert report.ok, report.error
-    assert (tmp_path / "games" / "_GAME.EXE" / "SUMMARY.md").is_file() and src.is_file()
-    assert dict(report.result.rows)["Full path"] == str(tmp_path / "games" / "_GAME.EXE")
+    assert (tmp_path / "games" / "_GAME" / "GAME.EXE" / "SUMMARY.md").is_file() and src.is_file()
+    assert (tmp_path / "games" / "_GAME" / "PARSED.md").is_file()
+    assert dict(report.result.rows)["Full path"] == str(tmp_path / "games" / "_GAME")
 
 
 def test_drive_needs_a_connected_account(tmp_path):
@@ -273,9 +274,9 @@ def test_push_mirrors_the_folder_and_skips_what_is_there(tmp_path):
     fake, task = FakeDrive(), new_task()
     message = drive.push(task, fake, out, "TaskDeck/Executables")
     local = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
-    assert task.result.display() == "Google Drive › My Drive › TaskDeck › Executables › _GAME.EXE"
+    assert task.result.display() == "Google Drive › My Drive › TaskDeck › Executables › GAME.EXE"
     assert message.startswith(f"Uploaded {len(local)} files") and "Skipped" not in message
-    assert fake.tree() == {"TaskDeck/Executables/_GAME.EXE/" + p for p in local}
+    assert fake.tree() == {"TaskDeck/Executables/GAME.EXE/" + p for p in local}
     assert all(p.is_file() for p in (out / f for f in local))  # the local folder is kept
     checking, uploading = task.phases
     assert (checking.done, checking.total, uploading.done, uploading.total) == (len(local),) * 4
@@ -294,7 +295,7 @@ def test_push_trashes_chunks_of_an_earlier_parse(tmp_path):
     message = drive.push(new_task(), fake, out, "X")
     local = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
     assert "left from an earlier parse to the trash" in message
-    assert fake.tree() == {"X/_GAME.EXE/" + p for p in local}
+    assert fake.tree() == {"X/GAME.EXE/" + p for p in local}
 
 
 def test_push_cancel_and_errors_say_what_was_uploaded(tmp_path):
@@ -321,13 +322,14 @@ def test_job_pushes_in_a_background_task_in_the_app(tmp_path):
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
     assert report.ok, report.error
     rows = dict(report.result.rows)
-    assert rows["Google Drive"] == "Google Drive › My Drive › TaskDeck › Executables › _GAME.EXE"
+    assert rows["Google Drive"] == "Google Drive › My Drive › TaskDeck › Executables › out"
     assert rows["Upload"].startswith("In the background")
-    assert rows["Full path"] == str(tmp_path / "out" / "_GAME.EXE")
+    assert rows["Full path"] == str(tmp_path / "out")
     task = manager.latest("exe_parse")
-    assert task.status == DONE and task.title == "Uploading _GAME.EXE to Google Drive › My Drive › TaskDeck › Executables"
-    assert task.result.display().endswith("TaskDeck › Executables › _GAME.EXE")
-    assert any(p.startswith("TaskDeck/Executables/_GAME.EXE/regions/") for p in fake.tree())
+    assert task.status == DONE and task.title == "Uploading out to Google Drive › My Drive › TaskDeck › Executables"
+    assert task.result.display().endswith("TaskDeck › Executables › out")
+    assert any(p.startswith("TaskDeck/Executables/out/GAME.EXE/regions/") for p in fake.tree())
+    assert "TaskDeck/Executables/out/PARSED.md" in fake.tree()
 
 
 def test_job_uploads_right_away_without_the_app(tmp_path):
@@ -345,12 +347,13 @@ def test_relative_output_folder_is_next_to_the_executable(tmp_path):
     src.write_bytes(dos_exe())
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": "Parsed"})
     assert report.ok, report.error
-    assert (tmp_path / "Parsed" / "_GAME.EXE" / "SUMMARY.md").is_file()
+    assert (tmp_path / "Parsed" / "GAME.EXE" / "SUMMARY.md").is_file()
 
 
 def test_drive_path_is_shown_under_the_switch():
     notes = exe_parse.PLUGIN.field_notes({"exe": "/storage/emulated/0/Games/MOM/WIZARDS.EXE", "drive": True},
                                          {"drive_folder": "RE/Master of Magic"})
-    assert notes == {"drive": "Goes to Google Drive › My Drive › RE › Master of Magic › _WIZARDS.EXE"}
+    assert notes["drive"] == "Goes to Google Drive › My Drive › RE › Master of Magic › _WIZARDS"
+    assert notes["output"] == "Saves into /storage/emulated/0/Games/MOM/_WIZARDS"
     notes = exe_parse.PLUGIN.field_notes({"exe": "", "drive": False}, {"drive_folder": ""})
-    assert notes == {"drive": "Would go to Google Drive › My Drive › TaskDeck › Executables › _EXECUTABLE.EXE"}
+    assert notes == {"drive": "Would go to Google Drive › My Drive › TaskDeck › Executables › _EXECUTABLE"}

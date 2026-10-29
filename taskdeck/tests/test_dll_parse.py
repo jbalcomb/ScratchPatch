@@ -129,14 +129,14 @@ def test_cpp_exports_show_their_readable_name(tmp_path):
 def run(tmp_path, plugin, data, name, **inputs):
     src = tmp_path / name
     src.write_bytes(data)
-    return plugin.run({plugin.file_field: str(src), **inputs}), tmp_path / f"_{name}"
+    return plugin.run({plugin.file_field: str(src), **inputs}), tmp_path / f"_{Path(name).stem}" / name
 
 
 def test_job_writes_the_exports(tmp_path):
     report, out = run(tmp_path, dll_parse.PLUGIN, pe_dll(), "TEST.DLL", chunk="1 KB")
     assert report.ok, report.error
     rows = dict(report.result.rows)
-    assert rows["Exports"] == "3 (2 by name)" and rows["Full path"] == str(out)
+    assert rows["Exports"] == "3 (2 by name)" and rows["Full path"] == str(out.parent)
     assert report.result.warning is None
     lines = (out / "exports/exports-001.txt").read_text().splitlines()
     assert lines[2].split()[:3] == ["1", "0x00000210", "RVA"] and lines[2].endswith("Alpha  regions/03-.text/00000200-000003FF.txt")
@@ -162,5 +162,113 @@ def test_each_job_says_when_it_got_the_other_kind(tmp_path):
 def test_dll_job_shares_the_drive_folder_setting_and_shows_the_path():
     assert dll_parse.PLUGIN.settings_id == "exe_parse"
     assert dll_parse.PLUGIN.field_notes({"dll": "/x/KERNEL.DLL", "drive": True}, {"drive_folder": ""}) == \
-        {"drive": "Goes to Google Drive › My Drive › TaskDeck › Executables › _KERNEL.DLL"}
-    assert dll_parse.PLUGIN.field_notes({}, {})["drive"].endswith("_LIBRARY.DLL")
+        {"drive": "Goes to Google Drive › My Drive › TaskDeck › Executables › _KERNEL", "output": "Saves into /x/_KERNEL"}
+    assert dll_parse.PLUGIN.field_notes({}, {})["drive"].endswith("_LIBRARY")
+    assert not any(f.name == "dlls" for f in dll_parse.PLUGIN.fields)  # supporting DLLs: Parse executable only
+
+
+# ---- Parse executable with supporting DLLs --------------------------------------------------------
+
+def pe_importer() -> bytes:
+    """A PE32 program importing Alpha, ordinal 2 and Missing from TEST.DLL, and ExitProcess from KERNEL32."""
+    data = bytearray(0x600)
+    data[0:2] = b"MZ"
+    struct.pack_into("<H", data, 0x18, 0x40)
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<HHIIIHH", data, 0x84, 0x14C, 2, 0, 0, 0, 0xE0, 0x102)
+    opt = 0x98
+    struct.pack_into("<HBBIIIIIIIIIHHHHHHIIIIHHIIIIII", data, opt, 0x10B, 14, 0, 0x200, 0x200, 0, 0x1000, 0x1000,
+                     0x2000, 0x400000, 0x1000, 0x200, 6, 0, 0, 0, 6, 0, 0, 0x3000, 0x200, 0, 3, 0,
+                     0x100000, 0x1000, 0x100000, 0x1000, 0, 16)
+    struct.pack_into("<II", data, opt + 96 + 8, 0x2000, 60)  # import directory
+    sect = opt + 0xE0
+    struct.pack_into("<8sIIIIIIHHI", data, sect, b".text", 0x200, 0x1000, 0x200, 0x200, 0, 0, 0, 0, 0x60000020)
+    struct.pack_into("<8sIIIIIIHHI", data, sect + 40, b".idata", 0x200, 0x2000, 0x200, 0x400, 0, 0, 0, 0, 0xC0000040)
+    i = 0x400  # RVA 0x2000
+    struct.pack_into("<IIIII", data, i, 0x2040, 0, 0, 0x20C0, 0x2060)
+    struct.pack_into("<IIIII", data, i + 20, 0x2050, 0, 0, 0x20D0, 0x2070)
+    for at in (0x40, 0x60):
+        struct.pack_into("<IIII", data, i + at, 0x2080, 0x80000002, 0x2090, 0)
+    for at in (0x50, 0x70):
+        struct.pack_into("<II", data, i + at, 0x20A0, 0)
+    data[i + 0x82:i + 0x88] = b"Alpha\0"
+    data[i + 0x92:i + 0x9A] = b"Missing\0"
+    data[i + 0xA2:i + 0xAE] = b"ExitProcess\0"
+    data[i + 0xC0:i + 0xC9] = b"TEST.DLL\0"
+    data[i + 0xD0:i + 0xDD] = b"KERNEL32.dll\0"
+    return bytes(data)
+
+
+def program_and_dll(tmp_path):
+    (tmp_path / "PROG.EXE").write_bytes(pe_importer())
+    (tmp_path / "TEST.DLL").write_bytes(pe_dll())
+    return tmp_path / "PROG.EXE", tmp_path / "TEST.DLL"
+
+
+def test_supporting_dlls_go_side_by_side_with_a_cross_reference(tmp_path):
+    exe, dll = program_and_dll(tmp_path)
+    report = exe_parse.PLUGIN.run({"exe": str(exe), "dlls": f"{dll}\n", "chunk": "1 KB"})
+    assert report.ok, report.error
+    base = tmp_path / "_PROG"
+    assert (base / "PROG.EXE" / "SUMMARY.md").is_file() and (base / "TEST.DLL" / "exports" / "exports.json").is_file()
+    rows = dict(report.result.rows)
+    assert rows["Supporting DLLs"] == "TEST.DLL (3 exports)"
+    assert rows["Imports resolved"] == "2 to the DLLs here, 1 not exported by them"
+    assert rows["Full path"] == str(base)
+    xref = (base / "cross-reference" / "imports-001.txt").read_text().splitlines()[2:]
+    assert xref == [
+        "PROG.EXE  0x00002060  TEST.DLL!Alpha  ->  TEST.DLL ordinal 1, file 0x00000210, "
+        "TEST.DLL/regions/03-.text/00000200-000003FF.txt",
+        "PROG.EXE  0x00002064  TEST.DLL!ordinal 2  ->  TEST.DLL ordinal 2, file 0x00000220, "
+        "TEST.DLL/regions/03-.text/00000200-000003FF.txt",
+        "PROG.EXE  0x00002068  TEST.DLL!Missing  ->  NOT EXPORTED by TEST.DLL"]
+    index = json.loads((base / "parsed.json").read_text())
+    assert [(f["file"], f["role"]) for f in index["files"]] == [("PROG.EXE", "program"), ("TEST.DLL", "DLL")]
+    assert index["elsewhere"] == {"KERNEL32.dll": 1}
+    overview = (base / "PARSED.md").read_text()
+    assert "`TEST.DLL/`" in overview and "2 imports resolved" in overview and "- KERNEL32.dll: 1" in overview
+
+
+def test_a_dll_left_out_next_time_is_removed(tmp_path):
+    exe, dll = program_and_dll(tmp_path)
+    exe_parse.PLUGIN.run({"exe": str(exe), "dlls": str(dll)})
+    report = exe_parse.PLUGIN.run({"exe": str(exe)})
+    assert report.ok and "Removed the results of TEST.DLL" in report.result.warning
+    assert not (tmp_path / "_PROG" / "TEST.DLL").exists() and not (tmp_path / "_PROG" / "cross-reference").exists()
+    assert (tmp_path / "_PROG" / "PROG.EXE" / "SUMMARY.md").is_file()
+
+
+def test_drive_gets_only_the_sets_files(tmp_path):
+    from test_exe_parse import FakeDrive
+    from taskdeck.core import Context
+
+    exe, dll = program_and_dll(tmp_path)
+    (tmp_path / "_PROG").mkdir()
+    (tmp_path / "_PROG" / "my notes.txt").write_text("not part of the set")
+    fake = FakeDrive()
+    ctx = Context({}, services={"google_drive": lambda: fake})
+    report = exe_parse.PLUGIN.run({"exe": str(exe), "dlls": str(dll), "drive": True}, ctx=ctx)
+    assert report.ok, report.error
+    tree = fake.tree()
+    assert {p.split("/")[3] for p in tree} == {"PROG.EXE", "TEST.DLL", "PARSED.md", "parsed.json", "cross-reference"}
+    assert dict(report.result.rows)["Google Drive"] == "Google Drive › My Drive › TaskDeck › Executables › _PROG"
+
+    report = exe_parse.PLUGIN.run({"exe": str(exe), "drive": True}, ctx=Context({}, services={"google_drive": lambda: fake}))
+    assert report.ok, report.error
+    assert not any(p.startswith("TaskDeck/Executables/_PROG/TEST.DLL/") for p in fake.tree())
+
+
+def test_the_note_lists_the_dlls_it_imports_and_which_are_next_to_it(tmp_path):
+    exe, _ = program_and_dll(tmp_path)
+    notes = exe_parse.PLUGIN.field_notes({"exe": str(exe)}, {})
+    assert notes["dlls"] == "PROG.EXE imports from TEST.DLL, KERNEL32.dll. Next to it: TEST.DLL."
+    assert notes["output"] == f"Saves into {tmp_path / '_PROG'}"
+
+
+def test_two_files_with_the_same_name_are_refused(tmp_path):
+    exe, dll = program_and_dll(tmp_path)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "TEST.DLL").write_bytes(pe_dll())
+    report = exe_parse.PLUGIN.run({"exe": str(exe), "dlls": f"{dll}\n{tmp_path / 'other' / 'TEST.DLL'}"})
+    assert not report.ok and "Two files are named TEST.DLL" in report.error

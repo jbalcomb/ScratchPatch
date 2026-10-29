@@ -1,9 +1,10 @@
 """Parse Executable: split a DOS or Windows program into small, labelled text files that an AI agent
 doing reverse engineering can walk through or search one piece at a time.
 
-The output is a folder next to the executable, named like it with "_" in front (``_WIZARDS.EXE/``), with
-a summary and layout, a metadata file, decoded headers and tables, hex-dump chunks per region and the
-strings, and optionally a mirror of it in Google Drive. See docs/jobs/exe_parse.md. The work is shared
+The output goes into a base folder next to the executable, named like it with "_" in front and without
+the extension (``_WIZARDS/``): a folder for the executable (summary and layout, metadata, decoded headers
+and tables, hex-dump chunks per region, strings) and one for each supporting DLL, side by side, with a
+cross-reference of the executable's imports to the DLLs' exports; optionally mirrored to Google Drive. See docs/jobs/exe_parse.md. The work is shared
 with Parse DLL: ``taskdeck.shared.binaries``.
 """
 
@@ -23,7 +24,7 @@ class ExeParse(job.BinaryJob):
     file_field = "exe"
     example = "WIZARDS.EXE"
     expects_dll = False
-    fields = job.fields("exe", "Executable", "A .exe, .com, .ovl ... file.", EXTENSIONS, example)
+    fields = job.fields("exe", "Executable", "A .exe, .com, .ovl ... file.", EXTENSIONS, example, supporting=True)
     settings = job.settings(example)
 
 

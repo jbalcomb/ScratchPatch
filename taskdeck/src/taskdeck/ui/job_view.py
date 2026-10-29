@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from taskdeck.core import Context, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
 from taskdeck.shared.gdrive import DriveLocation
 
 from . import task_view
@@ -224,11 +224,15 @@ class JobScreen:
             text.visible = bool(text.value)
 
     def _browse_file(self, fc: FieldControl) -> None:
-        """Browse for a FILE field with TaskDeck's own browser (real paths), starting where the current one is."""
+        """Browse for a FILE(S) field with TaskDeck's own browser (real paths), starting where its (last) file
+        is, else where another file field's file is (e.g. Supporting DLLs: the executable's folder)."""
         exts = tuple(e.lower() for e in fc.field.extensions)
-        current = Path(str(fc.value or "")).expanduser()
+        candidates = [line.strip() for line in str(fc.value or "").splitlines() if line.strip()][-1:] + \
+            [str(other.value) for other in self.fields.values()
+             if other is not fc and other.field.kind == FieldKind.FILE and other.value]
+        folders = [Path(c).expanduser().parent for c in candidates]
         FileBrowser.pick_file(self.app, lambda path: fc.picked(str(path)),
-                              start=current.parent if fc.value and current.parent.is_dir() else None,
+                              start=next((f for f in folders if f.is_dir()), None),
                               title=f"Choose {fc.field.label}",
                               accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
                               kind=" or ".join(exts) + " files" if exts else "files")

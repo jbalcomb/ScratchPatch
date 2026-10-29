@@ -96,6 +96,16 @@ class Export:
 
 
 @dataclass
+class Import:
+    """One function a module uses from a DLL, by name or by ordinal."""
+
+    dll: str  # as written in the file, e.g. "KERNEL32.dll"
+    name: str = ""  # "" when imported by ordinal
+    ordinal: int | None = None
+    slot: int = 0  # PE: RVA of its import address table entry (the pointer the code calls through)
+
+
+@dataclass
 class Exe:
     """Everything read from one executable."""
 
@@ -111,6 +121,7 @@ class Exe:
     tables: dict[str, list[str]] = field(default_factory=dict)
     entry: tuple[int, str] | None = None  # (file offset, how it's written in the header)
     exports: list[Export] = field(default_factory=list)  # sorted by ordinal
+    imports: list[Import] = field(default_factory=list)  # in file order
     dll: bool = False  # a library (PE: IMAGE_FILE_DLL; NE: library module), not a program
     warnings: list[str] = field(default_factory=list)
 
@@ -414,9 +425,11 @@ def _pe_imports(data: bytes, exe: Exe, rva: int, to_offset, plus: bool) -> None:
             v = v[0]
             if v & ordinal_flag:
                 names.append((slot, f"ordinal {v & 0xFFFF}"))
+                exe.imports.append(Import(dll, "", v & 0xFFFF, slot))
             else:
                 hint_off = to_offset(v & 0x7FFFFFFF)
                 names.append((slot, _cstr(data, hint_off + 2) if hint_off is not None else "?"))
+                exe.imports.append(Import(dll, names[-1][1], None, slot))
             t += struct.calcsize(thunk_fmt)
             slot += struct.calcsize(thunk_fmt)
         dlls[dll] = len(names)

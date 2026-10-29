@@ -1,8 +1,8 @@
 # Parse DLL
 
 The same as [Parse executable](exe_parse.md), for libraries: `.dll`, `.drv`, `.ocx`, `.cpl`, `.sys`, `.vxd`,
-`.386`. Same inputs, same folder (`_KERNEL32.DLL/` next to the file, and the same name in Drive), same Drive
-push. Both jobs share one settings set (the Google Drive folder), so a program and its DLLs end up side by
+`.386`. Same inputs (without supporting DLLs), same base folder (`_KERNEL32/` next to the file, holding
+`KERNEL32.DLL/`; the same name in Drive), same Drive push. Both jobs share one settings set (the Google Drive folder), so a program and its DLLs end up side by
 side. Code: `src/taskdeck/jobs/dll_parse/` on top of `src/taskdeck/shared/binaries/`. Tests:
 `tests/test_dll_parse.py`.
 
@@ -55,14 +55,16 @@ given a DLL. Both still parse it.
 
 ## Decided
 
+* **Done**: Parse executable takes supporting DLLs, parsed side by side in one base folder with an import →
+  export cross-reference ([exe_parse.md](exe_parse.md)).
+
 * 32-bit DLLs first: that's the example at hand. 16-bit (NE) exports are decoded but only tested on
   hand-built files.
 
 ## Future
 
-* **Parse executable with its supporting DLLs**: parse a program together with the DLLs it uses, and write
-  a cross-reference: for each import of `_GAME.EXE` (by name or by ordinal), the export of `_FOO.DLL` and the
-  chunk file holding its code.
+* **16-bit cross-reference**: Parse executable's supporting DLLs match PE imports only; NE programs import
+  through segment relocation records, not decoded yet.
 * **16-bit DLLs**: test with a real one; decode NE segment relocations (the 16-bit equivalent of base
   relocations, stored after each segment's data).
 * **Full C++ names**: parameter and return types (`Window::Draw(int)`), templates; Microsoft and Borland
