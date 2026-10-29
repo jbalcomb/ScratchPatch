@@ -28,12 +28,15 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
 import shutil
 import ssl
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -50,6 +53,10 @@ BUNDLE_URL = f"{RELEASE}/ota.zip"
 SRC_DIR = Path(__file__).resolve().parent  # where the bundled taskdeck package lives
 
 _lock = threading.Lock()
+# One update check at a time: the automatic one after starting and "Check for updates" used to run
+# together and unpack the same version into the same folder, each clearing the other's files (an
+# installed update without taskdeck/jobs: "No module named 'taskdeck.jobs'").
+_check_lock = threading.Lock()
 active: dict[str, Any] = {"source": "bundled", "version": "dev", "build_time": 0}
 listeners: list[Callable[[dict], None]] = []  # notified when an update is ready
 
@@ -83,14 +90,28 @@ def _save_state(state: dict) -> None:
 
 
 def bundled_build() -> dict:
-    """Version info of the code shipped inside the APK (written by CI into taskdeck/_build.py)."""
+    """Version info of the code shipped inside the APK (written by CI into taskdeck/_build.py).
+
+    ``flet build`` ships the app compiled (taskdeck/_build.pyc, no .py), so that is read too; without it
+    the APK said "dev" and any downloaded update, even an older one, counted as newer."""
     info = {"version": "dev", "build_time": 0}
+    scope: dict = {}
     try:
         text = (SRC_DIR / "taskdeck" / "_build.py").read_text()
-        scope: dict = {}
         exec(compile(text, "_build.py", "exec"), scope)
-        info.update(version=scope.get("VERSION", "dev"), build_time=int(scope.get("BUILD_TIME", 0)))
     except (OSError, SyntaxError, ValueError):
+        pyc = SRC_DIR / "taskdeck" / "_build.pyc"
+        try:
+            loader = importlib.machinery.SourcelessFileLoader("_taskdeck_bundled_build", str(pyc))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            scope = vars(module)
+        except (OSError, ImportError, ValueError, EOFError):
+            return info
+    try:
+        info.update(version=scope.get("VERSION", "dev"), build_time=int(scope.get("BUILD_TIME", 0)))
+    except (TypeError, ValueError):
         pass
     return info
 
@@ -225,11 +246,17 @@ def _get(url: str, timeout: float) -> bytes:
 
 
 def check_for_update(timeout: float = 20) -> dict:
-    """Download and stage a newer bundle if there is one. Never raises.
+    """Download and stage a newer bundle if there is one. Never raises. One check at a time (a second
+    caller waits, then usually finds it up to date).
 
     Returns ``{"status": ..., "version": ..., "message": ...}`` where status is one of
     ``up_to_date``, ``ready`` (downloaded, reload to use), ``needs_apk`` or ``error``.
     """
+    with _check_lock:
+        return _check_for_update(timeout)
+
+
+def _check_for_update(timeout: float) -> dict:
     try:
         manifest = json.loads(_get(f"{MANIFEST_URL}?t={int(time.time())}", timeout))
         version, build_time = str(manifest["version"]), int(manifest["build_time"])
@@ -256,18 +283,24 @@ def check_for_update(timeout: float = 20) -> dict:
 
 
 def _install(version: str, manifest: dict, data: bytes) -> None:
-    staging = ota_dir() / f".staging-{version}"
+    staging = Path(tempfile.mkdtemp(prefix=f".staging-{version}-", dir=ota_dir()))  # never shared
     final = ota_dir() / version
-    shutil.rmtree(staging, ignore_errors=True)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for member in zf.namelist():  # refuse paths that escape the folder
-            if member.startswith("/") or ".." in Path(member).parts:
-                raise ValueError(f"unsafe path in update: {member}")
-        zf.extractall(staging)
-    if not (staging / "taskdeck" / "__init__.py").exists():
-        raise ValueError("update bundle has no taskdeck package")
-    shutil.rmtree(final, ignore_errors=True)
-    os.replace(staging, final)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for member in zf.namelist():  # refuse paths that escape the folder
+                if member.startswith("/") or ".." in Path(member).parts:
+                    raise ValueError(f"unsafe path in update: {member}")
+            zf.extractall(staging)
+            for info in zf.infolist():  # every file there, whole, before it can be switched on
+                path = staging / info.filename
+                if not info.is_dir() and (not path.is_file() or path.stat().st_size != info.file_size):
+                    raise ValueError(f"update unpacked incompletely: {info.filename}")
+        if not (staging / "taskdeck" / "__init__.py").exists():
+            raise ValueError("update bundle has no taskdeck package")
+        shutil.rmtree(final, ignore_errors=True)
+        os.replace(staging, final)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)  # gone already when installed
     with _lock:
         state = _load_state()
         state.setdefault("bundles", {})[version] = {
@@ -281,7 +314,9 @@ def _install(version: str, manifest: dict, data: bytes) -> None:
 
 def _prune(state: dict, keep: set[str]) -> None:
     for child in ota_dir().iterdir():
-        if child.is_dir() and child.name not in keep and not child.name.startswith("."):
+        if child.is_dir() and child.name.startswith(".staging-"):  # left by an interrupted install
+            shutil.rmtree(child, ignore_errors=True)
+        elif child.is_dir() and child.name not in keep and not child.name.startswith("."):
             shutil.rmtree(child, ignore_errors=True)
             state.get("bundles", {}).pop(child.name, None)
     _save_state(state)
