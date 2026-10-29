@@ -1,0 +1,34 @@
+name: Asset Forge CI
+
+on:
+  push:
+    paths:
+      - "asset-forge/**"
+      - ".github/workflows/asset-forge-ci.yml"
+  pull_request:
+    paths:
+      - "asset-forge/**"
+      - ".github/workflows/asset-forge-ci.yml"
+
+defaults:
+  run:
+    working-directory: asset-forge
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out ReMoM (for the engine-parity test)
+        uses: actions/checkout@v4
+        with:
+          repository: jbalcomb/ReMoM
+          path: remom
+          sparse-checkout: MoX/src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -t . -v
+        env:
+          REMOM_DIR: ${{ github.workspace }}/remom

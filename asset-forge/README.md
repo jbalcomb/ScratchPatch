@@ -1,6 +1,56 @@
-# Asset Forge: plan
+# Asset Forge
 
-AI-generated asset packs for ReMoM (Master of Magic, reassembled). Nothing is built yet; this is the plan and the list of open questions.
+AI-generated asset packs for ReMoM (Master of Magic, reassembled): a free replacement for the original art, in the spirit of Freedoom. Below: what is built, the plan, and the decisions made so far.
+
+## Built so far
+
+### Step 1: LBX → PNG exporter
+
+Turns every sprite in the game's `.LBX` archives into PNGs, a catalogue and a gallery page. Needs Python 3.10+ and Pillow.
+
+```sh
+cd asset-forge
+python3 -m pip install -r requirements.txt
+python3 -m assetforge.export /c/STU/devel/ReMoM/assets out/originals      # folder with the .LBX files and FONTS.LBX
+```
+
+Then open `out/originals/index.html`. Per sprite, in `out/originals/<ARCHIVE>/<entry>_<name>/`:
+
+| File | What it is |
+|---|---|
+| `frame_NN.png` | The frame as the player sees it: RGBA, game palette 0 (or `--palette N`), plus the sprite's own palette if it has one. Pixels the sprite doesn't draw are transparent. |
+| `frame_NN_index.png` | The raw palette indices: grey level = index; alpha 255 = pixel, 128 = remap (shading) pixel, 0 = nothing drawn. Keeps the information that banner colours and shading depend on. |
+| `sheet.png` | All frames side by side. |
+
+`catalog.csv` has one row per archive entry: name and description from the LBX name table, size, frames, loop frame, delta or full frames, remap flag, own palette, warnings. The descriptions are the start of the pack manifest.
+
+The decoder (`assetforge/flic.py`) is a port of the engine's `FLIC_Draw_Frame()`, `FLIC_Remap_Draw_Frame()` and `Draw_Picture_To_Bitmap()`. Delta-encoded animations are composited the way the engine does it, so every exported frame is complete.
+
+Remap pixels (shadows and glass effects) recolour whatever is underneath in the game. The RGBA preview approximates them with the remap colour and its percentage from `FONTS.LBX`.
+
+**Not yet checked against real game files.** The original LBX files are copyrighted and not in either repo, so the tests use synthetic sprites. Check:
+
+1. Run the exporter on your v1.31 files.
+2. Compare a few sprites with the game: a unit, a terrain tile, a wizard portrait, the main menu background.
+3. Look in `catalog.csv` for `undecodable` rows and for anything in `warnings`.
+
+### Tests
+
+```sh
+python3 -m unittest discover -s tests -t .                                  # synthetic sprites and archives
+REMOM_DIR=/c/STU/devel/ReMoM python3 -m unittest tests.test_engine_parity     # also: Python decoder vs the engine's C code
+```
+
+The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Draw.c`, compiles them, and checks that they and the Python port produce the same pixels on 300 random sprites. It needs a C compiler. CI runs it against ReMoM `main`.
+
+## Decisions so far
+
+- **Purpose:** a complete replacement for the copyrighted art, Freedoom-style. Later, the same tools make art for a new game from another asset pack.
+- **Original art as reference and training data:** accepted (grey area, knowingly).
+- **Image model:** local, on the AI Workstation, so a style LoRA can be trained.
+- **Style:** a LoRA plus a written style guide.
+- **Size:** not limited to the original dimensions or aspect ratio. ReMoM must be changed to load and draw the new assets (a separate ReMoM work item).
+- **Sign-off:** at first, accept the first image generated for every asset until the pack is complete. Later: thumbs up/down inside ReMoM, then a web service for browsing, ratings, A/B tests, and user-submitted versions that are ranked alongside.
 
 ## What it should do
 
@@ -74,25 +124,18 @@ Vision LLMs are inconsistent judges and drift toward approving. Combine them wit
 
 For each image: prompt, model and version, seed, reference images used, round number, judge scores, and cost. You need this to reproduce an image, to re-run a pack on a newer model, and for the licensing question below.
 
-## Questions only you can answer
+## Still open
 
-1. **What is the pack for?**
-   - A free replacement art set so ReMoM runs without the original data files.
-   - A visual mod or upscale of the original look.
-   - Art for a new game in a similar style.
-
-   This decides the rest: resolution, whether the original art may be used as references, and whether the result can be shared.
-2. **Legal.** The original art is copyrighted. Using it as reference images to make a *distributable* replacement is a grey area. Also check the image model's terms for commercial use and redistribution.
-3. **Resolution.** Native 320×200, or hi-res assets for the upscale path? (The upscale BRA hasn't decided this yet.)
-4. **Hosted or local image model,** and what GPU is on the AI Workstation?
-5. **Budget** per asset and per pack.
-6. **How good is good enough,** and who signs off? A human review gallery with approve/reject/retry is probably required at first.
+1. **The AI Workstation:** which GPU (and how much VRAM) and which OS. This decides which image model can run and whether a LoRA can be trained on it.
+2. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
+3. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
+4. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
 
 ## Build order
 
 Each step is small, finishes, and is useful on its own:
 
-1. **LBX → PNG exporter** (in ReMoM, per the upscale PRD). Gives you the reference set.
+1. **LBX → PNG exporter.** Gives you the reference set. *Built, see above; needs a check on real files.*
 2. **Describe:** image → description + prompt (one vision-LLM call). The smallest real piece.
 3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. Start with one static category, such as spell icons or unit figures.
 4. **Style guide:** batch of references → style guide text.
