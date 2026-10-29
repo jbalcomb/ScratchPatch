@@ -40,6 +40,8 @@ def check(ctx):
     if size / chunk > MAX_CHUNKS:
         raise StepError(f"That makes over {MAX_CHUNKS:,} chunk files. Choose a larger chunk size.")
     parent = Path(ctx["output"]).expanduser() if ctx.get("output") else default_parent()
+    if not parent.is_absolute():  # "Parsed" means Downloads › Parsed, not wherever the app happens to run
+        parent = files.locations()[0].path / parent
     dest = parent / exe.name
     if dest.resolve() == exe.resolve():
         raise StepError("The folder can't go next to the executable: it has the same name. "
@@ -73,13 +75,14 @@ def push(ctx):
         return
     folder = ctx.settings.get("drive_folder") or "/".join(OUTPUT_FOLDER)
     client, dest = ctx.services["google_drive"](), ctx["dest"]
+    ctx["drive_target"] = drive.target(folder, dest.name)
 
     def work(task: Task) -> str:
         return drive.push(task, client, dest, folder)
 
     start = ctx.services.get("start_task")
     if start:  # in the app: a background task with its own progress (and notification), like Extract Archive
-        ctx["upload_task"] = start(f"Uploading {dest.name} to Google Drive", work)
+        ctx["upload_task"] = start(f"Uploading {dest.name} to {drive.target(folder, '')}", work)
         return
     try:  # no app (tests, scripts): upload now
         ctx["upload_message"] = work(Task(0, "upload", "exe_parse"))
@@ -96,13 +99,13 @@ def present(ctx):
             "Chunk files": f"{out.chunks:,} of up to {files.human_size(ctx['chunk_bytes'])}",
             "Strings": out.strings,
             "Files written": f"{len(out.files):,} ({files.human_size(out.bytes)})",
-            "Saved to": files.display_path(ctx["dest"])}
+            "Saved to": files.display_path(ctx["dest"]),
+            "Full path": str(ctx["dest"])}
     if exe.entry:
         rows["Entry point"] = exe.entry[1]
-    if ctx.get("upload_task"):
-        rows["Google Drive"] = "Uploading in the background: progress below."
-    elif ctx.get("upload_message"):
-        rows["Google Drive"] = ctx["upload_message"]
+    if ctx.get("drive_target"):
+        rows["Google Drive"] = ctx["drive_target"]
+        rows["Upload"] = ctx.get("upload_message") or "In the background: progress below."
     ctx["result_rows"] = rows
     steps.present_rows("result_rows", title=f"Parsed {exe.format}")(ctx)
     if exe.warnings:
@@ -122,7 +125,7 @@ class ExeParse(JobPlugin):
         Field.file("exe", "Executable", required=True, help="A .exe, .dll, .com, .ovl ... file."),
         Field.text("output", "Save into (folder)",
                    help="The parsed files go in a folder named exactly like the executable, inside this one. "
-                        "Leave empty for Downloads › TaskDeck › Executables."),
+                        "Leave empty for Downloads › TaskDeck › Executables; a relative path is in Downloads."),
         Field.choice("chunk", "Chunk size", tuple(CHUNKS), default="2 KB",
                      help="Bytes per hex-dump file. 2 KB is 128 lines, roughly 4,000-5,000 tokens."),
         Field.number("min_string", "Shortest string", default=4, help="Characters a run of text needs to count."),

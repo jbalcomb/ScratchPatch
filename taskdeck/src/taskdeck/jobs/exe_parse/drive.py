@@ -22,14 +22,22 @@ from taskdeck.shared.gdrive import DriveLocation
 NATURE = JobNature.ONE_TIME_COPY
 
 
+def _parts(path: str) -> list[str]:
+    return [p.strip() for p in path.replace("\\", "/").split("/") if p.strip()]
+
+
+def target(parent_path: str, name: str) -> str:
+    """Where the folder goes, for the screen: "Google Drive › My Drive › TaskDeck › Executables › WIZARDS.EXE"."""
+    return DriveLocation(names=("My Drive", *_parts(parent_path))).display(name)
+
+
 def folder(client: gdrive.DriveClient, path: str) -> DriveLocation:
     """The Drive folder at ``path`` ("TaskDeck/Executables"), under My Drive, created where missing."""
     location = DriveLocation()
-    for name in (p.strip() for p in path.replace("\\", "/").split("/")):
-        if name:
-            folders, _ = client.children(location.folder_id)
-            found = folders.get(name)
-            location = location.child(gdrive.Folder(found, name) if found else client.create_folder(name, location.folder_id))
+    for name in _parts(path):
+        folders, _ = client.children(location.folder_id)
+        found = folders.get(name)
+        location = location.child(gdrive.Folder(found, name) if found else client.create_folder(name, location.folder_id))
     return location
 
 

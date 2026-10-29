@@ -317,9 +317,12 @@ def test_job_pushes_in_a_background_task_in_the_app(tmp_path):
                                 "start_task": lambda title, work: manager.start(title, "exe_parse", work)})
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
     assert report.ok, report.error
-    assert dict(report.result.rows)["Google Drive"].startswith("Uploading in the background")
+    rows = dict(report.result.rows)
+    assert rows["Google Drive"] == "Google Drive › My Drive › TaskDeck › Executables › GAME.EXE"
+    assert rows["Upload"].startswith("In the background")
+    assert rows["Full path"] == str(tmp_path / "out" / "GAME.EXE")
     task = manager.latest("exe_parse")
-    assert task.status == DONE and task.title == "Uploading GAME.EXE to Google Drive"
+    assert task.status == DONE and task.title == "Uploading GAME.EXE to Google Drive › My Drive › TaskDeck › Executables"
     assert task.result.display().endswith("TaskDeck › Executables › GAME.EXE")
     assert any(p.startswith("TaskDeck/Executables/GAME.EXE/regions/") for p in fake.tree())
 
@@ -331,4 +334,16 @@ def test_job_uploads_right_away_without_the_app(tmp_path):
     ctx = Context({}, services={"google_drive": lambda: fake})
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
     assert report.ok, report.error
-    assert dict(report.result.rows)["Google Drive"].startswith("Uploaded")
+    assert dict(report.result.rows)["Upload"].startswith("Uploaded")
+
+
+def test_relative_output_folder_is_in_downloads(tmp_path, monkeypatch):
+    from taskdeck.shared import files
+
+    monkeypatch.setattr(files, "locations", lambda: [files.Location("Downloads", tmp_path / "dl", "DOWNLOAD")])
+    src = tmp_path / "GAME.EXE"
+    src.write_bytes(dos_exe())
+    report = exe_parse.PLUGIN.run({"exe": str(src), "output": "Parsed"})
+    assert report.ok, report.error
+    assert (tmp_path / "dl" / "Parsed" / "GAME.EXE" / "SUMMARY.md").is_file()
+    assert dict(report.result.rows)["Full path"] == str(tmp_path / "dl" / "Parsed" / "GAME.EXE")
