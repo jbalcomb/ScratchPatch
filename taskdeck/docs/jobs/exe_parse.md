@@ -11,18 +11,19 @@ mirrors it). Tests: `tests/test_exe_parse.py`.
 
 | Field | |
 |---|---|
-| Executable | `.exe`, `.dll`, `.com`, `.ovl` ... up to 64 MB |
-| Save into (folder) | Parent folder. Default: Downloads › TaskDeck › Executables. It can't be the executable's own folder: a folder can't have the same name as a file next to it. |
+| Executable | `.exe`, `.dll`, `.com`, `.ovl` ... up to 64 MB. **Browse…** opens TaskDeck's own file browser (real paths; Android's picker would hand back a copy in the app's cache). |
+| Save into (folder) | Parent folder. Default: the executable's own folder. A relative folder is next to the executable too. |
 | Chunk size | Bytes per hex-dump file: 1, 2 (default), 4, 8 or 16 KB. 2 KB is 128 lines, about 4,000-5,000 tokens. |
 | Shortest string | Minimum run of printable characters listed as a string (default 4). |
-| Push to Google Drive | Mirror the folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). Needs Google Drive connected (Settings → Accounts). |
+| Push to Google Drive | Mirror the folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). The full Drive path is shown under the switch. Needs Google Drive connected (Settings → Accounts). |
 
 ## Output
 
-A folder named **exactly** like the executable (`WIZARDS.EXE/`):
+A folder named like the executable with `_` in front, the same on the phone and in Drive (`_WIZARDS.EXE/`;
+exactly the executable's name can't sit next to it):
 
 ```
-WIZARDS.EXE/
+_WIZARDS.EXE/
   README.md                 how to walk and search the folder (written for the agent)
   SUMMARY.md                summary and layout: format, hashes, entry point and the chunk holding it,
                             every region with its byte range, imports/resources, warnings

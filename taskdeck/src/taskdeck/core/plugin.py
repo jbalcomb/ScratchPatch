@@ -45,6 +45,7 @@ class Field:
     secret: bool = False  # masked in the UI; for settings such as API keys
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
+    extensions: tuple[str, ...] = ()  # FILE fields: the files Browse offers (".exe", ...); empty = any file
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -201,6 +202,11 @@ class JobPlugin:
         Returns a short confirmation message.
         """
         raise NotImplementedError
+
+    def field_notes(self, raw: dict[str, Any], settings: dict[str, Any]) -> dict[str, str]:
+        """Text shown under fields that depends on what's entered, e.g. where the output will go.
+        Field name -> note; refreshed as the inputs and the job's settings change."""
+        return {}
 
     def check_ready(self, settings: dict[str, Any]) -> list[Problem]:
         """Fast, offline checks run when the job opens. Override and extend ``super()``."""

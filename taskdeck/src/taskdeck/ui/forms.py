@@ -14,8 +14,12 @@ Handler = Callable[..., Any] | None
 class FieldControl:
     """One rendered field: ``control`` goes in the layout, ``value`` reads it back."""
 
-    def __init__(self, field: Field, value: Any, on_change: Handler = None, on_submit: Handler = None):
+    def __init__(self, field: Field, value: Any, on_change: Handler = None, on_submit: Handler = None,
+                 browse: Callable[["FieldControl"], None] | None = None):
+        """``browse``: what Browse does for FILE fields (the job screen opens TaskDeck's own file browser,
+        which gives real paths; Android's picker hands back a copy in the app's cache)."""
         self.field = field
+        self._browse_with = browse
         self.input = _build(field, value, on_change, on_submit)
         self.control: ft.Control = self.input
         if isinstance(self.input, ft.Dropdown):
@@ -59,7 +63,16 @@ class FieldControl:
             if self._on_change:
                 self._on_change(None)
 
+    def picked(self, path: str) -> None:
+        self.input.value = path
+        self.input.update()
+        if self._on_change:
+            self._on_change(None)
+
     async def _browse(self, e) -> None:
+        if self._browse_with:
+            self._browse_with(self)
+            return
         files = await ft.FilePicker().pick_files(dialog_title=f"Choose {self.field.label}")
         if files and files[0].path:
             self.input.value = files[0].path

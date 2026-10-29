@@ -1,6 +1,6 @@
 """Writing a parsed executable to a folder an AI agent can walk through or search in small pieces.
 
-    <EXE NAME>/                     named exactly like the executable, e.g. WIZARDS.EXE/
+    _<EXE NAME>/                    named like the executable with "_" in front, e.g. _WIZARDS.EXE/
       README.md                     how the folder is organised (read this first)
       SUMMARY.md                    what the file is, its layout, entry point, imports...
       metadata.json                 hashes, sizes, format and decoded header fields (machine-readable)

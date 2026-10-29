@@ -4,6 +4,7 @@ live pipeline progress and the result."""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import flet as ft
@@ -13,6 +14,7 @@ from taskdeck.shared.gdrive import DriveLocation
 
 from . import task_view
 from .common import plugin_icon, screen_view
+from .file_browser import FileBrowser
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -41,9 +43,13 @@ class JobScreen:
         initial = preset or draft
 
         self.fields = {
-            f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run)
+            f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run,
+                                 browse=self._browse_file)
             for f in plugin.fields
         }
+        # Notes under fields that depend on the inputs (JobPlugin.field_notes), e.g. where the output goes.
+        self.notes = {name: ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True, visible=False)
+                      for name in self.fields}
         restored = any(initial.get(f.name) not in (None, "", f.default) for f in plugin.fields) and bool(draft)
         self.run_button = ft.FilledButton(plugin.run_label, icon=ft.Icons.PLAY_ARROW, on_click=self.run, height=52)
         # Readiness: problems found before running (missing settings, unreadable key, sheet headers...).
@@ -88,7 +94,7 @@ class JobScreen:
                     ]
                 ),
                 self.readiness,
-                *[fc.control for fc in self.fields.values()],
+                *[c for name, fc in self.fields.items() for c in (fc.control, self.notes[name])],
                 ft.Row([self.run_button, self.cancel_button, self.clear_button]),
                 self.progress,
                 ft.Semantics(content=self.status, live_region=True),
@@ -103,6 +109,7 @@ class JobScreen:
             ],
         )
         self._render_task()
+        self._render_notes()
 
     # ---- readiness ------------------------------------------------------------------
 
@@ -112,6 +119,7 @@ class JobScreen:
 
     def check_ready(self) -> None:
         """Run the job's checks: offline ones now, network ones in the background."""
+        self._render_notes()  # also called on return from the job's settings, which notes may use
         vault = getattr(self.app, "vault", None)
         if vault and vault.needs_unlock(self.plugin.settings_id):
             self.problems = [Problem("Your saved credentials are locked. Unlock them with your fingerprint.", fix="unlock")]
@@ -195,6 +203,8 @@ class JobScreen:
     def invalidate(self, e=None) -> None:
         """Inputs changed: keep a draft, and drop the result so a stale preview can never be committed."""
         self.app.drafts.save(self.plugin.id, self.raw_inputs())
+        self._render_notes()
+        self._update()
         self.generation += 1
         self.payload = None
         if self.has_output:
@@ -202,6 +212,26 @@ class JobScreen:
             self.output.controls = []
             self.status.value = ""
             self.view.update()
+
+    def _render_notes(self) -> None:
+        try:
+            settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
+            notes = self.plugin.field_notes(self.raw_inputs(), settings)
+        except Exception:  # a broken note must not break the screen
+            notes = {}
+        for name, text in self.notes.items():
+            text.value = notes.get(name, "")
+            text.visible = bool(text.value)
+
+    def _browse_file(self, fc: FieldControl) -> None:
+        """Browse for a FILE field with TaskDeck's own browser (real paths), starting where the current one is."""
+        exts = tuple(e.lower() for e in fc.field.extensions)
+        current = Path(str(fc.value or "")).expanduser()
+        FileBrowser.pick_file(self.app, lambda path: fc.picked(str(path)),
+                              start=current.parent if fc.value and current.parent.is_dir() else None,
+                              title=f"Choose {fc.field.label}",
+                              accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
+                              kind=" or ".join(exts) + " files" if exts else "files")
 
     def clear(self, e=None) -> None:
         for fc in self.fields.values():

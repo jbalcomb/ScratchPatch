@@ -195,3 +195,32 @@ def test_run_asks_for_the_fingerprint_when_it_signs_in_with_a_locked_account(tmp
     assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=False, fingerprint_ok=True) == (False, True)
     off = {"exe": "x.exe", "drive": False}  # no Drive, no Google account: never asks
     assert run_unlocking(tmp_path, exe_parse.PLUGIN, off, locked=True, fingerprint_ok=False) == (False, True)
+
+
+def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inputs(tmp_path, monkeypatch):
+    """Browse opens TaskDeck's file browser (real paths, only the field's file types); picking a file updates
+    the notes under the fields (Parse executable: the Drive path under its switch)."""
+    from taskdeck.jobs import exe_parse
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.FileBrowser, "pick_file",
+                        classmethod(lambda cls, app, on_pick, **kw: opened.update(kw, on_pick=on_pick)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"drive_folder": "RE"}
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _EXECUTABLE.EXE"
+
+    fc = screen.fields["exe"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert opened["title"] == "Choose Executable"
+    assert opened["accept"]("WIZARDS.EXE") and opened["accept"]("x.dll") and not opened["accept"]("notes.txt")
+    opened["on_pick"](tmp_path / "MOM" / "WIZARDS.EXE")
+    assert fc.value == str(tmp_path / "MOM" / "WIZARDS.EXE")
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _WIZARDS.EXE"
+    screen.fields["drive"].input.value = True
+    screen.invalidate()
+    assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS.EXE"
+    assert screen.notes["drive"].visible and not screen.notes["exe"].visible

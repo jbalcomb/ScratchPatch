@@ -2,7 +2,7 @@
 
 Two modes:
 
-* ``FileBrowser.pick_file``: choose a file (archives only unless "Show all files").
+* ``FileBrowser.pick_file``: choose a file (archives, or what ``accept`` takes, unless "Show all files").
 * ``FileBrowser.pick_folder``: choose where to put something, like a "Save as" dialog:
   optional new folder name, location chips, folder list, New folder, and a fixed
   "Will extract to:" bar with Cancel / Use this. Its "Google Drive" chip browses the
@@ -33,9 +33,11 @@ FILE, FOLDER = "file", "folder"
 
 class FileBrowser:
     def __init__(self, app: "TaskDeckApp", mode: str, title: str, start: Path | None,
-                 on_done: Callable[..., None], new_folder_name: str | None = None, action_label: str = "Use this"):
+                 on_done: Callable[..., None], new_folder_name: str | None = None, action_label: str = "Use this",
+                 accept: Callable[[str], bool] = files.is_archive, kind: str = "archives"):
         self.app = app
         self.mode = mode
+        self.accept, self.kind = accept, kind  # which files can be chosen (by name), and what they're called
         self.on_done = on_done
         self.locations = files.locations()
         # Google Drive (destination picker only): the trail of folders from My Drive, or None on the phone
@@ -94,8 +96,10 @@ class FileBrowser:
     # ---- opening ----------------------------------------------------------------------
 
     @classmethod
-    def pick_file(cls, app: "TaskDeckApp", on_pick: Callable[[Path], None], start: Path | None = None) -> None:
-        app.push(cls(app, FILE, "Choose an archive", start, on_pick))
+    def pick_file(cls, app: "TaskDeckApp", on_pick: Callable[[Path], None], start: Path | None = None,
+                  title: str = "Choose an archive", accept: Callable[[str], bool] = files.is_archive,
+                  kind: str = "archives") -> None:
+        app.push(cls(app, FILE, title, start, on_pick, accept=accept, kind=kind))
 
     @classmethod
     def show(cls, app: "TaskDeckApp", folder: Path, on_pick: Callable[[Path], None]) -> None:
@@ -175,7 +179,7 @@ class FileBrowser:
 
     def _items(self) -> list[ft.Control]:
         try:
-            items = files.list_folder(self.folder, archives_only=self.mode == FILE and not self.show_all.value)
+            items = files.list_folder(self.folder)
         except PermissionError:
             return [self._message(ft.Icons.LOCK_OUTLINE, "TaskDeck can't see this folder.",
                                   "Allow file access when TaskDeck asks for it.")]
@@ -183,9 +187,11 @@ class FileBrowser:
             return [self._message(ft.Icons.ERROR_OUTLINE, "Can't open this folder.", str(exc))]
         if self.mode == FOLDER:
             items = [i for i in items if i.is_dir]
+        elif not self.show_all.value:
+            items = [i for i in items if i.is_dir or self.accept(i.name)]
         rows = [self._row(i) for i in items]
         if not rows:
-            hint = "No archives here. Turn on “Show all files” to see everything." if self.mode == FILE else "No folders here."
+            hint = f"No {self.kind} here. Turn on “Show all files” to see everything." if self.mode == FILE else "No folders here."
             rows = [self._message(ft.Icons.FOLDER_OPEN, "Empty", hint)]
         return rows
 
@@ -193,15 +199,15 @@ class FileBrowser:
         if item.is_dir:
             return ft.ListTile(leading=ft.Icon(ft.Icons.FOLDER), title=ft.Text(item.name, max_lines=2),
                                trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT), on_click=lambda e: self.go(item.path))
-        archive = files.is_archive(item.name)
+        archive, ok = files.is_archive(item.name), self.accept(item.name)
         t = time.localtime(item.modified)
         when = f"{time.strftime('%b', t)} {t.tm_mday}" + ("" if t.tm_year == time.localtime().tm_year else f", {t.tm_year}")
         return ft.ListTile(
             leading=ft.Icon(ft.Icons.FOLDER_ZIP_OUTLINED if archive else ft.Icons.INSERT_DRIVE_FILE_OUTLINED),
             title=ft.Text(item.name, max_lines=2),
             subtitle=ft.Text(f"{files.human_size(item.size)} · {when}"),
-            disabled=not archive,
-            on_click=(lambda e: self._pick(item.path)) if archive else None,
+            disabled=not ok,
+            on_click=(lambda e: self._pick(item.path)) if ok else None,
         )
 
     @staticmethod
