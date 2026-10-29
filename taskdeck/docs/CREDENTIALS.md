@@ -16,7 +16,12 @@ switch existed), it stays on until switched off.
   lets the app use it after a fingerprint or the phone PIN. Without one, the stored data can't be decrypted,
   not even from a backup or by another app.
 * **Unlock**: the first time a job that needs credentials is opened (or its settings), Android shows its
-  fingerprint prompt. After that the credentials are served from memory.
+  fingerprint prompt. After that the credentials are served from memory. A job needs credentials in two
+  ways:
+  * its own settings marked `secret=True` (e.g. Daily Log's key): asked when the job **opens**;
+  * an **account** it signs in with (the Google account for Drive), declared with `JobPlugin.accounts`:
+    asked when **Run** is pressed, and only if that run uses it (e.g. Parse executable with *Push to Google
+    Drive* on). A job using an account must declare it, or a locked vault just looks like "not connected".
 * **Lock**: after 5 minutes in the background, or **Lock now** (Settings tab, or "Lock credentials" in the
   palette). Unlocking again asks for the fingerprint
   ([flet-local-auth](https://pypi.org/project/flet-local-auth/)). Closing the app locks too.
@@ -26,7 +31,15 @@ switch existed), it stays on until switched off.
 
 Code: `taskdeck.core.secrets` (the vault, platform-independent) and `taskdeck.ui.vault_backend` (Android).
 The host routes settings through it: `TaskDeckApp.job_settings()` / `save_job_settings()`. Jobs don't
-change; they just mark fields `secret=True`.
+handle the vault themselves: they mark their own fields `secret=True`, and declare the accounts they sign in
+with:
+
+```python
+accounts = ((GOOGLE_ACCOUNT, "drive"),)  # the Google account, when the "drive" toggle is on ("" = always)
+```
+
+The job then gets a signed-in client from `ctx.services["google_drive"]` (absent while not connected).
+Screens of their own (Extract Archive's) check `app.google.locked` and offer **Unlock** themselves.
 
 ## Good to know
 

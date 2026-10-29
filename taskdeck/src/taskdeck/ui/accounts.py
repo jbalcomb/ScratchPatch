@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 import flet as ft
 
-from taskdeck.core import Field
+from taskdeck.core import GOOGLE_ACCOUNT, Field
 from taskdeck.shared import gdrive, google_oauth
 
 from .common import screen_view
@@ -21,7 +21,7 @@ from .forms import FieldControl
 if TYPE_CHECKING:
     from .app import TaskDeckApp
 
-GOOGLE = "account:google"
+GOOGLE = GOOGLE_ACCOUNT
 SECRET_FIELDS = {GOOGLE: {"client_secret", "refresh_token"}}
 SETUP_DOC = "https://github.com/jbalcomb/ScratchPatch/blob/main/taskdeck/docs/GOOGLE_DRIVE_SETUP.md"
 

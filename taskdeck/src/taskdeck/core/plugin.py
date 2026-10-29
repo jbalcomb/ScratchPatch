@@ -91,6 +91,9 @@ class Field:
         return raw
 
 
+# The Google account (Drive) jobs sign in with: its settings id, for ``JobPlugin.accounts``.
+GOOGLE_ACCOUNT = "account:google"
+
 # For jobs that use the internet: add to the job's ``settings``. On mobile data the job's network
 # work waits for Wi-Fi (the app's NetworkMonitor enforces it).
 WIFI_ONLY = Field.toggle("wifi_only", "Wi-Fi only",
@@ -172,6 +175,10 @@ class JobPlugin:
     settings_actions: ClassVar[tuple[SettingsAction, ...]] = ()
     # Use another job's stored settings (same fields) instead of keeping a separate copy.
     settings_from: ClassVar[str] = ""
+    # Accounts the job signs in with (their settings ids, e.g. GOOGLE_ACCOUNT), each with the toggle field
+    # that turns its use on ("" = always). Their credentials are unlocked (fingerprint) before the job runs,
+    # like the job's own secret settings are when it opens. See docs/CREDENTIALS.md.
+    accounts: ClassVar[tuple[tuple[str, str], ...]] = ()
     # Jobs that copy files somewhere declare which kind of copy they are; it decides what happens to a
     # same-named file already at the destination (see taskdeck.core.copying and docs/JOB_KINDS.md).
     nature: ClassVar[JobNature | None] = None
@@ -205,6 +212,10 @@ class JobPlugin:
         """Slower checks that may use the network (run in the background when the job opens).
         Only called when :meth:`check_ready` found nothing blocking."""
         return []
+
+    def accounts_needed(self, raw: dict[str, Any]) -> list[str]:
+        """The accounts a run with these inputs signs in with (see ``accounts``)."""
+        return [account for account, toggle in self.accounts if not toggle or bool(raw.get(toggle))]
 
     def collect_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {f.name: f.coerce(raw.get(f.name, f.default)) for f in self.fields}

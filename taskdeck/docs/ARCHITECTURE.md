@@ -28,6 +28,8 @@ class UnitConvert(JobPlugin):
     tags = ("km", "miles", ...)             # extra palette keywords
     fields = (Field.number("value", "Value", required=True), Field.choice(...), ...)
     quick_actions = (QuickAction("Convert: km to mi", {"from_unit": "km", "to_unit": "mi"}),)
+    accounts = ()                           # accounts it signs in with, e.g. ((GOOGLE_ACCOUNT, "drive"),):
+                                            # unlocked before Run (docs/CREDENTIALS.md)
 
     def build_pipeline(self) -> Pipeline: ...
 

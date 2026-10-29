@@ -12,7 +12,7 @@ optionally a mirror of it in Google Drive. See docs/jobs/exe_parse.md.
 
 from pathlib import Path
 
-from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
+from taskdeck.core import GOOGLE_ACCOUNT, WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
 from taskdeck.shared import files, steps
 
 from . import drive, formats, layout
@@ -134,6 +134,7 @@ class ExeParse(JobPlugin):
                    help="Under My Drive; created if missing. The executable's folder goes inside it."),
         WIFI_ONLY,
     )
+    accounts = ((GOOGLE_ACCOUNT, "drive"),)  # unlocked before a run that pushes to Google Drive
     nature = drive.NATURE  # pushing to Drive is a one-time copy of a fixed snapshot (taskdeck.core.copying)
     run_label = "Parse"
 

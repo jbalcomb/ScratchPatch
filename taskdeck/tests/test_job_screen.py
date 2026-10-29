@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from taskdeck.core import Drafts, JsonStore
+from taskdeck.core import Drafts, JsonStore, RunReport
 from taskdeck.jobs import daily_log
 from taskdeck.ui.job_view import JobScreen
 
@@ -157,3 +157,41 @@ def test_background_task_shows_its_progress_and_outcome(tmp_path):
     assert not screen.blocked
     screen.dismiss_task()
     assert screen.task_box.controls == []
+
+
+def run_unlocking(tmp_path, plugin, raw, locked: bool, fingerprint_ok: bool):
+    """JobScreen.run up to the account unlock; returns (unlock asked, the job ran)."""
+    import asyncio
+
+    asked, ran = [], []
+    app = fake_app(tmp_path)
+    app.vault = SimpleNamespace(needs_unlock=lambda sid: locked and sid == "account:google")
+
+    async def unlock(then=None):
+        asked.append(True)
+        return fingerprint_ok
+
+    app.unlock = unlock
+    screen = JobScreen(app, plugin)
+    screen.view.update = lambda: None
+    screen.raw_inputs = lambda: raw
+    screen._set_running = lambda running: ran.append(running)  # the run gets this far only after unlocking
+    screen.app.page = SimpleNamespace(update=lambda: None)
+    screen.app.job_settings = lambda job_id: {}
+    screen.plugin = SimpleNamespace(**{k: getattr(plugin, k) for k in ("id", "settings_id", "accounts_needed")},
+                                    run=lambda *a, **k: RunReport(False, None, [], "stop"), has_commit=False)
+    screen.app.history = SimpleNamespace(add=lambda *a: None)
+    screen.app.on_history_changed = lambda: None
+    asyncio.run(screen.run())
+    return bool(asked), bool(ran)
+
+
+def test_run_asks_for_the_fingerprint_when_it_signs_in_with_a_locked_account(tmp_path):
+    from taskdeck.jobs import exe_parse
+
+    drive_on = {"exe": "x.exe", "drive": True}
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=True, fingerprint_ok=True) == (True, True)
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=True, fingerprint_ok=False) == (True, False)
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=False, fingerprint_ok=True) == (False, True)
+    off = {"exe": "x.exe", "drive": False}  # no Drive, no Google account: never asks
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, off, locked=True, fingerprint_ok=False) == (False, True)

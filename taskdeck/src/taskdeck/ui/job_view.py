@@ -249,6 +249,8 @@ class JobScreen:
             return
         raw = self.raw_inputs()
         self.app.drafts.save(self.plugin.id, raw)
+        if not await self._unlock_accounts(raw):
+            return
         generation = self.generation
         self.ctx = Context({}, services={**self.app.services(), "start_task": self._start_task})
         self._set_running(True)
@@ -339,6 +341,18 @@ class JobScreen:
             self.task = None
         self._render_task()
         self._update()
+
+    async def _unlock_accounts(self, raw: dict[str, Any]) -> bool:
+        """Ask for the fingerprint when the run signs in with an account whose credentials are locked
+        (e.g. Parse executable with "Push to Google Drive" on). False if they stay locked."""
+        vault = getattr(self.app, "vault", None)
+        if not vault or not any(vault.needs_unlock(a) for a in self.plugin.accounts_needed(raw)):
+            return True
+        if await self.app.unlock():
+            return True
+        self.status.value = "Your credentials are still locked: unlock them to sign in to your account."
+        self._update()
+        return False
 
     def _network_scoped(self, fn, ctx):
         """fn, run under the job's Wi-Fi-only setting (in the worker thread): network requests wait for Wi-Fi,
