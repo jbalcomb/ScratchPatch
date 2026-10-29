@@ -468,3 +468,30 @@ def test_open_from_history_restores_archive_and_destination(tmp_path):
     app.back()
     app.open_job("extract_archive", {"archive": str(tmp_path / "gone.7z")})  # deleted since: opens empty
     assert app.stack[-1].archive is None
+
+
+def test_settings_forget_a_rejection_once_something_newer_runs(tmp_path, monkeypatch):
+    import threading as th
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    def fake_boot(state, active):
+        box = {"state": state}
+        return SimpleNamespace(_lock=th.Lock(), _load_state=lambda: dict(box["state"]),
+                               _save_state=lambda s: box.update(state=s), active=active, listeners=[],
+                               box=box)
+    # the phone now: 1b209de (newer) runs, 26ec36d's rejection still recorded, its build time known
+    boot = fake_boot({"last_error": "26ec36d: ModuleNotFoundError: No module named 'taskdeck.jobs'",
+                      "bundles": {"26ec36d": {"build_time": 2000}}},
+                     {"source": "live update", "version": "1b209de", "build_time": 3000})
+    monkeypatch.setattr(app_module, "boot", boot)
+    make_app(tmp_path)
+    assert boot.box["state"]["last_error"] is None
+
+    # right after a failure: the older APK code runs as the fallback; the message must stay
+    boot = fake_boot({"last_error": "abc1234: ImportError: x", "bundles": {"abc1234": {"build_time": 2000}}},
+                     {"source": "bundled", "version": "10cc5e9", "build_time": 1500})
+    monkeypatch.setattr(app_module, "boot", boot)
+    make_app(tmp_path)
+    assert boot.box["state"]["last_error"] == "abc1234: ImportError: x"
