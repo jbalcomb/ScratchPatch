@@ -46,6 +46,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 | Job | Notes |
 |---|---|
 | **Extract archive** | Unpack zip, 7z, RAR, tar and gz (password-protected too) into a folder on the phone, in the background. Needs the APK with file access. [docs/jobs/extract_archive_SPEC.md](docs/jobs/extract_archive_SPEC.md). |
+| **Parse executable** | Split a DOS or Windows .exe (MZ, PE, NE) into small text files an AI agent can walk or search: summary and layout, metadata, headers, hex chunks, strings. Optionally mirrored to Google Drive. [docs/jobs/exe_parse.md](docs/jobs/exe_parse.md). |
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 

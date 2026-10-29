@@ -49,10 +49,11 @@ class Interrupted(Exception):
 class Uploads:
     def __init__(self, task: Task, drive: gdrive.DriveClient, todo: list[Item], *, start: int | None = None,
                  most: int | None = None, large: int | None = None, adjust_every: float | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, keep: bool = False):
         start, most = start or START, most or MAX
         large, adjust_every = large or LARGE, ADJUST_EVERY if adjust_every is None else adjust_every
         self.task, self.drive, self.clock = task, drive, clock
+        self.keep = keep  # keep the local files (they're the result, not a temporary copy)
         self.small = deque(i for i in todo if i[4] <= gdrive.SMALL)
         self.big = deque(i for i in todo if i[4] > gdrive.SMALL)
         self.total = len(todo)
@@ -134,7 +135,8 @@ class Uploads:
                 secs = self.clock() - started
                 self.task.log("file", path=str(rel), bytes=size, secs=round(secs, 3), replaced=bool(replace),
                               trashed=len(trash))
-                local.unlink()  # free the space as we go
+                if not self.keep:
+                    local.unlink()  # free the space as we go
                 with self.lock:
                     self.count += 1
                     self.sent += size

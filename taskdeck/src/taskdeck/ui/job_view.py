@@ -239,7 +239,7 @@ class JobScreen:
         raw = self.raw_inputs()
         self.app.drafts.save(self.plugin.id, raw)
         generation = self.generation
-        self.ctx = Context({})
+        self.ctx = Context({}, services=self.app.services())
         self._set_running(True)
         steps = list(self.pipeline)
 

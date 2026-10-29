@@ -11,9 +11,8 @@ from pathlib import Path
 
 from taskdeck.core import Cancelled, JobNature, Task, copying
 from taskdeck.shared import archive, files, gdrive, google_oauth, http
+from taskdeck.shared import drive_uploads as uploads
 from taskdeck.shared.gdrive import DriveLocation
-
-from . import uploads
 
 
 @dataclass

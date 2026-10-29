@@ -380,7 +380,7 @@ def test_extract_to_drive(tmp_path):
 def test_extract_to_drive_cancel_and_failure(tmp_path, monkeypatch):
     from taskdeck.jobs.extract_archive import logic
 
-    from taskdeck.jobs.extract_archive import uploads
+    from taskdeck.shared import drive_uploads as uploads
 
     monkeypatch.setattr(uploads, "START", 1)  # "after the first file" exactly
     monkeypatch.setattr(uploads, "MAX", 1)

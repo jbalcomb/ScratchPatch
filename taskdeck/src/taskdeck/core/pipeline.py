@@ -74,6 +74,9 @@ class Context:
     settings: dict[str, Any] = field(default_factory=dict)
     result: Result | None = None
     log: list[str] = field(default_factory=list)
+    # What the app offers jobs that need more than their inputs, e.g. "google_drive": a function returning
+    # a signed-in DriveClient (only there while Google Drive is connected and unlocked).
+    services: dict[str, Any] = field(default_factory=dict)
     _cancelled: bool = False
 
     def __getitem__(self, key: str) -> Any:

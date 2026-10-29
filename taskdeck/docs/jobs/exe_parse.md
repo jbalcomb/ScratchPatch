@@ -1,0 +1,77 @@
+# Parse executable
+
+Splits an executable into small, labelled text files so an AI agent doing reverse engineering can read or
+search it one piece at a time, instead of loading a whole binary into its context. Optionally mirrors the
+result to Google Drive, where the agent (or a person) can pick it up.
+
+Code: `src/taskdeck/jobs/exe_parse/` (`formats.py` reads headers, `layout.py` writes the folder, `drive.py`
+mirrors it). Tests: `tests/test_exe_parse.py`.
+
+## Inputs
+
+| Field | |
+|---|---|
+| Executable | `.exe`, `.dll`, `.com`, `.ovl` ... up to 64 MB |
+| Save into (folder) | Parent folder. Default: Downloads › TaskDeck › Executables. It can't be the executable's own folder: a folder can't have the same name as a file next to it. |
+| Chunk size | Bytes per hex-dump file: 1, 2 (default), 4, 8 or 16 KB. 2 KB is 128 lines, about 4,000-5,000 tokens. |
+| Shortest string | Minimum run of printable characters listed as a string (default 4). |
+| Also save raw .bin chunks | The same bytes as each hex chunk, for an agent that runs a disassembler. |
+| Push to Google Drive | Mirror the folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). Needs Google Drive connected (Settings → Accounts). |
+
+## Output
+
+A folder named **exactly** like the executable (`WIZARDS.EXE/`):
+
+```
+WIZARDS.EXE/
+  README.md                 how to walk and search the folder (written for the agent)
+  SUMMARY.md                summary and layout: format, hashes, entry point and the chunk holding it,
+                            every region with its byte range, imports/resources, warnings
+  metadata.json             hashes, size, dates, format, every decoded header field, facts, regions
+  index.json                every region and every chunk/table/string file with its byte or line range
+  headers/headers.txt       all decoded header fields with their meaning
+  tables/<name>-NNN.txt     relocations (MZ), sections, imports, exports, resources (PE), segments (NE);
+                            1,000 lines per file
+  regions/NN-<region>/<first>-<last>.txt   hex dump, one file per chunk, named by file offsets
+  strings/ascii-NNN.txt, strings/utf16-NNN.txt   strings with file offset, region and address
+```
+
+* **Regions** cover every byte exactly once, in file order: headers, relocation table, the DOS load module
+  or each PE section / NE segment, the overlay, and anything no header describes ("unclaimed").
+* Each chunk file starts with the region, its byte range (file offsets plus the region's own address: RVA
+  for PE, offset in the load image for DOS) and the **previous and next chunk**, so the agent can walk the
+  file without the index.
+* Output doesn't depend on when it was made: parsing again gives identical files, and pushing again only
+  uploads what changed.
+* An existing output folder is replaced only if this job made it (it has our `index.json`).
+
+## What's decoded
+
+| Format | Decoded |
+|---|---|
+| DOS MZ | Header fields, relocation table (seg:off, image and file offsets), load module, entry CS:IP, overlay (recognises Borland FBOV, an appended MZ, zip/RAR/7z) |
+| PE32 / PE32+ | COFF and optional headers, data directories, sections, imports, exports, resource tree, entry point, overlay (notes an Authenticode signature) |
+| NE (Win16, OS/2) | Header, segment table, module name, imported modules, entry point |
+| LE / LX | Detected; the image is one region (not decoded further) |
+| Anything else | Laid out as raw data |
+
+## Google Drive
+
+A one-time copy (docs/JOB_KINDS.md): same name and content is skipped, a different file is uploaded fresh
+and the old one trashed. Unlike Extract Archive, files and folders in Drive the local folder no longer has
+(e.g. chunks from an earlier parse with another chunk size) are moved to Drive's trash too, so an agent never
+reads a stale chunk. Uploads reuse Extract Archive's parallel uploader (`taskdeck/shared/drive_uploads.py`).
+
+## Open questions
+
+* **Which executables?** DOS MZ with Borland overlays is decoded to the header level; the overlay itself
+  (FBOV stubs, overlay segments) isn't split further yet. Say which formats matter most.
+* **What can the agent run?** If it only has file reading and grep, the hex dumps and strings are the
+  interface. If it can run Python or a disassembler, raw chunks (and maybe a disassembly listing per
+  chunk) would be more useful than hex.
+* **Disassembly**: a pure-Python x86 disassembler (16-bit real mode for DOS) would let each code chunk
+  come with a listing. No such library is bundled today.
+* **How the agent reaches the files**: from Google Drive (its Drive connector), a synced folder, or a repo.
+  The layout works for all three; Drive is slow for thousands of small files.
+* **Annotations going back**: should the agent's findings (names of functions, data structures) be written
+  next to the chunks, and kept when the executable is parsed again?

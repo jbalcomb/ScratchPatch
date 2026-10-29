@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from taskdeck.core import TaskManager
-from taskdeck.jobs.extract_archive import uploads
+from taskdeck.shared import drive_uploads as uploads
 from taskdeck.shared import gdrive, http
 
 from test_gdrive import resp

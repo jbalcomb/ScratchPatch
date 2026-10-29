@@ -14,7 +14,7 @@ def fake_app(tmp_path):
     return SimpleNamespace(
         store=store, drafts=Drafts(store),
         favorites=SimpleNamespace(is_pinned=lambda job_id: False),
-        palette=None, open_settings=lambda job_id: None,
+        palette=None, open_settings=lambda job_id: None, services=dict,
     )
 
 

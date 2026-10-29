@@ -189,6 +189,11 @@ class TaskDeckApp:
         plugin = self.registry.get(job_id)
         return plugin.settings_id if plugin else job_id
 
+    def services(self) -> dict[str, Any]:
+        """What a job's steps can use beyond their inputs (``Context.services``)."""
+        google = self.google
+        return {"google_drive": google.drive} if google.connected and not google.locked else {}
+
     def job_settings(self, job_id: str) -> dict[str, Any]:
         """Stored settings plus, when unlocked, the job's credentials from the vault."""
         sid = self._settings_id(job_id)

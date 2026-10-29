@@ -51,7 +51,7 @@ requests, stalls, and the timeline of pauses, app and network changes.
 ## How uploads to Google Drive are paced
 
 Measured from traces: Google takes about 3-5 s to create each file however small, and large files move at
-the connection's speed. So (`taskdeck/jobs/extract_archive/uploads.py`):
+the connection's speed. So (`taskdeck/shared/drive_uploads.py`):
 
 * **Two lanes.** Files up to 5 MB go up in one request each, several at once. Larger files use resumable
   uploads in 8 MB pieces (after a dropped connection only the current piece is sent again), 2 at once: they
