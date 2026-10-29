@@ -7,37 +7,41 @@ from pathlib import Path
 import pytest
 
 from taskdeck.jobs import dll_parse, exe_parse
-from taskdeck.shared.binaries import formats
+from taskdeck.shared.binaries import formats, names
 
 JANSI = Path("/opt/apache-maven-3.9.11/lib/jansi-native/Windows/x86_64/jansi.dll")  # a real DLL, if installed
 
 
-def pe_dll() -> bytes:
+def pe_dll(first: bytes = b"Alpha") -> bytes:
     """A PE32 DLL exporting Alpha (ordinal 1), an unnamed function (2) and Beta, forwarded to
-    KERNEL32.HeapAlloc (3)."""
-    data = bytearray(0x600)
+    KERNEL32.HeapAlloc (3), with one base relocation: at RVA 0x1100, an address in .edata."""
+    data = bytearray(0x800)
     data[0:2] = b"MZ"
     struct.pack_into("<H", data, 0x18, 0x40)
     struct.pack_into("<I", data, 0x3C, 0x80)
     data[0x80:0x84] = b"PE\0\0"
-    struct.pack_into("<HHIIIHH", data, 0x84, 0x14C, 2, 0, 0, 0, 0xE0, 0x2102)  # 0x2000: DLL
+    struct.pack_into("<HHIIIHH", data, 0x84, 0x14C, 3, 0, 0, 0, 0xE0, 0x2102)  # 0x2000: DLL
     opt = 0x98
     struct.pack_into("<HBBIIIIIIIIIHHHHHHIIIIHHIIIIII", data, opt, 0x10B, 14, 0, 0x200, 0x200, 0, 0x1000, 0x1000,
-                     0x2000, 0x10000000, 0x1000, 0x200, 6, 0, 0, 0, 6, 0, 0, 0x3000, 0x200, 0, 2, 0,
+                     0x2000, 0x10000000, 0x1000, 0x200, 6, 0, 0, 0, 6, 0, 0, 0x4000, 0x200, 0, 2, 0,
                      0x100000, 0x1000, 0x100000, 0x1000, 0, 16)
     struct.pack_into("<II", data, opt + 96, 0x2000, 0x100)  # export directory
+    struct.pack_into("<II", data, opt + 96 + 5 * 8, 0x3000, 12)  # base relocations
     sect = opt + 0xE0
     struct.pack_into("<8sIIIIIIHHI", data, sect, b".text", 0x200, 0x1000, 0x200, 0x200, 0, 0, 0, 0, 0x60000020)
     struct.pack_into("<8sIIIIIIHHI", data, sect + 40, b".edata", 0x200, 0x2000, 0x200, 0x400, 0, 0, 0, 0, 0x40000040)
+    struct.pack_into("<8sIIIIIIHHI", data, sect + 80, b".reloc", 0x200, 0x3000, 0x200, 0x600, 0, 0, 0, 0, 0x42000040)
+    struct.pack_into("<IIHH", data, 0x600, 0x1000, 12, (3 << 12) | 0x100, 0)  # HIGHLOW at 0x1100, padding
+    struct.pack_into("<I", data, 0x300, 0x10002004)  # the address stored there
     e = 0x400  # RVA 0x2000
     struct.pack_into("<IIHHIIIIIII", data, e, 0, 0x5F5E1000, 0, 0, 0x2070, 1, 3, 2, 0x2040, 0x2050, 0x2060)
     struct.pack_into("<III", data, e + 0x40, 0x1010, 0x1020, 0x2080)  # addresses; the last is a forwarder
-    struct.pack_into("<II", data, e + 0x50, 0x20A0, 0x20B0)  # names
+    struct.pack_into("<II", data, e + 0x50, 0x20A0, 0x20C0)  # names
     struct.pack_into("<HH", data, e + 0x60, 0, 2)  # their indexes into the addresses
     data[e + 0x70:e + 0x79] = b"TEST.DLL\0"
     data[e + 0x80:e + 0x93] = b"KERNEL32.HeapAlloc\0"
-    data[e + 0xA0:e + 0xA6] = b"Alpha\0"
-    data[e + 0xB0:e + 0xB5] = b"Beta\0"
+    data[e + 0xA0:e + 0xA1 + len(first)] = first + b"\0"
+    data[e + 0xC0:e + 0xC5] = b"Beta\0"
     return bytes(data)
 
 
@@ -86,9 +90,40 @@ def test_ne_dll_exports_from_the_entry_table_and_both_name_tables():
 
 @pytest.mark.skipif(not JANSI.is_file(), reason="no real DLL on this machine")
 def test_a_real_dll():
-    exe = formats.parse(JANSI.read_bytes())
-    assert exe.dll and exe.format == "PE32+" and len(exe.exports) == 41  # checked against pefile
+    exe = formats.parse(JANSI.read_bytes())  # counts checked against pefile
+    assert exe.dll and exe.format == "PE32+" and len(exe.exports) == 41
     assert all(e.name and e.offset for e in exe.exports)
+    assert exe.facts["base_relocation_types"] == {"DIR64": 28}
+
+
+def test_base_relocations_say_where_each_address_points():
+    exe = formats.parse(pe_dll())
+    assert exe.facts["base_relocations"] == 1 and exe.facts["base_relocation_types"] == {"HIGHLOW": 1}
+    assert exe.tables["base relocations"][1].split() == ["0x00001100", "0x00000300", "HIGHLOW", "0x10002004",
+                                                         "->", ".edata", "0x00002004"]
+
+
+@pytest.mark.parametrize("symbol, name", [
+    ("?Draw@Window@@QAEXH@Z", "Window::Draw"), ("??0Window@@QAE@XZ", "Window::Window"),
+    ("??1Window@@UAE@XZ", "Window::~Window"), ("??4Window@@QAEAAV0@ABV0@@Z", "Window::operator="),
+    ("?f@B@A@@QAEXXZ", "A::B::f"), ("??_7Window@@6B@", "Window::`vftable'"),
+    ("@Window@Draw$qi", "Window::Draw"), ("@Window@$bctr$qv", "Window::Window"),
+    ("@Window@$bdtr$qv", "Window::~Window"), ("@App@Win@$badd$qi", "App::Win::operator+"),
+    # not C++, or not decoded (templates, anonymous namespaces): nothing rather than a guess
+    ("JNI_OnLoad", ""), ("_DllMain@12", ""), ("??$vector@H@std@@QAE@XZ", ""), ("?x@?A0x1@@3HA", ""), ("?", ""),
+    ("@Vec@%T1%@size$qv", ""),
+])
+def test_cpp_names(symbol, name):
+    assert names.readable(symbol) == name
+
+
+def test_cpp_exports_show_their_readable_name(tmp_path):
+    report, out = run(tmp_path, dll_parse.PLUGIN, pe_dll(b"?Draw@Window@@QAEXH@Z"), "WIN.DLL")
+    assert report.ok, report.error
+    assert "?Draw@Window@@QAEXH@Z  [Window::Draw]" in (out / "exports/exports-001.txt").read_text()
+    assert json.loads((out / "exports/exports.json").read_text())["exports"][0]["cpp_name"] == "Window::Draw"
+    summary = (out / "SUMMARY.md").read_text()
+    assert "| 1 | ?Draw@Window@@QAEXH@Z | Window::Draw |" in summary and "C++ names: 1." in summary
 
 
 def run(tmp_path, plugin, data, name, **inputs):

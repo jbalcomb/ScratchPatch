@@ -13,6 +13,8 @@ import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from . import names
+
 MZ_FIELDS = (  # (name, struct code, meaning), at offset 0
     ("e_magic", "2s", "signature 'MZ'"),
     ("e_cblp", "H", "bytes in the last 512-byte page (0 = whole page)"),
@@ -90,6 +92,7 @@ class Export:
     forwarder: str = ""  # PE: "KERNEL32.HeapAlloc" when the export is passed on to another DLL
     rva: int | None = None  # PE only
     resident: bool = True  # NE: name in the resident table (vs non-resident)
+    readable: str = ""  # a mangled C++ name's qualified name ("Window::Draw"), see names.py
 
 
 @dataclass
@@ -149,6 +152,10 @@ def parse(data: bytes) -> Exe:
         exe.description = "No MZ signature: not a DOS or Windows executable (a .COM file is raw code)."
         exe.warnings.append("No executable header found; the file is laid out as raw data.")
     _fill_gaps(exe)
+    for e in exe.exports:
+        e.readable = names.readable(e.name)
+    if any(e.readable for e in exe.exports):
+        exe.facts["exports_cpp"] = sum(1 for e in exe.exports if e.readable)
     return exe
 
 
@@ -374,6 +381,9 @@ def _parse_pe(data: bytes, exe: Exe, pe: int) -> None:
         _pe_exports(data, exe, directory["export"], sizes["export"], to_offset, o.get("ImageBase") or 0)
     if directory.get("resource"):
         _pe_resources(data, exe, directory["resource"], to_offset)
+    if directory.get("base relocation"):
+        _pe_relocations(data, exe, directory["base relocation"], sizes["base relocation"], to_offset,
+                        o.get("ImageBase") or 0, sections)
     cert = directory.get("certificate", 0)  # the only directory given as a file offset, not an RVA
     if raw_end < exe.size:
         overlay = _overlay(data, raw_end, exe.size)
@@ -461,6 +471,60 @@ def _pe_exports(data: bytes, exe: Exe, rva: int, size: int, to_offset, image_bas
     exe.facts["exports"] = len(exe.exports)
     exe.facts["exports_by_name"] = sum(1 for e in exe.exports if e.name)
     exe.facts["exports_forwarded"] = sum(1 for e in exe.exports if e.forwarder)
+
+
+RELOC_TYPES = {0: "ABSOLUTE", 1: "HIGH", 2: "LOW", 3: "HIGHLOW", 4: "HIGHADJ", 5: "ARM_MOV32", 7: "THUMB_MOV32",
+               10: "DIR64"}
+RELOC_WIDTH = {3: "I", 10: "Q", 1: "H", 2: "H"}  # how much is patched (struct code); others aren't read
+MAX_RELOCATIONS = 500_000
+
+
+def _pe_relocations(data: bytes, exe: Exe, rva: int, size: int, to_offset, image_base: int, sections) -> None:
+    """Base relocations: every place holding an absolute address, which the loader patches when the module
+    isn't loaded at its preferred image base (usual for DLLs). For each: where it is, the address stored
+    there, and what that points to (section and RVA)."""
+    def section_of(target: int) -> str:
+        for name, vsize, srva, rsize, *_ in sections:
+            if srva <= target < srva + max(vsize, rsize):
+                return name
+        return "headers" if 0 <= target < (sections[0][2] if sections else 0) else "outside the image"
+
+    at, end = to_offset(rva), None
+    if at is None:
+        exe.warnings.append("The base relocation table can't be read.")
+        return
+    end = min(at + size, len(data))
+    lines = ["# RVA        file offset  type      value stored        -> points to (section, RVA)"]
+    counts: dict[str, int] = {}
+    while at + 8 <= end and len(lines) <= MAX_RELOCATIONS:
+        page, block = struct.unpack_from("<II", data, at)
+        if block < 8:
+            break
+        for i in range((min(block, end - at) - 8) // 2):
+            entry = struct.unpack_from("<H", data, at + 8 + 2 * i)[0]
+            kind, where = entry >> 12, page + (entry & 0xFFF)
+            if kind == 0:
+                continue  # padding
+            name = RELOC_TYPES.get(kind, f"type {kind}")
+            counts[name] = counts.get(name, 0) + 1
+            off = to_offset(where)
+            line = f"{h(where, 8)}  {h(off, 8) if off is not None else '-':<11}  {name:<8}"
+            width = RELOC_WIDTH.get(kind)
+            value = _read(data, width, off) if width and off is not None else None
+            if value is not None:
+                v = value[0]
+                if kind in (3, 10):
+                    target = v - image_base
+                    line += f"  {h(v, 16 if kind == 10 else 8):<18}  -> {section_of(target)} {h(target, 8)}"
+                else:
+                    line += f"  {h(v, 4)}"
+            lines.append(line)
+        at += block
+    if len(lines) > MAX_RELOCATIONS:
+        exe.warnings.append(f"Only the first {MAX_RELOCATIONS:,} base relocations are listed.")
+    exe.tables["base relocations"] = lines
+    exe.facts["base_relocations"] = len(lines) - 1
+    exe.facts["base_relocation_types"] = counts
 
 
 def _pe_resources(data: bytes, exe: Exe, rva: int, to_offset) -> None:

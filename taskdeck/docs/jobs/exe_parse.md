@@ -51,7 +51,7 @@ _WIZARDS.EXE/
 | Format | Decoded |
 |---|---|
 | DOS MZ | Header fields, relocation table (seg:off, image and file offsets), load module, entry CS:IP, overlay (recognises Borland FBOV, an appended MZ, zip/RAR/7z) |
-| PE32 / PE32+ | COFF and optional headers, data directories, sections, imports, exports, resource tree, entry point, overlay (notes an Authenticode signature) |
+| PE32 / PE32+ | COFF and optional headers, data directories, sections, imports, exports (see [Parse DLL](dll_parse.md)), base relocations, resource tree, entry point, overlay (notes an Authenticode signature) |
 | NE (Win16, OS/2) | Header, segment table, module name, imported modules, entry point |
 | LE / LX | Detected; the image is one region (not decoded further) |
 | Anything else | Laid out as raw data |

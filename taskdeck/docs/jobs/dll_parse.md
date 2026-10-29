@@ -18,7 +18,7 @@ side. Code: `src/taskdeck/jobs/dll_parse/` on top of `src/taskdeck/shared/binari
   ("`KERNEL32.HeapAlloc`"); there's nothing in this file to read for it.
 * **Entry point is optional.** `DllMain` (PE) or `LibMain` (NE) runs when the DLL loads; it may be missing.
 * **Rebased.** A DLL is often loaded at another address than its preferred image base, so its base
-  relocation table matters more than a program's (not decoded yet, see below).
+  relocation table matters more than a program's (decoded, see below).
 
 ## The exports output
 
@@ -26,7 +26,7 @@ For every export, in both jobs (programs can export too):
 
 ```
 exports/exports-001.txt     one per line:  ordinal  file offset  address  name  chunk file
-exports/exports.json        the same as JSON (plus the RVA, the forwarder, NE resident/non-resident)
+exports/exports.json        the same as JSON (plus the RVA, the forwarder, the C++ name, NE resident/non-resident)
 SUMMARY.md › Exports        count (by name / by ordinal only / forwarded) and the first 40
 ```
 
@@ -37,19 +37,33 @@ SUMMARY.md › Exports        count (by name / by ordinal only / forwarded) and 
   constants shown as "constant 1234"); names come from the resident and non-resident name tables. The
   module name and description (first entries of those tables) are in the facts.
 
+**C++ names**: exports with a mangled C++ name (Microsoft `?Draw@Window@@QAEXH@Z`, Borland
+`@Window@Draw$qi`) also get their qualified name, `[Window::Draw]`, including constructors, destructors and
+operators. Parameter and return types aren't decoded yet; templates and anonymous namespaces get no
+readable name rather than a guess (`shared/binaries/names.py`).
+
+## Base relocations
+
+`tables/base-relocations-NNN.txt` (both jobs, any PE file that has them): every place in the file holding
+an absolute address, which the loader patches when the module isn't loaded at its preferred image base.
+One per line: RVA, file offset, type (HIGHLOW for 32-bit, DIR64 for 64-bit), the address stored there and
+what it points to (section and RVA). Counts are in the summary and `metadata.json`. Checked against
+`pefile` on real 32- and 64-bit DLLs.
+
 Parse DLL warns when the file isn't marked as a DLL, or exports nothing; Parse executable warns when it's
 given a DLL. Both still parse it.
 
-## Open questions
+## Decided
 
-* **What does the agent do with the exports?** If it matches a program's imports to DLLs, a cross-reference
-  (for each import in `_GAME.EXE`, the export and chunk in `_FOO.DLL` that implements it) could be written
-  when both are parsed into the same folder.
-* **32-bit or 16-bit DLLs?** Both are decoded; NE has only been tested on hand-built files. A real 16-bit
-  DLL from the project would be the best test.
-* **C++ names.** MSVC and Borland exports of C++ functions are *mangled* (`?Draw@Window@@QAEXH@Z`). Should
-  the list add the readable form (`Window::Draw(int)`)? Needs a demangler (MSVC and Borland differ).
-* **Base relocations** (`.reloc`): decoding them would show every place that holds an absolute address.
-  Useful for a DLL; not done yet.
-* **Imports by ordinal**: a program importing "ordinal 12" from a DLL is resolved only with that DLL's exports;
-  the cross-reference above would also name those.
+* 32-bit DLLs first: that's the example at hand. 16-bit (NE) exports are decoded but only tested on
+  hand-built files.
+
+## Future
+
+* **Parse executable with its supporting DLLs**: parse a program together with the DLLs it uses, and write
+  a cross-reference: for each import of `_GAME.EXE` (by name or by ordinal), the export of `_FOO.DLL` and the
+  chunk file holding its code.
+* **16-bit DLLs**: test with a real one; decode NE segment relocations (the 16-bit equivalent of base
+  relocations, stored after each segment's data).
+* **Full C++ names**: parameter and return types (`Window::Draw(int)`), templates; Microsoft and Borland
+  schemes differ.

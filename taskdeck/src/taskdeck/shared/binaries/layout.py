@@ -251,14 +251,18 @@ class _Writer:
         if not exe.exports:
             return
         rows = []
-        lines = ["# ordinal  file offset  address  name  chunk file (forwarders: the DLL.function they pass on to)"]
+        lines = ["# ordinal  file offset  address  name  [C++ name]  chunk file "
+                 "(forwarders: the DLL.function they pass on to)"]
         for e in exe.exports:
             chunk = self._chunk_for(e.offset)
             name = e.name or "(by ordinal only)"
             where = h(e.offset, 8) if e.offset is not None else "-"
-            lines.append(f"{e.ordinal:6d}  {where:<10}  {e.address:<34}  {name}" + (f"  {chunk}" if chunk else ""))
+            lines.append(f"{e.ordinal:6d}  {where:<10}  {e.address:<34}  {name}"
+                         + (f"  [{e.readable}]" if e.readable else "") + (f"  {chunk}" if chunk else ""))
             row = {"ordinal": e.ordinal, "name": e.name, "file_offset": e.offset, "address": e.address,
                    "chunk": chunk}
+            if e.readable:
+                row["cpp_name"] = e.readable
             if e.rva is not None:
                 row["rva"] = e.rva
             if e.forwarder:
@@ -296,7 +300,7 @@ class _Writer:
         out.append("")
         facts = {k: v for k, v in exe.facts.items() if not isinstance(v, (dict, list))}
         if facts:
-            out += ["## Key facts", ""] + [f"- **{k.replace('_', ' ')}**: {_fmt(v)}" for k, v in facts.items()] + [""]
+            out += ["## Key facts", ""] + [f"- **{k.replace('_', ' ')}**: {_fmt(k, v)}" for k, v in facts.items()] + [""]
         if isinstance(exe.facts.get("imports"), dict):
             dlls = exe.facts["imports"]
             out += ["## Imports", "", f"{sum(dlls.values()):,} functions from {len(dlls)} DLLs "
@@ -312,8 +316,14 @@ class _Writer:
                     "Full list with addresses and the chunk file holding each: `exports/exports-*.txt` "
                     "(one per line, for grep) and `exports/exports.json`.", ""]
             shown = ex[:EXPORTS_IN_SUMMARY]
-            out += ["| Ordinal | Name | Address |", "|---|---|---|"]
-            out += [f"| {e.ordinal} | {e.name or '(by ordinal only)'} | {e.address} |" for e in shown]
+            cpp = any(e.readable for e in ex)
+            if cpp:
+                out[-1:-1] = [f"C++ names: {exe.facts['exports_cpp']:,}. Their readable name (without "
+                              "parameter types) is shown in [brackets] in the export files.", ""]
+            out += ["| Ordinal | Name |" + (" C++ name |" if cpp else "") + " Address |",
+                    "|---|---|" + ("---|" if cpp else "") + "---|"]
+            out += [f"| {e.ordinal} | {e.name or '(by ordinal only)'} |" + (f" {e.readable} |" if cpp else "")
+                    + f" {e.address} |" for e in shown]
             if len(ex) > len(shown):
                 out.append(f"| … | {len(ex) - len(shown):,} more in `exports/` | |")
             out.append("")
@@ -335,8 +345,13 @@ class _Writer:
         return "\n".join(line for line in out if line is not None) + "\n"
 
 
-def _fmt(v: object) -> str:
-    return h(v) if isinstance(v, int) and not isinstance(v, bool) and v > 9 else str(v)
+HEX_FACTS = {"new_header_offset", "image_base", "image_end"}  # addresses; other numbers are counts and sizes
+
+
+def _fmt(key: str, v: object) -> str:
+    if isinstance(v, int) and not isinstance(v, bool):
+        return h(v) if key in HEX_FACTS else f"{v:,}"
+    return str(v)
 
 
 README = """# {name}: parsed executable
@@ -378,7 +393,8 @@ segment).
 - Exports (`exports/`): every exported function or variable, one per line: ordinal, file offset,
   address, name, and the chunk file holding it. `exports/exports.json` has the same as JSON. Forwarded
   exports name the DLL and function they pass on to.
-- Tables (`tables/`): relocations, sections, imports, resources, segments, depending on the format.
+- Tables (`tables/`): relocations (DOS), base relocations (Windows: every place holding an absolute address,
+  what it points to), sections, imports, resources, segments, depending on the format.
   Long tables are split into files of 1,000 lines.
 
 Paths in these files are relative to this folder.
