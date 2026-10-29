@@ -59,7 +59,7 @@ def read(ctx):
 def write(ctx):
     try:
         ctx["written"] = layout.write(ctx["parsed"], ctx["data"], ctx["path"], ctx["dest"], ctx["chunk_bytes"],
-                                      min_string=max(2, int(ctx.get("min_string") or 4)), raw=bool(ctx.get("raw")),
+                                      min_string=max(2, int(ctx.get("min_string") or 4)),
                                       cancelled=lambda: ctx._cancelled)
     except layout.NotOurs as exc:
         raise StepError(str(exc)) from None
@@ -119,7 +119,6 @@ class ExeParse(JobPlugin):
         Field.choice("chunk", "Chunk size", tuple(CHUNKS), default="2 KB",
                      help="Bytes per hex-dump file. 2 KB is 128 lines, roughly 4,000-5,000 tokens."),
         Field.number("min_string", "Shortest string", default=4, help="Characters a run of text needs to count."),
-        Field.toggle("raw", "Also save raw .bin chunks", help="For agents that run a disassembler on the bytes."),
         Field.toggle("drive", "Push to Google Drive",
                      help="Mirror the folder to Google Drive (folder set in this job's settings)."),
     )

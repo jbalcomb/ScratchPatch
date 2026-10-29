@@ -15,7 +15,6 @@ mirrors it). Tests: `tests/test_exe_parse.py`.
 | Save into (folder) | Parent folder. Default: Downloads › TaskDeck › Executables. It can't be the executable's own folder: a folder can't have the same name as a file next to it. |
 | Chunk size | Bytes per hex-dump file: 1, 2 (default), 4, 8 or 16 KB. 2 KB is 128 lines, about 4,000-5,000 tokens. |
 | Shortest string | Minimum run of printable characters listed as a string (default 4). |
-| Also save raw .bin chunks | The same bytes as each hex chunk, for an agent that runs a disassembler. |
 | Push to Google Drive | Mirror the folder to *Google Drive folder* (job setting, default `TaskDeck/Executables`). Needs Google Drive connected (Settings → Accounts). |
 
 ## Output
@@ -62,16 +61,29 @@ and the old one trashed. Unlike Extract Archive, files and folders in Drive the 
 (e.g. chunks from an earlier parse with another chunk size) are moved to Drive's trash too, so an agent never
 reads a stale chunk. Uploads reuse Extract Archive's parallel uploader (`taskdeck/shared/drive_uploads.py`).
 
-## Open questions
+## Decided
 
-* **Which executables?** DOS MZ with Borland overlays is decoded to the header level; the overlay itself
-  (FBOV stubs, overlay segments) isn't split further yet. Say which formats matter most.
-* **What can the agent run?** If it only has file reading and grep, the hex dumps and strings are the
-  interface. If it can run Python or a disassembler, raw chunks (and maybe a disassembly listing per
-  chunk) would be more useful than hex.
-* **Disassembly**: a pure-Python x86 disassembler (16-bit real mode for DOS) would let each code chunk
-  come with a listing. No such library is bundled today.
-* **How the agent reaches the files**: from Google Drive (its Drive connector), a synced folder, or a repo.
-  The layout works for all three; Drive is slow for thousands of small files.
-* **Annotations going back**: should the agent's findings (names of functions, data structures) be written
-  next to the chunks, and kept when the executable is parsed again?
+* **Chunk size stays at 2 KB** (the default) until there's data on how the job performs and how well the
+  pieces work for the agent. Then revisit it, including the segment-first split below.
+* **Disassembly is out of scope.**
+* **The agent gets the Google Drive folder shared with it directly.** Parsing the same file again changes
+  nothing it sees (identical files, skipped on upload); there's no reason to parse again anyway.
+
+## Future
+
+* **DOS executables with overlays.** Today the overlay is one region (a Borland FBOV overlay is recognised,
+  not decoded). Decode the overlay header and the overlay segments and split by them.
+* **Master of Magic as the test target** (MAGIC.EXE and WIZARDS.EXE, both already fully disassembled by
+  hand, much of their code in Borland overlays). Needed to start:
+  1. The two executables, somewhere this job's tests can read them (a Google Drive folder, or the repo if
+     that's acceptable).
+  2. The segment list from the existing disassembly (start, code/data, name), to check the segments the
+     job works out against it.
+* **Split by logical units instead of fixed chunks.** DOS MZ headers don't list segments, but they can be
+  worked out from the relocation table (the segment values at the fixup sites), the initial CS and SS, and
+  far calls/jumps (code) vs. SS/DGROUP (data); then show `seg:off` addresses. NE segments and PE sections
+  are already regions; 64-bit PE `.pdata` lists function ranges. Object-file (.OBJ) boundaries only come
+  back from a linker .MAP or debug symbols. A segment can be 64 KB, so keep a size cap for long ones.
+* **Raw .bin chunks** next to the hex dumps.
+* **Annotations going back**: should the agent's findings (function and data names) be stored next to the
+  chunks and kept when the executable is parsed again?

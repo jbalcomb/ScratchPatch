@@ -21,6 +21,10 @@ sign-in now retries through it; these make it much less likely to happen at all.
 
 - [ ] Slow or stalling Drive uploads: analyse the task traces (`docs/DIAGNOSTICS.md`).
 
+- [ ] Parse executable: DOS executables with overlays, and Master of Magic (MAGIC.EXE, WIZARDS.EXE) as the
+      test target (needs the two files and the segment list from the existing disassembly):
+      `docs/jobs/exe_parse.md`, Future.
+
 - [ ] Dropbox as an Extract Archive destination (Full Dropbox): `docs/jobs/extract_archive_SPEC.md`, step 3.
 - [ ] Full Google Drive browsing (native Google Sign-In + Google review): same spec, §1.4, "planned (b)".
 - [ ] Fingerprint lock design: keep the vault always on and make only the fingerprint check optional

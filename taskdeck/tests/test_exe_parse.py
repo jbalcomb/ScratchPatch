@@ -176,13 +176,10 @@ def test_chunks_cover_every_byte_and_link_to_each_other(tmp_path):
     assert rebuilt == data
 
 
-def test_raw_chunks_and_rerun_is_identical(tmp_path):
-    _, out = run_job(tmp_path, pe_exe(), name="T.EXE", raw=True)
-    index = json.loads((out / "index.json").read_text())
-    raw = b"".join((out / c["raw"]).read_bytes() for r in index["regions"] for c in r["chunks"])
-    assert raw == pe_exe()
+def test_rerun_is_identical(tmp_path):
+    _, out = run_job(tmp_path, pe_exe(), name="T.EXE")
     before = {p: p.read_bytes() for p in out.rglob("*") if p.is_file()}
-    report, _ = run_job(tmp_path, pe_exe(), name="T.EXE", raw=True)
+    report, _ = run_job(tmp_path, pe_exe(), name="T.EXE")
     assert report.ok
     assert {p: p.read_bytes() for p in out.rglob("*") if p.is_file()} == before
 

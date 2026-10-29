@@ -8,7 +8,6 @@
       headers/headers.txt           all decoded header fields
       tables/<table>-NNN.txt        relocations, sections, imports, exports, resources, segments
       regions/NN-<region>/<first>-<last>.txt   hex dump of the region, one file per chunk
-      regions/NN-<region>/<first>-<last>.bin   the same bytes, raw (optional)
       strings/ascii-NNN.txt, strings/utf16-NNN.txt   text found in the file, with offsets
 
 Every chunk file starts with a short header naming the region, its byte range, and the previous and next
@@ -68,7 +67,7 @@ def owned_by_us(folder: Path) -> bool:
         return False
 
 
-def write(exe: Exe, data: bytes, source: Path, dest: Path, chunk: int, min_string: int = 4, raw: bool = False,
+def write(exe: Exe, data: bytes, source: Path, dest: Path, chunk: int, min_string: int = 4,
           cancelled: Callable[[], bool] = lambda: False) -> Written:
     """Write the folder ``dest`` (named like the executable). Built in a temporary folder next to it and
     swapped in at the end, so an interrupted run never leaves half a folder under the real name. An
@@ -79,7 +78,7 @@ def write(exe: Exe, data: bytes, source: Path, dest: Path, chunk: int, min_strin
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     try:
-        out = _Writer(exe, data, source, work, chunk, min_string, raw, cancelled).run()
+        out = _Writer(exe, data, source, work, chunk, min_string, cancelled).run()
         if dest.exists():
             shutil.rmtree(dest)
         work.rename(dest)
@@ -91,10 +90,10 @@ def write(exe: Exe, data: bytes, source: Path, dest: Path, chunk: int, min_strin
 
 
 class _Writer:
-    def __init__(self, exe: Exe, data: bytes, source: Path, root: Path, chunk: int, min_string: int, raw: bool,
+    def __init__(self, exe: Exe, data: bytes, source: Path, root: Path, chunk: int, min_string: int,
                  cancelled: Callable[[], bool]):
         self.exe, self.data, self.source, self.root = exe, data, source, root
-        self.chunk, self.min_string, self.raw, self.cancelled = chunk, min_string, raw, cancelled
+        self.chunk, self.min_string, self.cancelled = chunk, min_string, cancelled
         self.out = Written(root)
         self.name = source.name
         self.index: dict = {"generator": GENERATOR, "file": self.name, "size": exe.size, "chunk_bytes": chunk,
@@ -167,10 +166,6 @@ class _Writer:
             body = [self._hex_line(off, min(off + BYTES_PER_LINE, e), r) for off in range(s, e, BYTES_PER_LINE)]
             self._put(rel, "\n".join(head + body) + "\n")
             item = {"file": rel, "start": s, "end": e}
-            if self.raw:
-                bin_rel = rel[:-4] + ".bin"
-                self._put(bin_rel, self.data[s:e])
-                item["raw"] = bin_rel
             entries[i]["chunks"].append(item)
             self.out.chunks += 1
         self.index["regions"] = list(entries.values())
@@ -233,7 +228,7 @@ class _Writer:
                          "note": r.note} for r in self.exe.regions],
             "warnings": self.exe.warnings,
             "output": {"generator": GENERATOR, "chunk_bytes": self.chunk, "chunks": self.out.chunks,
-                       "strings": self.out.strings, "min_string_length": self.min_string, "raw_chunks": self.raw},
+                       "strings": self.out.strings, "min_string_length": self.min_string},
         }
 
     def _chunk_for(self, offset: int) -> str | None:
