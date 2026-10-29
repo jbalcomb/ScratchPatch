@@ -108,6 +108,8 @@ class Task:
     note: str = ""  # a passing state while running, e.g. "Paused: no connection"
     phases: list[Phase] = field(default_factory=list)  # optional stages, each shown with its own bar
     result: Any = None  # anything the job wants to keep (e.g. the destination folder)
+    inputs: dict = field(default_factory=dict)  # what it was started with, for History ("open with these inputs")
+    in_history: bool = False  # the finished task has been added to History
     started: float = field(default_factory=time.time)
     finished: float | None = None
     cancel_requested: bool = False
@@ -255,8 +257,9 @@ class TaskManager:
         self._ids = itertools.count(1)
         self._start = start_thread or (lambda fn: threading.Thread(target=fn, daemon=True).start())
 
-    def start(self, title: str, job_id: str, work: Callable[[Task], str], result: Any = None) -> Task:
-        task = Task(next(self._ids), title, job_id, result=result, _manager=self)
+    def start(self, title: str, job_id: str, work: Callable[[Task], str], result: Any = None,
+              inputs: dict | None = None) -> Task:
+        task = Task(next(self._ids), title, job_id, result=result, inputs=dict(inputs or {}), _manager=self)
         if self.traces:
             try:
                 task.trace = self.traces.new(job_id, heartbeat=lambda: (task.watch(), task.snapshot())[1])

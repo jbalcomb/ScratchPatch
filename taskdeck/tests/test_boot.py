@@ -185,3 +185,30 @@ def test_compiled_apk_still_knows_its_version(env):
     assert boot.bundled_build() == {"version": "apk7", "build_time": 5000}
     build.with_suffix(".pyc").unlink()
     assert boot.bundled_build() == {"version": "dev", "build_time": 0}
+
+
+def test_rejected_message_clears_once_something_newer_starts(env):
+    publish(env, bundle_zip(), version="bad0001", build_time=2000)
+    boot.check_for_update()
+    boot.activate()  # bad0001 starts... and dies before confirm_started()
+    assert boot.activate()["source"] == "bundled"  # the fallback (APK code, build 1000)
+    boot.confirm_started()
+    assert boot.status()["last_error"].startswith("bad0001")  # still shown: older code is running
+
+    publish(env, bundle_zip("fixed"), version="good002", build_time=3000)
+    assert boot.check_for_update()["status"] == "ready"
+    boot.confirm_started()
+    assert boot.status()["last_error"]  # downloaded but not running yet: still shown
+    assert boot.activate()["version"] == "good002"
+    boot.confirm_started()
+    assert boot.status()["last_error"] is None  # a newer version started fine
+
+
+def test_old_rejection_without_a_build_time_clears_on_the_next_start(env):
+    """Rejections recorded before the build time was kept (e.g. 26ec36d on the phone)."""
+    state = boot._load_state()
+    state["last_error"] = "26ec36d: ModuleNotFoundError: No module named 'taskdeck.jobs'"
+    boot._save_state(state)
+    boot.activate()
+    boot.confirm_started()
+    assert boot.status()["last_error"] is None

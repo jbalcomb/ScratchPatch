@@ -24,7 +24,7 @@ RECENT_KEY = "extract:recent"
 
 
 class ExtractScreen:
-    def __init__(self, app: "TaskDeckApp", plugin):
+    def __init__(self, app: "TaskDeckApp", plugin, preset: dict | None = None):
         self.app = app
         self.plugin = plugin
         self.archive: Path | None = None
@@ -68,7 +68,30 @@ class ExtractScreen:
             ],
         )
         app.tasks.listeners.append(self._on_task)
+        if preset and not self.task:  # opened from History: the same archive and destination
+            self._restore(preset)
         self.render(update=False)
+
+    def inputs(self) -> dict:
+        """What History keeps, to open this extraction again (see _restore)."""
+        out = {"archive": str(self.archive), "name": self.name or ""}
+        if self.to_drive:
+            out.update(to="drive", folder_id=self.parent.folder_id, folder_names="/".join(self.parent.names))
+        else:
+            out.update(to="phone", parent=str(self.parent))
+        return out
+
+    def _restore(self, preset: dict) -> None:
+        archive = Path(preset.get("archive") or "")
+        if not archive.name or not archive.is_file():
+            return
+        self.set_archive(archive)
+        name = preset.get("name") or None
+        if preset.get("to") == "drive" and preset.get("folder_id"):
+            names = tuple(n for n in str(preset.get("folder_names", "")).split("/") if n) or ("My Drive",)
+            self.parent, self.name = DriveLocation(preset["folder_id"], names), name
+        elif preset.get("parent"):
+            self.parent, self.name = Path(preset["parent"]), name
 
     # ---- lifecycle ---------------------------------------------------------------------
 
@@ -163,11 +186,12 @@ class ExtractScreen:
                     return logic.extract_to_drive(t, path, password, drive, location, name, temp)
 
             self.task = self.app.tasks.start(f"Extracting {path.name} to Google Drive", self.plugin.id, work,
-                                             result=location)
+                                             result=location, inputs=self.inputs())
         else:
             dest = self.destination()
             self.task = self.app.tasks.start(f"Extracting {path.name}", self.plugin.id,
-                                             lambda t: logic.extract(t, path, dest, password), result=dest)
+                                             lambda t: logic.extract(t, path, dest, password), result=dest,
+                                             inputs=self.inputs())
         self.render()
 
     def cancel(self, e=None) -> None:

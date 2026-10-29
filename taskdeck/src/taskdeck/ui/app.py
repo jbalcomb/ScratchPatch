@@ -111,9 +111,10 @@ class TaskDeckApp:
         page.views.clear()
         page.views.append(self.root)
         self.register_commands()
-        self.render()
         self.update_status = ""
         self.reload_pending = False  # "Reload when it finishes" was chosen
+        self._forget_old_rejection()
+        self.render()
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
@@ -135,7 +136,7 @@ class TaskDeckApp:
             self.toast(f"Job {job_id!r} is not installed")
             return
         make_screen = getattr(plugin, "make_screen", None)
-        screen = make_screen(self) if make_screen else JobScreen(self, plugin, preset)
+        screen = make_screen(self, preset) if make_screen else JobScreen(self, plugin, preset)
         self.push(screen)
         screen.check_ready()
         self.page.update()
@@ -367,8 +368,12 @@ class TaskDeckApp:
         return out
 
     def on_task(self, task: Task) -> None:
-        """Background task changed (worker thread): refresh Home, announce the end."""
+        """Background task changed (worker thread): refresh Home, announce the end, add it to History."""
         if not task.running:
+            if not task.in_history:  # background jobs (e.g. Extract Archive) don't go through JobScreen.run
+                task.in_history = True
+                self.history.add(task.job_id, task.status == DONE, task.message, task.inputs)
+                self.on_history_changed()
             self._reload_if_pending()
         if not self.stack and self.tab == "home":
             self.render()
@@ -573,6 +578,26 @@ class TaskDeckApp:
             ft.Text("\n".join(lines), color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
             ft.Row(buttons, wrap=True),
         ]
+
+    def _forget_old_rejection(self) -> None:
+        """A rejected update is old news once something newer than it runs. Done here (before Settings
+        is drawn) as well as in the APK's updater, so it also works with APKs whose updater doesn't."""
+        if not boot:
+            return
+        try:
+            with boot._lock:
+                state = boot._load_state()
+                error = state.get("last_error") or ""
+                if not error:
+                    return
+                version = error.split(":", 1)[0].strip()
+                rejected = int(state.get("last_error_build") or
+                               state.get("bundles", {}).get(version, {}).get("build_time", 0) or 0)
+                if boot.active.get("build_time", 0) > rejected and boot.active.get("version") != version:
+                    state["last_error"] = state["last_error_build"] = None
+                    boot._save_state(state)
+        except Exception:  # an older updater without these internals: leave it
+            pass
 
     def check_updates(self) -> None:
         self.update_status = "Checking…"

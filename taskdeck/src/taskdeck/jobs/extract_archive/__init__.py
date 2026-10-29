@@ -57,10 +57,10 @@ class ExtractArchive(JobPlugin):
     def build_pipeline(self):
         return Pipeline([steps.require("archive"), check, extract, steps.present_text("message", title="Extracted")])
 
-    def make_screen(self, app):
+    def make_screen(self, app, preset=None):
         from .screen import ExtractScreen  # the UI needs flet; the logic above doesn't
 
-        return ExtractScreen(app, self)
+        return ExtractScreen(app, self, preset)
 
 
 PLUGIN = ExtractArchive()

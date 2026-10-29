@@ -160,6 +160,7 @@ def _mark_bad(state: dict, version: str, reason: str) -> None:
     state.setdefault("bad", []).append(version)
     state["bad"] = state["bad"][-20:]
     state["last_error"] = f"{version}: {reason}"
+    state["last_error_build"] = int(state.get("bundles", {}).get(version, {}).get("build_time", 0))
     if state.get("current") == version:
         state["current"] = None
     state["pending"] = None
@@ -167,11 +168,16 @@ def _mark_bad(state: dict, version: str, reason: str) -> None:
 
 
 def confirm_started() -> None:
-    """The UI came up: the active bundle is good."""
+    """The UI came up: the active bundle is good. A rejected update is old news once something newer
+    than it has started (not the older APK code that runs right after the failure)."""
     with _lock:
         state = _load_state()
-        if state.get("pending"):
-            state["pending"] = None
+        changed = bool(state.get("pending"))
+        state["pending"] = None
+        if state.get("last_error") and active["build_time"] > int(state.get("last_error_build") or 0):
+            state["last_error"] = state["last_error_build"] = None
+            changed = True
+        if changed:
             _save_state(state)
 
 
