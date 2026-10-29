@@ -1,0 +1,9 @@
+# For assetforge.generate on the AI Workstation. Install PyTorch first, built for CUDA 12.8 or newer
+# (RTX 50-series cards need it):
+#   python3 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+-r requirements.txt
+diffusers>=0.31,<1.0
+transformers
+accelerate
+safetensors
+peft

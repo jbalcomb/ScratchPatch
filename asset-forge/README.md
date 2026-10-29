@@ -6,7 +6,7 @@ AI-generated asset packs for ReMoM (Master of Magic, reassembled): a free replac
 
 ### Step 1: LBX → PNG exporter
 
-Turns every sprite in the game's `.LBX` archives into PNGs, a catalogue and a gallery page. Needs Python 3.10+ and Pillow.
+Turns every sprite in the game's `.LBX` archives into PNGs, a catalogue and a gallery page. Needs Python 3.10+, Pillow and numpy.
 
 ```sh
 cd asset-forge
@@ -55,6 +55,43 @@ python3 -m assetforge.describe out/originals                                    
 
 **Not yet run against a real model:** the tests use a fake server. Model quality on tiny pixel art is the thing the pilot has to show.
 
+### Step 3: generate replacements
+
+Draws a replacement for each described sprite with SDXL on the local GPU (optionally with a style LoRA), then makes it game-ready:
+1. Removes the flat magenta background the model is told to draw on.
+2. Crops to the subject and scales it to the sprite's size, sitting on the bottom edge.
+3. Maps every pixel to a palette index.
+
+```sh
+python3 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+python3 -m pip install -r requirements-gpu.txt
+python3 -m assetforge.generate out/originals out/pack --model sd_xl_base_1.0.safetensors --archive SPELLS --limit 20
+```
+
+Open `out/pack/index.html`: each card shows the original, the replacement, and the model's raw image.
+
+Per sprite, in `out/pack/<ARCHIVE>/<entry>_<name>/`:
+- `raw.png`: the model's image.
+- `frame_00.png` and `frame_00_index.png`: the replacement sprite, in the same two forms the exporter writes.
+- `generate.json`: prompt, negative prompt, seed, model, LoRA, steps, timing, and which model wrote the description.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--model` | (required) | An SDXL `.safetensors` checkpoint, or a diffusers model folder or ID. The first load of a single-file checkpoint downloads its config from Hugging Face. |
+| `--lora`, `--lora-scale` | none, 1.0 | A style LoRA. |
+| `--scale N` | 1 | Replacement size is the original size × N. At 1 it fits today's ReMoM; bigger needs the ReMoM changes. |
+| `--colours sprite` / `game` | `sprite` | `sprite`: only the palette indices the original uses (falls back to `game` when the original uses fewer than 8). Keeps each replacement in its original's colours and its banner-colour indices available. `game`: indices 1–223. 0 is transparent; 224 and up overlap remap and colour cycling. |
+| `--style FILE` | built-in | Style text added to every prompt. The step 4 style guide goes here. |
+| `--seed N` | 1 | Each sprite's seed is derived from N and the sprite, so a re-run reproduces it. |
+| `--archive`, `--limit`, `--redo` | | As in step 2. Already-generated sprites are skipped: the first image is kept. |
+
+Only frame 0 of an animation is generated for now.
+
+**Checked so far:**
+- Background removal, fitting and palette mapping are tested on synthetic images.
+- The SDXL wrapper ran under diffusers 0.42 against a tiny, randomly initialised SDXL pipeline on CPU, with and without a LoRA: right size, same seed gives the same image, the LoRA changes the output.
+- No real checkpoint has been run, so image quality is unknown until the pilot.
+
 ### Tests
 
 ```sh
@@ -64,13 +101,13 @@ REMOM_DIR=/c/STU/devel/ReMoM python3 -m unittest tests.test_engine_parity     # 
 
 The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Draw.c`, compiles them, and checks that they and the Python port produce the same pixels on 300 random sprites. It needs a C compiler. CI runs it against ReMoM `main`.
 
-## AI Workstation (RTX 5060)
+## AI Workstation (RTX 5060 Ti, 16 GB)
 
-- **Check the video memory:** run `nvidia-smi` and read the memory column. The desktop RTX 5060 has 8 GB; the 5060 Ti comes with 8 or 16 GB. 16 GB of system RAM is a different thing. The notes below assume 8 GB of video memory, which is the tighter case.
-- **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch wheels built for CUDA 12.8 or newer (`cu128`). Older builds fail with errors about `sm_120`.
-- **One model on the GPU at a time.** With 8 GB, run the describe pass with the vision model, stop it, then run the image model.
-- **Vision model:** a 7B-class vision model at 4-bit quantization fits in 8 GB together with its `--mmproj` file. Try a couple on the 20-sprite pilot and keep the one whose prompts are best.
-- **Image model and LoRA:** SDXL-based models fit in 8 GB. Their licence (OpenRAIL++) allows redistributing output, which a Freedoom-style pack needs. Training an SDXL LoRA in 8 GB works but is slow and needs memory-saving settings; 16 GB is comfortable. Larger, newer models need 16 GB or quantization, and some have non-commercial licences. Check the licence before choosing one.
+- **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch built for CUDA 12.8 or newer (`cu128`, see `requirements-gpu.txt`). Older builds fail with errors about `sm_120`.
+- **Vision model (steps 2 and 5):** 16 GB holds a 7B-class vision model at 8-bit, or a larger one at 4-bit. Try a couple on the 20-sprite pilot and keep the one whose prompts work best.
+- **Image model:** SDXL-based models run comfortably in 16 GB. Their licence (OpenRAIL++) allows redistributing output, which a Freedoom-style pack needs. Some newer, larger models also fit, but several have non-commercial licences: check the licence before switching.
+- **LoRA training:** an SDXL LoRA trains comfortably in 16 GB, for example with kohya_ss or OneTrainer.
+- **Sharing the GPU:** an SDXL model in half precision plus a 4-bit 7B vision model fit together. The refine loop (step 5) can then keep both loaded. If memory runs out, run them one at a time.
 
 ## Decisions so far
 
@@ -155,7 +192,7 @@ For each image: prompt, model and version, seed, reference images used, round nu
 
 ## Still open
 
-1. **The AI Workstation:** RTX 5060. Still to confirm: 8 or 16 GB of video memory (see above), and which OS.
+1. **The AI Workstation:** RTX 5060 Ti, 16 GB. Still to confirm: which OS.
 2. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
 3. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
 4. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
@@ -166,7 +203,7 @@ Each step is small, finishes, and is useful on its own:
 
 1. **LBX → PNG exporter.** Gives you the reference set. *Built, see above; needs a check on real files.*
 2. **Describe:** image → description + prompt (one vision-LLM call). *Built, see above; needs a pilot on a real model.*
-3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. Start with one static category, such as spell icons or unit figures.
+3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built, see above; needs a pilot on a real checkpoint.*
 4. **Style guide:** batch of references → style guide text.
 5. **Refine loop:** prompt → image → judge → revised prompt, with round and cost caps and provenance records.
 6. **Pack runner:** manifest in, approved images plus a review gallery out.

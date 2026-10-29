@@ -8,7 +8,8 @@ Per sprite, under OUT_DIR/<ARCHIVE>/<entry>_<name>/:
   frame_NN.png         RGBA, rendered with the game palette (and the sprite's own palette, if it has one)
   frame_NN_index.png   greyscale + alpha: grey = palette index, alpha 255 pixel / 128 remap (shading) pixel / 0 nothing
   sheet.png            all frames side by side, RGBA
-OUT_DIR/catalog.csv lists every entry; OUT_DIR/index.html shows them all.
+  palette.json         only for sprites with their own palette: the 256 (r, g, b) colours they are drawn with
+OUT_DIR/catalog.csv lists every entry; OUT_DIR/index.html shows them all; OUT_DIR/palette.json is the game palette.
 
 The game palette comes from FONTS.LBX in the same folder as the archives. Without it, sprites render in grey.
 """
@@ -16,6 +17,7 @@ The game palette comes from FONTS.LBX in the same folder as the archives. Withou
 import argparse
 import csv
 import html
+import json
 import re
 import struct
 import sys
@@ -100,6 +102,8 @@ def export_archive(path, out_dir, palette, remap_colors, rows):
         folder = Path(archive) / f"{entry.index:03d}_{safe_name(entry.name) or 'unnamed'}"
         (out_dir / folder).mkdir(parents=True, exist_ok=True)
         pal = apply_chunks(palette, sprite.palette)
+        if sprite.palette:
+            (out_dir / folder / "palette.json").write_text(json.dumps(pal))
         rgba = []
         for n, frame in enumerate(sprite.frames):
             img = render_rgba(frame, pal, remap_colors)
@@ -168,6 +172,7 @@ def main(argv=None):
         palette, remap_colors = grey_palette(), [(0, 0, 0, 128)] * REMAP_BLOCKS
 
     args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "palette.json").write_text(json.dumps(palette))
     rows = []
     for path in files:
         export_archive(path, args.out, palette, remap_colors, rows)

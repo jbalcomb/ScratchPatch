@@ -7,7 +7,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 | [taskdeck/](taskdeck/) | TaskDeck: an Android app (Python/Flet) that runs pluggable jobs, with a command palette and pinned tiles. First real job: Daily Log → Google Sheet. |
 | [budget/](budget/) | Budget: upload Bank of America exports from the phone; transactions land in SQLite, categorized by a hand-edited rules file, with balance checks and undo. Runs in Docker on the AI Workstation behind Tailscale. |
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
-| [asset-forge/](asset-forge/) | Asset Forge: AI-generated replacement art packs for ReMoM. Built so far: an exporter from LBX archives to PNG, and sprite descriptions and prompts from a local vision model. Planned: text→image, image→prompt, style guides, and a generate/judge/refine loop. |
+| [asset-forge/](asset-forge/) | Asset Forge: AI-generated replacement art packs for ReMoM. Built so far: an LBX-to-PNG exporter, sprite descriptions and prompts from a local vision model, and SDXL generation fitted to the game palette. Planned: style guides and a generate/judge/refine loop. |
 
 ## Conventions
 
