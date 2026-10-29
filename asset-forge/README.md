@@ -34,6 +34,27 @@ Remap pixels (shadows and glass effects) recolour whatever is underneath in the 
 2. Compare a few sprites with the game: a unit, a terrain tile, a wizard portrait, the main menu background.
 3. Look in `catalog.csv` for `undecodable` rows and for anything in `warnings`.
 
+### Step 2: image → description and prompt
+
+For each exported sprite, a local vision model writes what it shows and a prompt that should make an image model draw it again.
+
+```sh
+llama-server -m <vision-model>.gguf --mmproj <its-mmproj>.gguf -ngl 99 --port 8080     # on the AI Workstation
+python3 -m assetforge.describe out/originals --archive SPELLS --limit 20               # pilot: 20 spell icons
+python3 -m assetforge.describe out/originals                                           # everything
+```
+
+- Works with any OpenAI-compatible server: llama.cpp's `llama-server`, Ollama or LM Studio. Use `--endpoint` and `--model` to point elsewhere.
+- Small sprites are enlarged with hard pixel edges before they're sent (at least 384 px on the long side). Transparent areas are shown as magenta, and the model is told so.
+- The model also gets the archive's name and description for the entry.
+- Each sprite gets a `describe.json` with these fields: subject, category, description, animation, style, prompt, negative prompt, tags.
+- Each `describe.json` also records where it came from: model, endpoint, prompt version, seconds taken.
+- Everything is also appended to `descriptions.jsonl`.
+- Re-running skips sprites already described, so an interrupted run carries on. Use `--redo` to describe them again.
+- The end-of-run line gives the average seconds per sprite: the first number for the budget.
+
+**Not yet run against a real model:** the tests use a fake server. Model quality on tiny pixel art is the thing the pilot has to show.
+
 ### Tests
 
 ```sh
@@ -42,6 +63,14 @@ REMOM_DIR=/c/STU/devel/ReMoM python3 -m unittest tests.test_engine_parity     # 
 ```
 
 The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Draw.c`, compiles them, and checks that they and the Python port produce the same pixels on 300 random sprites. It needs a C compiler. CI runs it against ReMoM `main`.
+
+## AI Workstation (RTX 5060)
+
+- **Check the video memory:** run `nvidia-smi` and read the memory column. The desktop RTX 5060 has 8 GB; the 5060 Ti comes with 8 or 16 GB. 16 GB of system RAM is a different thing. The notes below assume 8 GB of video memory, which is the tighter case.
+- **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch wheels built for CUDA 12.8 or newer (`cu128`). Older builds fail with errors about `sm_120`.
+- **One model on the GPU at a time.** With 8 GB, run the describe pass with the vision model, stop it, then run the image model.
+- **Vision model:** a 7B-class vision model at 4-bit quantization fits in 8 GB together with its `--mmproj` file. Try a couple on the 20-sprite pilot and keep the one whose prompts are best.
+- **Image model and LoRA:** SDXL-based models fit in 8 GB. Their licence (OpenRAIL++) allows redistributing output, which a Freedoom-style pack needs. Training an SDXL LoRA in 8 GB works but is slow and needs memory-saving settings; 16 GB is comfortable. Larger, newer models need 16 GB or quantization, and some have non-commercial licences. Check the licence before choosing one.
 
 ## Decisions so far
 
@@ -126,7 +155,7 @@ For each image: prompt, model and version, seed, reference images used, round nu
 
 ## Still open
 
-1. **The AI Workstation:** which GPU (and how much VRAM) and which OS. This decides which image model can run and whether a LoRA can be trained on it.
+1. **The AI Workstation:** RTX 5060. Still to confirm: 8 or 16 GB of video memory (see above), and which OS.
 2. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
 3. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
 4. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
@@ -136,7 +165,7 @@ For each image: prompt, model and version, seed, reference images used, round nu
 Each step is small, finishes, and is useful on its own:
 
 1. **LBX → PNG exporter.** Gives you the reference set. *Built, see above; needs a check on real files.*
-2. **Describe:** image → description + prompt (one vision-LLM call). The smallest real piece.
+2. **Describe:** image → description + prompt (one vision-LLM call). *Built, see above; needs a pilot on a real model.*
 3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. Start with one static category, such as spell icons or unit figures.
 4. **Style guide:** batch of references → style guide text.
 5. **Refine loop:** prompt → image → judge → revised prompt, with round and cost caps and provenance records.
