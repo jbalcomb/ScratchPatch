@@ -427,3 +427,44 @@ def test_check_for_updates_never_stays_on_checking(tmp_path, monkeypatch):
         time.sleep(0.02)
     hang.set()
     assert app.update_status.startswith("No answer from GitHub within")
+
+
+def test_background_jobs_are_in_history(tmp_path):
+    app = make_app(tmp_path)
+    app.tasks._start = lambda fn: fn()  # run inline
+    app.tasks.start("Extracting a.7z", "extract_archive", lambda t: "Extracted 3 files", inputs={"archive": "/x/a.7z"})
+
+    def boom(t):
+        raise RuntimeError("Drive is full")
+    app.tasks.start("Extracting b.7z", "extract_archive", boom)
+    entries = app.history.entries()
+    assert [(e.job_id, e.ok, e.summary) for e in entries] == [
+        ("extract_archive", False, "Drive is full"), ("extract_archive", True, "Extracted 3 files")]
+    assert entries[1].inputs == {"archive": "/x/a.7z"}
+    t = app.tasks.latest("extract_archive")
+    app.tasks._notify(t)  # later notifications of a finished task don't add it again
+    assert len(app.history.entries()) == 2
+
+
+@needs_engine
+def test_open_from_history_restores_archive_and_destination(tmp_path):
+    from taskdeck.shared.gdrive import DriveLocation
+
+    app = make_app(tmp_path)
+    archive = tmp_path / "plain.7z"
+    archive.write_bytes((FIX / "plain.7z").read_bytes())
+    app.open_job("extract_archive", {"archive": str(archive), "name": "Pics", "to": "drive",
+                                     "folder_id": "f1", "folder_names": "My Drive/Backups"})
+    screen = app.stack[-1]
+    assert screen.archive == archive and screen.name == "Pics"
+    assert screen.parent == DriveLocation("f1", ("My Drive", "Backups"))
+    assert screen.inputs()["folder_id"] == "f1"
+
+    app.back()
+    app.open_job("extract_archive", {"archive": str(archive), "name": "out", "to": "phone", "parent": str(tmp_path)})
+    screen = app.stack[-1]
+    assert screen.parent == tmp_path and screen.destination() == tmp_path / "out"
+
+    app.back()
+    app.open_job("extract_archive", {"archive": str(tmp_path / "gone.7z")})  # deleted since: opens empty
+    assert app.stack[-1].archive is None

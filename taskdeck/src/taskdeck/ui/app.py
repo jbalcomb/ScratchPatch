@@ -135,7 +135,7 @@ class TaskDeckApp:
             self.toast(f"Job {job_id!r} is not installed")
             return
         make_screen = getattr(plugin, "make_screen", None)
-        screen = make_screen(self) if make_screen else JobScreen(self, plugin, preset)
+        screen = make_screen(self, preset) if make_screen else JobScreen(self, plugin, preset)
         self.push(screen)
         screen.check_ready()
         self.page.update()
@@ -362,8 +362,12 @@ class TaskDeckApp:
         return out
 
     def on_task(self, task: Task) -> None:
-        """Background task changed (worker thread): refresh Home, announce the end."""
+        """Background task changed (worker thread): refresh Home, announce the end, add it to History."""
         if not task.running:
+            if not task.in_history:  # background jobs (e.g. Extract Archive) don't go through JobScreen.run
+                task.in_history = True
+                self.history.add(task.job_id, task.status == DONE, task.message, task.inputs)
+                self.on_history_changed()
             self._reload_if_pending()
         if not self.stack and self.tab == "home":
             self.render()
