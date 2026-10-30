@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator
 
 from taskdeck.core import Cancelled
-from taskdeck.shared import http
+from taskdeck.shared import http, tailscale
 from taskdeck.shared.files import is_android
 
 if TYPE_CHECKING:
@@ -38,6 +38,7 @@ class NetworkMonitor:
         try:
             import flet as ft
 
+            tailscale.vpn_active = lambda: None if self.types is None else "vpn" in self.types
             self._service = ft.Connectivity(on_change=lambda e: self.set_types([t.value for t in e.connectivity]))
             self.set_types([t.value for t in await self._service.get_connectivity()])
         except Exception:  # unknown network: nothing is held back
