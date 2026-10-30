@@ -70,5 +70,27 @@ class ExportTest(unittest.TestCase):
             self.assertIn("000_DWARF/sheet.png", (out / "index.html").read_text())
 
 
+    def test_terrain_tiles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            game, out = Path(tmp, "game"), Path(tmp, "out")
+            game.mkdir()
+            (game / "FONTS.LBX").write_bytes(fonts_lbx())
+            tiles = bytearray(0xC0)
+            for k in range(2):
+                tile = bytearray(384)
+                tile[0:4] = bytes((3, 0, 2, 0))                   # 3 wide, 2 high
+                tile[16:22] = bytes((10 + k, 11, 0, 13, 14, 15))  # column by column; one transparent pixel
+                tiles += tile
+            (game / "TERRAIN.LBX").write_bytes(build_lbx([bytes(tiles), b"types", b"minimap"]))
+            export.main([str(game), str(out)])
+            with Image.open(out / "TERRAIN_TILES/0001_TILE0001/frame_00_index.png") as img:
+                self.assertEqual(img.size, (3, 2))
+                self.assertEqual([img.getpixel((x, y)) for y in range(2) for x in range(3)],
+                                 [(11, 255), (0, 0), (14, 255), (11, 255), (13, 255), (15, 255)])
+            with open(out / "catalog.csv", encoding="utf-8") as f:
+                rows = [r for r in csv.DictReader(f) if r["archive"] == "TERRAIN_TILES"]
+            self.assertEqual([(r["entry"], r["kind"], r["width"]) for r in rows], [("0", "sprite", "3"), ("1", "sprite", "3")])
+
+
 if __name__ == "__main__":
     unittest.main()

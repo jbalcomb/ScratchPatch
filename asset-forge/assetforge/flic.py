@@ -69,7 +69,12 @@ def read_header(data):
     pal_ofs = struct.unpack_from("<h", data, 0x0E)[0]
     if not (0 < w <= 640 and 0 < h <= 480 and 0 < n <= 4000):
         return None
-    if len(data) < 0x12 + 4 * (n + 1):
+    table_end = 0x12 + 4 * (n + 1)
+    if len(data) < table_end:
+        return None
+    offsets = struct.unpack_from(f"<{n + 1}I", data, 0x12)
+    # Data entries can start with plausible numbers (HLPENTRY.LBX does); a sprite's frame table is ordered and in bounds.
+    if offsets[0] < table_end or offsets[-1] > len(data) or any(a > b for a, b in zip(offsets, offsets[1:])):
         return None
     return FlicHeader(w, h, n, loop, pal_ofs, data[0x10], data[0x11])
 

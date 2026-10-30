@@ -6,3 +6,6 @@ build/
 dist/
 *.egg-info/
 reports/
+
+# Asset Forge output: contains the original (copyrighted) game art
+asset-forge/out/

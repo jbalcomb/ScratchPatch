@@ -58,6 +58,9 @@ class HandMadeBytes(unittest.TestCase):
     def test_not_a_sprite(self):
         self.assertIsNone(flic.read_header(b"\0" * 8))
         self.assertIsNone(flic.read_header(struct.pack("<hhhhh", 0, 10, 0, 1, 0) + bytes(30)))
+        # Plausible size and frame count, but the frame table points outside the entry (as in HLPENTRY.LBX).
+        data = struct.pack("<hhhhh", 15, 10, 0, 2, 0) + bytes(8) + struct.pack("<3I", 30, 0x120000E, 40) + bytes(20)
+        self.assertIsNone(flic.read_header(data))
 
 
 class RoundTrip(unittest.TestCase):

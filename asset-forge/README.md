@@ -28,11 +28,15 @@ The decoder (`assetforge/flic.py`) is a port of the engine's `FLIC_Draw_Frame()`
 
 Remap pixels (shadows and glass effects) recolour whatever is underneath in the game. The RGBA preview approximates them with the remap colour and its percentage from `FONTS.LBX`.
 
-**Not yet checked against real game files.** The original LBX files are copyrighted and not in either repo, so the tests use synthetic sprites. Check:
+World-map terrain tiles are not sprites: they are 1,761 plain 20×18 bitmaps packed into `TERRAIN.LBX` entry 0, decoded as `Draw_Picture()` and `MainScr_Maps.c` read them. They are listed as archive `TERRAIN_TILES`, one folder per tile.
 
-1. Run the exporter on your v1.31 files.
-2. Compare a few sprites with the game: a unit, a terrain tile, a wizard portrait, the main menu background.
-3. Look in `catalog.csv` for `undecodable` rows and for anything in `warnings`.
+**Checked on the real v1.31 files** (2026-10-29, AI Workstation, 34 s):
+- 6,522 graphics decoded: 4,761 sprites from 77 archives plus the 1,761 terrain tiles. None failed and none had warnings.
+- Spot-checked by eye: wizard portraits (own palette), unit figures with banner colours, buttons, the main-screen frame, spell-screen panels, and the terrain tiles.
+- 503 entries are not graphics: sounds, music, data tables.
+- Ten `HLPENTRY.LBX` data entries start with bytes that look like a sprite header. They are rejected because their frame tables point outside the entry.
+
+`out/` holds the original copyrighted art and is git-ignored. Keep it that way.
 
 ### Step 2: image → description and prompt
 
@@ -101,7 +105,7 @@ REMOM_DIR=/c/STU/devel/ReMoM python3 -m unittest tests.test_engine_parity     # 
 
 The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Draw.c`, compiles them, and checks that they and the Python port produce the same pixels on 300 random sprites. It needs a C compiler. CI runs it against ReMoM `main`.
 
-## AI Workstation (RTX 5060 Ti, 16 GB)
+## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 
 - **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch built for CUDA 12.8 or newer (`cu128`, see `requirements-gpu.txt`). Older builds fail with errors about `sm_120`.
 - **Vision model (steps 2 and 5):** 16 GB holds a 7B-class vision model at 8-bit, or a larger one at 4-bit. Try a couple on the 20-sprite pilot and keep the one whose prompts work best.
@@ -166,7 +170,7 @@ From the ReMoM sources (`tools/asset_catalog`, `doc/@AI_Plans/PRD-Graphics-Upsca
 - **Palette index 0 is transparent**, and about 413 sprites carry their own palette instead of the shared one.
 - **Runtime recolouring.** Banner (player) colours, spell tints and shading are palette swaps (remap tables). A generated unit must put its banner colour in the right palette indices or it won't recolour. A plain RGB pipeline loses this.
 - **Animations** (multi-frame FLIC) must stay registered frame to frame. Image models are bad at this. Leave animated sprites until static ones work.
-- **Terrain tiles must tile seamlessly.** Needs its own check.
+- **Terrain tiles must tile seamlessly.** Most of the 1,761 tiles are coastline and river joining pieces: hundreds of variants of a few base textures. Generating them one at a time can't line up. Plan: generate the base textures (grass, ocean, forest, ...) and build the joining pieces from them with code, using the originals' shapes as masks.
 
 ### 4. Two tools are missing in ReMoM, and they come first.
 
@@ -192,16 +196,15 @@ For each image: prompt, model and version, seed, reference images used, round nu
 
 ## Still open
 
-1. **The AI Workstation:** RTX 5060 Ti, 16 GB. Still to confirm: which OS.
-2. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
-3. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
-4. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
+1. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
+2. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
+3. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
 
 ## Build order
 
 Each step is small, finishes, and is useful on its own:
 
-1. **LBX → PNG exporter.** Gives you the reference set. *Built, see above; needs a check on real files.*
+1. **LBX → PNG exporter.** Gives you the reference set. *Built and checked on the real files.*
 2. **Describe:** image → description + prompt (one vision-LLM call). *Built, see above; needs a pilot on a real model.*
 3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built, see above; needs a pilot on a real checkpoint.*
 4. **Style guide:** batch of references → style guide text.

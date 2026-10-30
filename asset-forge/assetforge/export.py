@@ -9,6 +9,7 @@ Per sprite, under OUT_DIR/<ARCHIVE>/<entry>_<name>/:
   frame_NN_index.png   greyscale + alpha: grey = palette index, alpha 255 pixel / 128 remap (shading) pixel / 0 nothing
   sheet.png            all frames side by side, RGBA
   palette.json         only for sprites with their own palette: the 256 (r, g, b) colours they are drawn with
+World-map tiles (TERRAIN.LBX entry 0, plain bitmaps) are listed as archive TERRAIN_TILES, one folder per tile.
 OUT_DIR/catalog.csv lists every entry; OUT_DIR/index.html shows them all; OUT_DIR/palette.json is the game palette.
 
 The game palette comes from FONTS.LBX in the same folder as the archives. Without it, sprites render in grey.
@@ -31,6 +32,10 @@ from .palette import FONTS_PALETTE_FIRST_ENTRY, apply_chunks, grey_palette, load
 
 REMAP_TABLE_OFFSET = 0x1500     # remap_colors in the FONTS.LBX palette entry: 24 x (r, g, b, percent), see Load_Palette()
 REMAP_BLOCKS = 24
+
+TERRAIN_TILES = "TERRAIN_TILES"     # catalogue name for the tiles inside TERRAIN.LBX entry 0
+TERRAIN_FIRST_TILE = 0xC0
+TERRAIN_TILE_STRIDE = 384
 
 CATALOG_COLUMNS = ["archive", "entry", "name", "description", "kind", "width", "height", "frames", "loop_frame",
                    "full_store", "remap", "own_palette", "remap_pixels", "folder", "warnings"]
@@ -79,6 +84,46 @@ def safe_name(name):
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
 
 
+def write_frames(folder, frames, palette, remap_colors):
+    folder.mkdir(parents=True, exist_ok=True)
+    rgba = []
+    for n, frame in enumerate(frames):
+        img = render_rgba(frame, palette, remap_colors)
+        img.save(folder / f"frame_{n:02d}.png")
+        render_index(frame).save(folder / f"frame_{n:02d}_index.png")
+        rgba.append(img)
+    sheet(rgba).save(folder / "sheet.png")
+
+
+def export_terrain_tiles(entry, out_dir, palette, remap_colors, rows):
+    """TERRAIN.LBX entry 0: the world-map tiles, as plain bitmaps rather than FLIC sprites.
+
+    From MoM/src/MainScr_Maps.c: tile k starts at 0xC0 + 384 * k; a 16-byte header (width, height) is followed by
+    width * height palette indices, column by column. Draw_Picture() skips index 0, so 0 is transparent.
+    """
+    data = entry.data
+    for k in range((len(data) - TERRAIN_FIRST_TILE) // TERRAIN_TILE_STRIDE):
+        start = TERRAIN_FIRST_TILE + k * TERRAIN_TILE_STRIDE
+        w, h = struct.unpack_from("<hh", data, start)
+        row = dict.fromkeys(CATALOG_COLUMNS, "")
+        row.update(archive=TERRAIN_TILES, entry=k, name=f"TILE{k:04d}", description="world map terrain tile", kind="other")
+        rows.append(row)
+        if not (0 < w and 0 < h and 16 + w * h <= TERRAIN_TILE_STRIDE):
+            row.update(warnings=f"tile header says {w}x{h}")
+            continue
+        pixels = data[start + 16:start + 16 + w * h]
+        index, cover = bytearray(w * h), bytearray(w * h)
+        for x in range(w):
+            for y in range(h):
+                v = pixels[x * h + y]
+                index[y * w + x] = v
+                cover[y * w + x] = flic.COVER_PIXEL if v else flic.COVER_NONE
+        folder = Path(TERRAIN_TILES) / f"{k:04d}_{row['name']}"
+        write_frames(out_dir / folder, [flic.Frame(w, h, index, cover)], palette, remap_colors)
+        row.update(kind="sprite", width=w, height=h, frames=1, loop_frame=0, full_store=1, remap=0, own_palette=0,
+                   remap_pixels=0, folder=folder.as_posix())
+
+
 def export_archive(path, out_dir, palette, remap_colors, rows):
     try:
         entries = read_lbx(path.read_bytes())
@@ -86,6 +131,8 @@ def export_archive(path, out_dir, palette, remap_colors, rows):
         print(f"skip {path.name}: {e}", file=sys.stderr)
         return
     archive = path.stem.upper()
+    if archive == "TERRAIN" and entries:
+        export_terrain_tiles(entries[0], out_dir, palette, remap_colors, rows)
     for entry in entries:
         row = dict.fromkeys(CATALOG_COLUMNS, "")
         row.update(archive=archive, entry=entry.index, name=entry.name, description=entry.description, kind="other")
@@ -100,17 +147,10 @@ def export_archive(path, out_dir, palette, remap_colors, rows):
             row.update(kind="undecodable", warnings=str(e))
             continue
         folder = Path(archive) / f"{entry.index:03d}_{safe_name(entry.name) or 'unnamed'}"
-        (out_dir / folder).mkdir(parents=True, exist_ok=True)
         pal = apply_chunks(palette, sprite.palette)
+        write_frames(out_dir / folder, sprite.frames, pal, remap_colors)
         if sprite.palette:
             (out_dir / folder / "palette.json").write_text(json.dumps(pal))
-        rgba = []
-        for n, frame in enumerate(sprite.frames):
-            img = render_rgba(frame, pal, remap_colors)
-            img.save(out_dir / folder / f"frame_{n:02d}.png")
-            render_index(frame).save(out_dir / folder / f"frame_{n:02d}_index.png")
-            rgba.append(img)
-        sheet(rgba).save(out_dir / folder / "sheet.png")
         row.update(kind="sprite", width=hdr.width, height=hdr.height, frames=hdr.frame_count, loop_frame=hdr.loop_frame,
                    full_store=int(bool(hdr.full_store)), remap=int(bool(hdr.remap)),
                    own_palette=int(sprite.palette is not None),
@@ -176,7 +216,8 @@ def main(argv=None):
     rows = []
     for path in files:
         export_archive(path, args.out, palette, remap_colors, rows)
-        print(f"{path.name}: {sum(1 for r in rows if r['archive'] == path.stem.upper() and r['kind'] == 'sprite')} sprites")
+        archives = {path.stem.upper(), TERRAIN_TILES} if path.stem.upper() == "TERRAIN" else {path.stem.upper()}
+        print(f"{path.name}: {sum(1 for r in rows if r['archive'] in archives and r['kind'] == 'sprite')} sprites")
     with open(args.out / "catalog.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, CATALOG_COLUMNS)
         w.writeheader()
