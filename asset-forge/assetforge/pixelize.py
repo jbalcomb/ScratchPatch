@@ -41,18 +41,43 @@ def background_mask(rgb, tolerance=60):
         mask = grown
 
 
-def fit(image, size, pad=0):
-    """Crop RGBA image to what is drawn, then scale it (keeping its shape) to fit size, centred at the bottom."""
+def fit(image, size, pad=0, supersample=1):
+    """Crop RGBA image to what is drawn, then scale it (keeping its shape) to fit size, centred at the bottom.
+    With supersample k the result is k times larger, laid out so each k x k block is one pixel of size."""
     box = image.getchannel("A").point(lambda a: 255 if a >= 128 else 0).getbbox()
     if box:
         image = image.crop(box)
     tw, th = size[0] - 2 * pad, size[1] - 2 * pad
     f = min(tw / image.width, th / image.height)
     new = (max(1, round(image.width * f)), max(1, round(image.height * f)))
-    image = image.resize(new, Image.LANCZOS, reducing_gap=3.0)
-    out = Image.new("RGBA", size, (0, 0, 0, 0))
-    out.alpha_composite(image, ((size[0] - new[0]) // 2, size[1] - pad - new[1]))
+    at = ((size[0] - new[0]) // 2, size[1] - pad - new[1])
+    k = supersample
+    image = image.resize((new[0] * k, new[1] * k), Image.LANCZOS, reducing_gap=3.0)
+    out = Image.new("RGBA", (size[0] * k, size[1] * k), (0, 0, 0, 0))
+    out.alpha_composite(image, (at[0] * k, at[1] * k))
     return out
+
+
+def block_mode(sprite, size, k):
+    """Shrink a k-times-supersampled Sprite to size: a pixel is drawn if most of its k x k block is, and takes the
+    block's most common palette index. Keeps colours flat and edges hard, unlike a smoothing filter."""
+    w, h = size
+    idx = sprite.index.reshape(h, k, w, k).transpose(0, 2, 1, 3).reshape(h, w, k * k)
+    drawn = sprite.alpha.reshape(h, k, w, k).transpose(0, 2, 1, 3).reshape(h, w, k * k)
+    alpha = drawn.sum(axis=2) * 2 > k * k
+    counts = np.zeros((h, w, 256), np.int32)
+    np.add.at(counts, (np.arange(h)[:, None, None], np.arange(w)[None, :, None], idx), drawn.astype(np.int32))
+    index = np.where(alpha, counts.argmax(axis=2), 0).astype(np.uint8)
+    return index, alpha
+
+
+def outline(index, alpha, colour):
+    """Recolour drawn pixels that touch transparency (or the edge) to colour: the dark outline MoM sprites have."""
+    padded = np.pad(alpha, 1, constant_values=False)
+    inner = padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    index = index.copy()
+    index[alpha & ~inner] = colour
+    return index
 
 
 def quantize(image, palette, allowed):
@@ -65,20 +90,37 @@ def quantize(image, palette, allowed):
     dist = (diff * diff * np.array([2, 4, 3])).sum(axis=3)
     index = allowed[dist.argmin(axis=2)]
     alpha = rgba[:, :, 3] >= 128
-    index = np.where(alpha, index, 0).astype(np.uint8)
-    out = np.zeros(rgba.shape, np.uint8)
+    return make_sprite(np.where(alpha, index, 0).astype(np.uint8), alpha, palette)
+
+
+def make_sprite(index, alpha, palette):
+    out = np.zeros(index.shape + (4,), np.uint8)
     out[:, :, :3] = np.array(palette, np.uint8)[index]
     out[:, :, 3] = alpha * 255
     return Sprite(Image.fromarray(out, "RGBA"), index, alpha)
 
 
-def pixelize(image, size, palette, allowed, tolerance=60, pad=0):
-    """Generated image (any mode) -> Sprite of the given size using only the allowed palette indices."""
+def darkest(palette, allowed):
+    return min(allowed, key=lambda i: sum(palette[i]))
+
+
+def pixelize(image, size, palette, allowed, tolerance=60, pad=0, supersample=8, outline_colour=None):
+    """Generated image (any mode) -> Sprite of the given size using only the allowed palette indices.
+
+    The image is fitted at supersample x the target size, mapped to the palette there, then each block becomes one
+    pixel (block_mode). outline_colour, if given, redraws the sprite's edge in that palette index."""
     rgba = image.convert("RGBA")
     mask = background_mask(np.asarray(rgba.convert("RGB")), tolerance)
     arr = np.asarray(rgba).copy()
     arr[mask, 3] = 0
-    return quantize(fit(Image.fromarray(arr, "RGBA"), size, pad), palette, allowed)
+    big = quantize(fit(Image.fromarray(arr, "RGBA"), size, pad, supersample), palette, allowed)
+    if supersample == 1:
+        index, alpha = big.index, big.alpha
+    else:
+        index, alpha = block_mode(big, size, supersample)
+    if outline_colour is not None:
+        index = outline(index, alpha, outline_colour)
+    return make_sprite(index, alpha, palette)
 
 
 def index_image(sprite):

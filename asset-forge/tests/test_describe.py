@@ -105,6 +105,16 @@ class DescribeTest(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertTrue((self.out / "SPELLS/000_FIRE/describe.json").exists())
 
+    def test_hints_and_tag_strings(self):
+        (self.out / "hints.csv").write_text("archive,entry,hint\nUNITS,1,icon of a Dwarven Settlers unit\n")
+        reply = dict(GOOD, tags="blob, red , ")
+        code, requests = self.run_describe([json.dumps(reply)] * 3, "--archive", "units")
+        texts = [b["messages"][1]["content"][0]["text"] for _, b in requests]
+        self.assertNotIn("Known identity", texts[0])
+        self.assertIn("Known identity, from the game's data (trust it): icon of a Dwarven Settlers unit.", texts[1])
+        dot = json.loads((self.out / "UNITS/001_DOT/describe.json").read_text())
+        self.assertEqual((dot["hint"], dot["tags"]), ("icon of a Dwarven Settlers unit", ["blob", "red"]))
+
     def test_limit_and_missing_keys(self):
         code, requests = self.run_describe([json.dumps({"subject": "x"})], "--limit", "1", "--no-json-mode")
         self.assertEqual(code, 1)

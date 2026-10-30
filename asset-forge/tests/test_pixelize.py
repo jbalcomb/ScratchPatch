@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from PIL import Image, ImageDraw
 
-from assetforge.pixelize import background_mask, fit, index_image, pixelize, quantize
+from assetforge.pixelize import background_mask, block_mode, darkest, fit, index_image, outline, pixelize, quantize
 
 PALETTE = [(i, i, i) for i in range(256)]
 PALETTE[10] = (200, 30, 30)       # red
@@ -50,6 +50,20 @@ class PixelizeTest(unittest.TestCase):
         self.assertEqual(s.rgba.getpixel((0, 0)), (200, 30, 30, 255))
         self.assertEqual(s.rgba.getpixel((1, 0))[3], 0)
 
+    def test_block_mode_takes_majority(self):
+        big = quantize(Image.new("RGBA", (4, 2), (200, 30, 30, 255)), PALETTE, {10, 11})
+        big.index[0, 0] = 11                                   # one green pixel in the left 2x2 block
+        big.alpha[:, 2:] = [[True, False], [False, False]]     # right block: 1 of 4 drawn
+        index, alpha = block_mode(big, (2, 1), 2)
+        self.assertEqual(alpha.tolist(), [[True, False]])
+        self.assertEqual(index.tolist(), [[10, 0]])
+
+    def test_outline(self):
+        alpha = np.ones((3, 3), bool)
+        out = outline(np.full((3, 3), 10, np.uint8), alpha, 12)
+        self.assertEqual(out.tolist(), [[12, 12, 12], [12, 10, 12], [12, 12, 12]])
+        self.assertEqual(darkest(PALETTE, {10, 11, 12}), 10)
+
     def test_end_to_end(self):
         s = pixelize(generated(), (24, 32), PALETTE, {10, 11, 12})
         self.assertEqual(s.rgba.size, (24, 32))
@@ -57,6 +71,9 @@ class PixelizeTest(unittest.TestCase):
         self.assertEqual(used, {10, 11})                 # disc and eye; no magenta fringe
         self.assertFalse(s.alpha[0, 0])                  # corner is background
         self.assertTrue(s.alpha[16, 12])                 # middle is the disc
+        edged = pixelize(generated(), (24, 32), PALETTE, {10, 11, 12}, outline_colour=12)
+        self.assertEqual(edged.alpha.tolist(), s.alpha.tolist())
+        self.assertIn(12, set(edged.index[edged.alpha].tolist()))
         idx = index_image(s)
         self.assertEqual(idx.mode, "LA")
         self.assertEqual(idx.getpixel((12, 16)), (int(s.index[16, 12]), 255))

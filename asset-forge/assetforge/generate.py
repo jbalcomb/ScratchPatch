@@ -46,9 +46,16 @@ def sprite_seed(base, archive, entry):
     return (base + zlib.crc32(f"{archive}/{entry}".encode())) % 2**31
 
 
-def build_prompt(desc, style):
-    prompt = desc["prompt"].replace("transparent background", "").strip(" ,")
-    return ", ".join(p for p in (prompt, style, BACKGROUND) if p)
+def build_prompt(desc, style, count_tokens=None, limit=75):
+    """Description prompt, then the background instruction, then the style. If count_tokens is given, drop phrases
+    from the end of the description until it all fits (SDXL's text encoders read only 77 tokens, 2 of them markers)."""
+    phrases = [p.strip() for p in desc["prompt"].replace("transparent background", "").split(",") if p.strip()]
+    tail = [BACKGROUND, style]
+    while True:
+        prompt = ", ".join(phrases + [t for t in tail if t])
+        if count_tokens is None or count_tokens(prompt) <= limit or len(phrases) <= 1:
+            return prompt
+        phrases.pop()
 
 
 def allowed_colours(sprite_dir, mode):
@@ -71,6 +78,8 @@ class Diffusers:
     def __init__(self, model, lora=None, lora_scale=1.0, steps=30, cfg=6.0, device=None):
         import torch
         from diffusers import AutoPipelineForText2Image, StableDiffusionXLPipeline
+        from diffusers.utils import logging as diffusers_logging
+        diffusers_logging.set_verbosity_error()
         self.torch = torch
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         kw = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
@@ -85,6 +94,9 @@ class Diffusers:
         self.device, self.steps, self.cfg = device, steps, cfg
         self.info = {"model": str(model), "lora": str(lora) if lora else None, "lora_scale": lora_scale if lora else None,
                      "steps": steps, "cfg": cfg}
+
+    def count_tokens(self, text):
+        return len(self.pipe.tokenizer(text, add_special_tokens=False).input_ids)
 
     def __call__(self, prompt, negative, size, seed):
         gen = self.torch.Generator(self.device).manual_seed(seed)
@@ -135,6 +147,8 @@ def main(argv=None):
     ap.add_argument("--scale", type=int, default=1, help="replacement size = original size x this (default 1)")
     ap.add_argument("--colours", choices=["sprite", "game"], default="sprite",
                     help="palette indices allowed: those the original uses (default) or the safe game range")
+    ap.add_argument("--no-outline", dest="outline", action="store_false",
+                    help="don't redraw the sprite's edge in the darkest allowed colour (MoM sprites have dark outlines)")
     ap.add_argument("--style", help="text file with the style guide to add to every prompt")
     ap.add_argument("--archive", action="append", help="only this archive, e.g. SPELLS (repeatable)")
     ap.add_argument("--limit", type=int, help="generate at most this many sprites")
@@ -173,13 +187,14 @@ def main(argv=None):
         target = (desc["width"] * args.scale, desc["height"] * args.scale)
         size = model_size(*target)
         seed = sprite_seed(args.seed, desc["archive"], desc["entry"])
-        prompt = build_prompt(desc, style)
+        prompt = build_prompt(desc, style, getattr(generator, "count_tokens", None))
         negative = ", ".join(p for p in (desc.get("negative_prompt", ""), NEGATIVE) if p)
         started = time.time()
         raw = generator(prompt, negative, size, seed)
         took = time.time() - started
         allowed = allowed_colours(src_dir, args.colours)
-        sprite = pixelize.pixelize(raw, target, palette, allowed)
+        edge = pixelize.darkest(palette, allowed) if args.outline else None
+        sprite = pixelize.pixelize(raw, target, palette, allowed, outline_colour=edge)
         dst_dir.mkdir(parents=True, exist_ok=True)
         raw.save(dst_dir / "raw.png")
         sprite.rgba.save(dst_dir / "frame_00.png")
@@ -187,7 +202,7 @@ def main(argv=None):
         record = {"archive": desc["archive"], "entry": desc["entry"], "name": desc["name"], "subject": desc["subject"],
                   "width": target[0], "height": target[1], "frames_generated": 1, "frames_original": desc["frames"],
                   "prompt": prompt, "negative_prompt": negative, "seed": seed, "model_size": list(size),
-                  "colours": args.colours, "allowed_indices": len(allowed), "seconds": round(took, 1),
+                  "colours": args.colours, "allowed_indices": len(allowed), "outline": args.outline, "seconds": round(took, 1),
                   "when": time.strftime("%Y-%m-%dT%H:%M:%S"), **generator.info,
                   "described_by": desc.get("provenance", {}).get("model")}
         (dst_dir / "generate.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

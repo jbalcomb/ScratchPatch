@@ -4,7 +4,8 @@ make an image model draw it again.
     python3 -m assetforge.describe out/originals --archive SPELLS --limit 20
     python3 -m assetforge.describe out/originals --endpoint http://localhost:8080/v1 --model qwen2.5-vl
 
-Reads catalog.csv and the sprite sheets written by assetforge.export. Writes describe.json in each sprite's
+Reads catalog.csv and the sprite sheets written by assetforge.export, and hints.csv if there is one (what each
+sprite is, from the game's data: see assetforge.remom_hints). Writes describe.json in each sprite's
 folder and appends one line per sprite to descriptions.jsonl. Sprites that already have describe.json are
 skipped, so an interrupted run carries on where it stopped (--redo to describe them again).
 """
@@ -20,7 +21,7 @@ from PIL import Image
 
 from .vision import DEFAULT_ENDPOINT, VisionError, chat, parse_json_reply
 
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 MIN_SIDE = 384          # small sprites are enlarged (nearest neighbour) so the model can see the pixels
 MAX_SIDE = 1024
 LARGEST = 2048          # bigger sheets (long animations of big sprites) are shrunk to fit
@@ -31,6 +32,7 @@ edges; the checkerboard or empty areas are transparent. Describe only what is dr
 object and nothing else."""
 
 REQUEST = """Sprite {archive}.LBX entry {entry}. Name in the archive: "{name}". Archive note: "{description}".
+(Archive names are 8-letter abbreviations and can mislead; go by the picture and by the known identity below.)
 Size {width}x{height} pixels, {frames} animation frame(s) shown left to right.
 
 Return JSON with these keys:
@@ -41,7 +43,8 @@ Return JSON with these keys:
   "style": one sentence on rendering style (pixel art, shading, outline, dithering, palette)
   "prompt": a text-to-image prompt that would reproduce this as closely as possible: subject first, then composition, colours, style; include "transparent background" when the background is empty
   "negative_prompt": things the image model should avoid
-  "tags": 5-15 short lowercase tags"""
+  "tags": a JSON list of 5-15 short lowercase tags
+Do not mention the magenta background or transparency in description, style or tags."""
 
 REQUIRED = ("subject", "category", "description", "prompt")
 
@@ -62,16 +65,22 @@ def describe_sprite(row, folder, args):
     with Image.open(folder / "sheet.png") as sheet:
         image = enlarge(sheet.convert("RGBA"))
     text = REQUEST.format(**row) + "\nTransparent pixels are shown as solid magenta (255, 0, 255)."
+    hint = args.hints.get((row["archive"], int(row["entry"])))
+    if hint:
+        text += f"\nKnown identity, from the game's data (trust it): {hint}."
     started = time.time()
     reply = chat(args.endpoint, args.model, SYSTEM, text, [image], json_mode=not args.no_json_mode)
     result = parse_json_reply(reply)
     missing = [k for k in REQUIRED if not result.get(k)]
     if missing:
         raise VisionError(f"reply is missing {', '.join(missing)}")
+    if isinstance(result.get("tags"), str):
+        result["tags"] = [t.strip() for t in result["tags"].split(",") if t.strip()]
     return {
         "archive": row["archive"], "entry": int(row["entry"]), "name": row["name"], "folder": row["folder"],
         "width": int(row["width"]), "height": int(row["height"]), "frames": int(row["frames"]),
         **result,
+        "hint": hint or "",
         "provenance": {"model": args.model, "endpoint": args.endpoint, "prompt_version": PROMPT_VERSION,
                        "seconds": round(time.time() - started, 1), "image_size": list(image.size),
                        "when": time.strftime("%Y-%m-%dT%H:%M:%S")},
@@ -91,6 +100,10 @@ def main(argv=None):
 
     with open(args.export_dir / "catalog.csv", encoding="utf-8") as f:
         rows = [r for r in csv.DictReader(f) if r["kind"] == "sprite"]
+    args.hints = {}
+    if (args.export_dir / "hints.csv").exists():      # written by assetforge.remom_hints, or by hand
+        with open(args.export_dir / "hints.csv", encoding="utf-8") as f:
+            args.hints = {(r["archive"], int(r["entry"])): r["hint"] for r in csv.DictReader(f)}
     if args.archive:
         wanted = {a.upper().removesuffix(".LBX") for a in args.archive}
         rows = [r for r in rows if r["archive"] in wanted]

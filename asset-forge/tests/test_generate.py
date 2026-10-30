@@ -97,6 +97,15 @@ class GenerateTest(unittest.TestCase):
         with Image.open(self.pack / "UNITS/000_KNIGHT/frame_00.png") as img:
             self.assertEqual(img.size, (32, 40))
 
+    def test_prompt_fits_the_token_limit(self):
+        desc = {"prompt": "a, b, c, d, e, transparent background"}
+        words = lambda text: len(text.replace(",", " ").split())
+        full = generate.build_prompt(desc, "s")
+        self.assertTrue(full.startswith("a, b, c, d, e, " + generate.BACKGROUND))
+        limit = words(full) - 2
+        short = generate.build_prompt(desc, "s", words, limit)
+        self.assertEqual(short, "a, b, c, " + generate.BACKGROUND + ", s")     # description trimmed, not the tail
+
     def test_model_size(self):
         self.assertEqual(generate.model_size(320, 200), (1344, 768))
         self.assertEqual(generate.model_size(10, 10), (1024, 1024))

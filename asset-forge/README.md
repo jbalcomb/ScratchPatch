@@ -53,18 +53,18 @@ python3 -m assetforge.describe out/originals                                    
 - The model also gets the archive's name and description for the entry.
 - Each sprite gets a `describe.json` with these fields: subject, category, description, animation, style, prompt, negative prompt, tags.
 - Each `describe.json` also records where it came from: model, endpoint, prompt version, seconds taken.
+- If the export folder has a `hints.csv` (archive, entry, hint), the model is told what each sprite is. `python3 -m assetforge.remom_hints ~/STU/devel/ReMoM out/originals` writes one from ReMoM's game data; for now it covers all 198 unit icons.
 - Everything is also appended to `descriptions.jsonl`.
 - Re-running skips sprites already described, so an interrupted run carries on. Use `--redo` to describe them again.
 - The end-of-run line gives the average seconds per sprite: the first number for the budget.
 
-**Not yet run against a real model:** the tests use a fake server. Model quality on tiny pixel art is the thing the pilot has to show.
 
 ### Step 3: generate replacements
 
 Draws a replacement for each described sprite with SDXL on the local GPU (optionally with a style LoRA), then makes it game-ready:
 1. Removes the flat magenta background the model is told to draw on.
-2. Crops to the subject and scales it to the sprite's size, sitting on the bottom edge.
-3. Maps every pixel to a palette index.
+2. Crops to the subject and fits it to 8× the sprite's size, sitting on the bottom edge.
+3. Maps every pixel to a palette index, then turns each 8×8 block into one pixel of its most common colour, and redraws a dark outline.
 
 ```sh
 python3 -m pip install torch --index-url https://download.pytorch.org/whl/cu128
@@ -84,6 +84,7 @@ Per sprite, in `out/pack/<ARCHIVE>/<entry>_<name>/`:
 | `--model` | (required) | An SDXL `.safetensors` checkpoint, or a diffusers model folder or ID. The first load of a single-file checkpoint downloads its config from Hugging Face. |
 | `--lora`, `--lora-scale` | none, 1.0 | A style LoRA. |
 | `--scale N` | 1 | Replacement size is the original size × N. At 1 it fits today's ReMoM; bigger needs the ReMoM changes. |
+| `--no-outline` | outline on | Don't redraw the sprite's edge in the darkest allowed colour. |
 | `--colours sprite` / `game` | `sprite` | `sprite`: only the palette indices the original uses (falls back to `game` when the original uses fewer than 8). Keeps each replacement in its original's colours and its banner-colour indices available. `game`: indices 1–223. 0 is transparent; 224 and up overlap remap and colour cycling. |
 | `--style FILE` | built-in | Style text added to every prompt. The step 4 style guide goes here. |
 | `--seed N` | 1 | Each sprite's seed is derived from N and the sprite, so a re-run reproduces it. |
@@ -94,7 +95,7 @@ Only frame 0 of an animation is generated for now.
 **Checked so far:**
 - Background removal, fitting and palette mapping are tested on synthetic images.
 - The SDXL wrapper ran under diffusers 0.42 against a tiny, randomly initialised SDXL pipeline on CPU, with and without a LoRA: right size, same seed gives the same image, the LoRA changes the output.
-- No real checkpoint has been run, so image quality is unknown until the pilot.
+- Run for real in pilot 1, below.
 
 ### Tests
 
@@ -105,6 +106,25 @@ REMOM_DIR=/c/STU/devel/ReMoM python3 -m unittest tests.test_engine_parity     # 
 
 The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Draw.c`, compiles them, and checks that they and the Python port produce the same pixels on 300 random sprites. It needs a C compiler. CI runs it against ReMoM `main`.
 
+## Pilot 1 (2026-10-30): 20 hero unit icons
+
+`UNITS1.LBX` entries 0–19, 18×16 each. Qwen3-VL 8B (4-bit) described them, then SDXL base 1.0 drew them (30 steps, `--colours sprite`, outline on). The vision container (`assetforge-vision`, port 11436) and SDXL ran one at a time, with the coder container stopped.
+
+**Speed:**
+- Describe: 3.8 s per sprite.
+- Generate: 11.4 s per sprite.
+- One first-version pass over all 4,761 sprites would take about 5 h (describe) + 15 h (generate) of GPU time. Terrain is excluded: it needs the procedural approach.
+
+**What the pilot showed, and the fixes made:**
+- **Archive names mislead the vision model.** "STATFIG1" became "statue of a wizard". `assetforge.remom_hints` now writes `hints.csv` from ReMoM's unit and race tables (all 198 unit icons named), and describe tells the model to trust it. Prompt v2 also stops it describing the magenta background.
+- **SDXL reads only 77 tokens.** The magenta-background instruction at the end was being cut off. The prompt is now trimmed to fit with the model's tokenizer, dropping description phrases rather than the background or style.
+- **Smooth downscaling to 18×16 turns to mush.** Now the image is mapped to the palette at 8× size, each 8×8 block becomes its most common colour, and a dark outline is redrawn. This gives flat colours and hard edges.
+
+**Still open:**
+- **SDXL base ignores "plain magenta background"** and draws muted, graded backgrounds, sometimes with frames or several figures. Background removal works only when the backdrop happens to be plain. Next: a background-removal model (e.g. rembg, MIT licence) instead of colour keying, plus negative prompts for frames and character sheets.
+- **The originals share one template:** a small figure on a brown mount, under the green banner. Generated icons are free-standing figures. Style and composition are what the LoRA trained on the originals is for.
+- **Banner colour:** the green patch is the owner's banner, but the vision model calls it a "green helmet". Banner colours need handling per unit.
+
 ## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 
 - **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch built for CUDA 12.8 or newer (`cu128`, see `requirements-gpu.txt`). Older builds fail with errors about `sm_120`.
@@ -112,6 +132,12 @@ The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Dr
 - **Image model:** SDXL-based models run comfortably in 16 GB. Their licence (OpenRAIL++) allows redistributing output, which a Freedoom-style pack needs. Some newer, larger models also fit, but several have non-commercial licences: check the licence before switching.
 - **LoRA training:** an SDXL LoRA trains comfortably in 16 GB, for example with kohya_ss or OneTrainer.
 - **Sharing the GPU:** an SDXL model in half precision plus a 4-bit 7B vision model fit together. The refine loop (step 5) can then keep both loaded. If memory runs out, run them one at a time.
+- **Set up on this machine:**
+  - Python environment: `asset-forge/.venv` (PyTorch 2.11 for CUDA 12.8, diffusers 0.42).
+  - SDXL base: `~/develai/stable-diffusion-webui/models/Stable-diffusion/sd_xl_base_1.0.safetensors`.
+  - Qwen3-VL: `~/develai/llama.cpp/models/qwen3-vl/`.
+  - Vision server: start it with `docker run -d --rm --name assetforge-vision --gpus all -p 127.0.0.1:11436:8080 -v ~/develai/llama.cpp/models/qwen3-vl:/models:ro ghcr.io/ggml-org/llama.cpp:server-cuda13 -m /models/Qwen3VL-8B-Instruct-Q4_K_M.gguf --mmproj /models/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf -ngl 99 -c 8192 --host 0.0.0.0 --port 8080`, then pass `--endpoint http://127.0.0.1:11436/v1` to describe.
+  - The coder container (`develai-llama-cpp`) uses 12.8 GB: stop it before a run and `docker start` it afterwards.
 
 ## Decisions so far
 
@@ -198,15 +224,15 @@ For each image: prompt, model and version, seed, reference images used, round nu
 
 1. **Image model licence.** For a Freedoom-style pack you need to be free to redistribute the output. Model licences differ: some are permissive, and some popular ones restrict commercial use. Pick a model whose licence allows redistribution, and record the model name and version with every image.
 2. **The pack's own licence:** for example BSD like Freedoom, or CC BY-SA. It has to be compatible with the model's terms.
-3. **Budget.** Running locally, the cost is GPU time, not money. Run a pilot of about 20 assets in one category and measure time per image, time per describe or judge call, and how many images were usable. Then set per-asset caps.
+3. **Budget.** Pilot 1 measured 3.8 s per description and 11.4 s per image: about 20 GPU hours for a first-version pass over every sprite. Per-asset caps for the refine loop can be set once it exists.
 
 ## Build order
 
 Each step is small, finishes, and is useful on its own:
 
 1. **LBX → PNG exporter.** Gives you the reference set. *Built and checked on the real files.*
-2. **Describe:** image → description + prompt (one vision-LLM call). *Built, see above; needs a pilot on a real model.*
-3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built, see above; needs a pilot on a real checkpoint.*
+2. **Describe:** image → description + prompt (one vision-LLM call). *Built; piloted.*
+3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built; piloted. Next: a background-removal model, then the LoRA.*
 4. **Style guide:** batch of references → style guide text.
 5. **Refine loop:** prompt → image → judge → revised prompt, with round and cost caps and provenance records.
 6. **Pack runner:** manifest in, approved images plus a review gallery out.
