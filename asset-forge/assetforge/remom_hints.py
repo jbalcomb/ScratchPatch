@@ -3,9 +3,14 @@
     python3 -m assetforge.remom_hints ~/STU/devel/ReMoM out/originals
 
 Archive entry names are 8-character abbreviations ("STATFIG1") that can mislead a vision model, and small sprites are
-hard to read. The game data says what they are. Currently covered: unit icons, UNITS1.LBX entry i = unit type i and
-UNITS2.LBX entry i = unit type 120 + i (Load_Unit_StatFigs() in MoM/src/LOADER.c), named from _unit_type_table in
-MoM/src/UNITTYPE.c and _race_type_names in MoM/src/RACETYPE.c.
+hard to read. The game data says what they are. Units are named from _unit_type_table in MoM/src/UNITTYPE.c and
+_race_type_names in MoM/src/RACETYPE.c. Covered:
+- unit icons: UNITS1.LBX entry i = unit type i, UNITS2.LBX entry i = unit type 120 + i (Load_Unit_StatFigs(),
+  MoM/src/LOADER.c);
+- combat figures: unit type t is in FIGURES<t/15+1>.LBX (FIGURE10.LBX and up without the S), entries (t%15)*8 to
+  (t%15)*8+7, one per facing in the order of e_COMBAT_ENTITY_MISSILE_DIRECTION (Combat_Figure_Load(), Combat.c);
+- summoned creature pictures: MONSTER.LBX entry i = unit type of Magic Spirit + i (Spells137.c); entries 44-47 are
+  other pictures.
 
 hints.csv columns: archive, entry, hint. It can also be written or extended by hand.
 """
@@ -20,6 +25,11 @@ HEROES = 35                  # unit types 0-34 are heroes (UNITTYPE.c)
 UNITS2_FIRST = 120
 NUM_UNIT_TYPES = 198
 REALMS = {"Arcane", "Nature", "Sorcery", "Chaos", "Life", "Death"}
+FIGURES_PER_FILE = 15
+FACINGS = ["facing away from the viewer", "facing away, toward the upper right", "facing right",
+           "facing the viewer, toward the lower right", "facing the viewer", "facing the viewer, toward the lower left",
+           "facing left", "facing away, toward the upper left"]
+FIRST_SUMMON = "Magic Spirit"
 
 
 def c_strings(source, prefix):
@@ -50,11 +60,25 @@ def unit_hint(unit_type, name, race):
     return f"{race} {name}".strip() + " unit"
 
 
+def figure_archive(unit_type):
+    n = unit_type // FIGURES_PER_FILE + 1
+    return f"FIGURES{n}" if n < 10 else f"FIGURE{n}"
+
+
 def hints(remom):
+    types = unit_types(remom)
     rows = []
-    for t, (name, race) in enumerate(unit_types(remom)):
+    for t, (name, race) in enumerate(types):
         archive, entry = ("UNITS1", t) if t < UNITS2_FIRST else ("UNITS2", t - UNITS2_FIRST)
         rows.append({"archive": archive, "entry": entry, "hint": f"icon of a {unit_hint(t, name, race)}"})
+    for t, (name, race) in enumerate(types):
+        for facing, words in enumerate(FACINGS):
+            rows.append({"archive": figure_archive(t), "entry": t % FIGURES_PER_FILE * len(FACINGS) + facing,
+                         "hint": f"combat figure of a {unit_hint(t, name, race)}, {words}"})
+    first = [name for name, _ in types].index(FIRST_SUMMON)
+    for t in range(first, len(types)):
+        name, race = types[t]
+        rows.append({"archive": "MONSTER", "entry": t - first, "hint": f"picture of a {unit_hint(t, name, race)}"})
     return rows
 
 

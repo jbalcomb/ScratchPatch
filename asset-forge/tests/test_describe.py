@@ -115,6 +115,12 @@ class DescribeTest(unittest.TestCase):
         dot = json.loads((self.out / "UNITS/001_DOT/describe.json").read_text())
         self.assertEqual((dot["hint"], dot["tags"]), ("icon of a Dwarven Settlers unit", ["blob", "red"]))
 
+    def test_bucket_filters(self):
+        code, requests = self.run_describe([], "--skip-bucket", "ui")         # UNITS and SPELLS are both ui
+        self.assertEqual((code, len(requests)), (0, 0))
+        code, requests = self.run_describe([], "--bucket", "ui", "--skip-bucket", "figure")
+        self.assertEqual((code, len(requests)), (0, 3))
+
     def test_limit_and_missing_keys(self):
         code, requests = self.run_describe([json.dumps({"subject": "x"})], "--limit", "1", "--no-json-mode")
         self.assertEqual(code, 1)

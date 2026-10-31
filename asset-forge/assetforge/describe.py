@@ -19,6 +19,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from .buckets import BUCKETS, bucket_of
 from .vision import DEFAULT_ENDPOINT, VisionError, chat, parse_json_reply
 
 PROMPT_VERSION = 2
@@ -93,6 +94,8 @@ def main(argv=None):
     ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help=f"OpenAI-compatible API base (default {DEFAULT_ENDPOINT})")
     ap.add_argument("--model", default="local", help="model name to send (llama-server ignores it)")
     ap.add_argument("--archive", action="append", help="only this archive, e.g. SPELLS (repeatable)")
+    ap.add_argument("--bucket", action="append", choices=sorted(BUCKETS), help="only this bucket (repeatable)")
+    ap.add_argument("--skip-bucket", action="append", choices=sorted(BUCKETS), help="leave out this bucket (repeatable)")
     ap.add_argument("--limit", type=int, help="describe at most this many sprites")
     ap.add_argument("--redo", action="store_true", help="describe sprites again even if describe.json exists")
     ap.add_argument("--no-json-mode", action="store_true", help="don't ask the server for JSON output mode")
@@ -107,6 +110,11 @@ def main(argv=None):
     if args.archive:
         wanted = {a.upper().removesuffix(".LBX") for a in args.archive}
         rows = [r for r in rows if r["archive"] in wanted]
+    if args.bucket or args.skip_bucket:
+        for r in rows:
+            r["bucket"] = r.get("bucket") or bucket_of(r["archive"], int(r["width"]), int(r["height"]))
+        rows = [r for r in rows if (not args.bucket or r["bucket"] in args.bucket)
+                and r["bucket"] not in (args.skip_bucket or [])]
 
     done = failed = skipped = 0
     seconds = 0.0

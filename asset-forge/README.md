@@ -45,6 +45,7 @@ For each exported sprite, a local vision model writes what it shows and a prompt
 ```sh
 llama-server -m <vision-model>.gguf --mmproj <its-mmproj>.gguf -ngl 99 --port 8080     # on the AI Workstation
 python3 -m assetforge.describe out/originals --archive SPELLS --limit 20               # pilot: 20 spell icons
+python3 -m assetforge.describe out/originals --skip-bucket terrain                     # everything but world terrain
 python3 -m assetforge.describe out/originals                                           # everything
 ```
 
@@ -53,7 +54,12 @@ python3 -m assetforge.describe out/originals                                    
 - The model also gets the archive's name and description for the entry.
 - Each sprite gets a `describe.json` with these fields: subject, category, description, animation, style, prompt, negative prompt, tags.
 - Each `describe.json` also records where it came from: model, endpoint, prompt version, seconds taken.
-- If the export folder has a `hints.csv` (archive, entry, hint), the model is told what each sprite is. `python3 -m assetforge.remom_hints ~/STU/devel/ReMoM out/originals` writes one from ReMoM's game data; for now it covers all 198 unit icons.
+- If the export folder has a `hints.csv` (archive, entry, hint), the model is told what each sprite is. `python3 -m assetforge.remom_hints ~/STU/devel/ReMoM out/originals` writes one from ReMoM's game data. It covers:
+  - all 198 unit icons;
+  - the combat figures: 8 per unit, one per facing, in `Combat_Figure_Load()` order;
+  - the 44 summoned-creature pictures in MONSTER.LBX.
+
+  FIGURE15 and FIGURE16 aren't loaded by any code path and have no hints.
 - Everything is also appended to `descriptions.jsonl`.
 - Re-running skips sprites already described, so an interrupted run carries on. Use `--redo` to describe them again.
 - The end-of-run line gives the average seconds per sprite: the first number for the budget.
@@ -127,7 +133,7 @@ python3 -m assetforge.dataset out/originals out/dataset --bucket figure --frames
 - **Captions** start with the bucket's trigger word. The text comes from `describe.json` if the sprite has been described, otherwise from `hints.csv`, otherwise from the bucket's noun. Transparent pictures end with "isolated on a plain flat <key> background".
 - **Duplicates are dropped.** Pictures under 6 px are skipped. Smaller buckets are repeated up to about `--balance` (500) images per epoch.
 - **First run:** 5,829 images (555 duplicates skipped), 77 MB, 47 s. Keys: magenta for figures, unit icons, terrain and items; green for portraits, buildings, art, screens and UI; blue for icons.
-- **Captions are mostly generic so far.** Only the 20 piloted icons have descriptions, and 165 more unit icons have hints. The rest say only what the bucket is. A describe pass over everything (about 6 h of GPU) should come before training, or the LoRA learns style but can't tie it to subjects.
+- **Captions are mostly generic so far.** Only the 20 piloted icons have descriptions. Hints name 165 more unit icons, 1,448 combat figures and 40 monster pictures. The rest say only what the bucket is. A describe pass over everything (about 6 h of GPU) should come before training, or the LoRA learns style but can't tie it to subjects.
 
 ### Tests
 
