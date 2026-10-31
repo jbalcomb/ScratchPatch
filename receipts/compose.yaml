@@ -1,0 +1,11 @@
+# Bake-off harness, run on demand: docker compose run --rm bakeoff run --all
+services:
+  bakeoff:
+    build: .
+    # Host networking: reaches llama-server / llama-swap on the workstation like any local program.
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"
+    env_file: ${HOME}/.config/secrets.env  # LLM_URL, LLM_API_KEY, LLM_MODEL (RECEIPTS_* override them)
+    volumes:
+      - ${HOME}/receipts/bakeoff:/data   # test set (photos + labels) and results
+      - ./engines.json:/app/engines.json:ro  # edit candidates without a rebuild
