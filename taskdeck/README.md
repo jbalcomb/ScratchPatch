@@ -49,6 +49,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 | **Parse executable** | Split a DOS or Windows .exe (MZ, PE, NE) into small text files an AI agent can walk or search: summary and layout, metadata, headers, hex chunks, strings; with supporting DLLs side by side and an import → export cross-reference. Optionally mirrored to Google Drive. [docs/jobs/exe_parse.md](docs/jobs/exe_parse.md). |
 | **Parse DLL** | The same for .dll and other libraries, with the exports table (ordinal, name, address, chunk file; forwarders; 16-bit NE too). Shares Parse executable's Drive folder. [docs/jobs/dll_parse.md](docs/jobs/dll_parse.md). |
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
+| **Receipts**: Receipt capture, Receipts to review, Unmatched items, Product photo, Shopping list, Reconciliation | Phone side of the receipts service on the AI Workstation, over Tailscale: send receipt and product photos, see the review queue, accept product matches, the shopping list, and bank reconciliation. Needs the service URL: [docs/jobs/receipts.md](docs/jobs/receipts.md). |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
 Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:

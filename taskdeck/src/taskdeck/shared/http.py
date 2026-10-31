@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import mimetypes
 import socket
 import ssl
 import threading
@@ -16,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -173,9 +175,10 @@ def _network_error(exc: Exception, url: str, timeout: float) -> HttpError:
 
 
 def request(method: str, url: str, *, json_body: Any = None, form: dict[str, str] | None = None,
-            headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
-    """Send a request and decode a JSON response (or return text if it isn't JSON)."""
-    data = None
+            data: bytes | None = None, headers: dict[str, str] | None = None, timeout: float = 30) -> Any:
+    """Send a request and decode a JSON response (or return text if it isn't JSON).
+
+    The body is ``json_body``, ``form`` (urlencoded) or raw ``data`` (set its Content-Type in ``headers``)."""
     hdrs = {"Accept": "application/json", **(headers or {})}
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
@@ -318,6 +321,42 @@ def reachable(url: str, timeout: float = 3) -> bool:
 
 def post_json(url: str, body: Any, **kw: Any) -> Any:
     return request("POST", url, json_body=body, **kw)
+
+
+# Not in every Python's built-in table (Android has no system mime.types to add them).
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("text/csv", ".csv")
+
+
+def multipart(fields: list[tuple[str, str]] = (), files: list[tuple[str, str, bytes]] = ()) -> tuple[bytes, str]:
+    """Encode form fields and files ``(field name, file name, content)`` as multipart/form-data, in the
+    order given (fields first). Returns the body and its Content-Type."""
+    boundary = f"----taskdeck{uuid.uuid4().hex}"
+    out = bytearray()
+
+    def part(disposition: str, extra: str, content: bytes) -> None:
+        out.extend(f"--{boundary}\r\nContent-Disposition: form-data; {disposition}\r\n{extra}\r\n".encode("utf-8"))
+        out.extend(content)
+        out.extend(b"\r\n")
+
+    for name, value in fields:
+        part(f'name="{_quote(name)}"', "", str(value).encode("utf-8"))
+    for name, filename, content in files:
+        ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        part(f'name="{_quote(name)}"; filename="{_quote(filename)}"', f"Content-Type: {ctype}\r\n", content)
+    out.extend(f"--{boundary}--\r\n".encode("ascii"))
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def _quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', "%22").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def post_multipart(url: str, fields: list[tuple[str, str]] = (), files: list[tuple[str, str, bytes]] = (),
+                   **kw: Any) -> Any:
+    """POST a multipart/form-data request (see :func:`multipart`); decodes the JSON answer like :func:`request`."""
+    body, ctype = multipart(fields, files)
+    return request("POST", url, data=body, headers={**kw.pop("headers", {}), "Content-Type": ctype}, **kw)
 
 
 def get_json(url: str, **kw: Any) -> Any:
