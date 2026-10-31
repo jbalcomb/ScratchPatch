@@ -27,6 +27,7 @@ from pathlib import Path
 from PIL import Image
 
 from . import flic
+from .buckets import add_bucket_column
 from .lbx import LbxError, read_lbx
 from .palette import FONTS_PALETTE_FIRST_ENTRY, apply_chunks, grey_palette, load_game_palette, vga6_to_8
 
@@ -37,8 +38,8 @@ TERRAIN_TILES = "TERRAIN_TILES"     # catalogue name for the tiles inside TERRAI
 TERRAIN_FIRST_TILE = 0xC0
 TERRAIN_TILE_STRIDE = 384
 
-CATALOG_COLUMNS = ["archive", "entry", "name", "description", "kind", "width", "height", "frames", "loop_frame",
-                   "full_store", "remap", "own_palette", "remap_pixels", "folder", "warnings"]
+CATALOG_COLUMNS = ["archive", "entry", "name", "description", "kind", "bucket", "width", "height", "frames",
+                   "loop_frame", "full_store", "remap", "own_palette", "remap_pixels", "folder", "warnings"]
 
 
 def load_remap_colors(fonts_bytes, number=0):
@@ -218,6 +219,7 @@ def main(argv=None):
         export_archive(path, args.out, palette, remap_colors, rows)
         archives = {path.stem.upper(), TERRAIN_TILES} if path.stem.upper() == "TERRAIN" else {path.stem.upper()}
         print(f"{path.name}: {sum(1 for r in rows if r['archive'] in archives and r['kind'] == 'sprite')} sprites")
+    add_bucket_column(rows)
     with open(args.out / "catalog.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, CATALOG_COLUMNS)
         w.writeheader()

@@ -97,6 +97,38 @@ Only frame 0 of an animation is generated for now.
 - The SDXL wrapper ran under diffusers 0.42 against a tiny, randomly initialised SDXL pipeline on CPU, with and without a LoRA: right size, same seed gives the same image, the LoRA changes the output.
 - Run for real in pilot 1, below.
 
+### Buckets and the LoRA training set
+
+```sh
+python3 -m assetforge.buckets out/originals                   # add the bucket column to an existing catalog.csv
+python3 -m assetforge.dataset out/originals out/dataset       # build the training set (about a minute, CPU only)
+python3 -m assetforge.dataset out/originals out/dataset --bucket figure --frames all
+```
+
+**Buckets** group graphics that are drawn, trained and generated the same way. New exports get a `bucket` column in `catalog.csv` automatically. The rules (`assetforge/buckets.py`) go by archive. Two size rules come first: anything about full-screen size is a `screen`, and DIPLOMAC pictures 64 px or bigger are portraits.
+
+| Bucket | Trigger word | Sprites | Archives |
+|---|---|---|---|
+| figure | momfigure | 1,849 | FIGURES1–9, FIGURE10–16, CMBMAGIC |
+| unit_icon | momuniticon | 198 | UNITS1, UNITS2 |
+| portrait | momportrait | 167 | PORTRAIT, WIZARDS, MOODWIZ, LILWIZ, large DIPLOMAC |
+| terrain | momterrain | 1,832 | TERRAIN_TILES, MAPBACK |
+| combat_terrain | momcombatterrain | 755 | COMBAT, CMB*, DESERT, TUNDRA, CHRIVER |
+| building | mombuilding | 350 | CITYSCAP, CMBTCITY, CITYWALL, CMBTWALL, WALLRISE |
+| item | momitem | 152 | ITEMS, ITEMISC |
+| icon | momicon | 362 | SPECIAL, SPECIAL2, COMPIX, UNITVIEW, RESOURCE |
+| art | momart | 333 | MONSTER, SPECFX, SPELLOSE, CONQUEST, CMBTFX, SPLMASTR, EVENTS, WIN, LOSE, WIZLAB |
+| screen | momscreen | 52 | 320×200 and similar, any archive |
+| ui | momui | 472 | everything else |
+
+**Training set** (`assetforge.dataset`), in the folder layout kohya_ss and OneTrainer read (`img/<repeats>_<token>/`, an image and a `.txt` caption per sample):
+- **Crisp enlargement.** Each original is enlarged by the biggest whole number that fits the SDXL training size closest in shape, with nearest neighbour, so pixels stay square.
+- **Key colour.** Transparent parts are filled with a flat key colour, and the picture is centred on a canvas of that colour at exactly an SDXL size, so the trainer doesn't resize it. Each bucket gets the key farthest from every colour its originals use (`buckets.json` records it). The aim is a LoRA that always draws that flat colour, so generation can key it out exactly. SDXL base ignores "plain magenta background" in a prompt.
+- **Captions** start with the bucket's trigger word. The text comes from `describe.json` if the sprite has been described, otherwise from `hints.csv`, otherwise from the bucket's noun. Transparent pictures end with "isolated on a plain flat <key> background".
+- **Duplicates are dropped.** Pictures under 6 px are skipped. Smaller buckets are repeated up to about `--balance` (500) images per epoch.
+- **First run:** 5,829 images (555 duplicates skipped), 77 MB, 47 s. Keys: magenta for figures, unit icons, terrain and items; green for portraits, buildings, art, screens and UI; blue for icons.
+- **Captions are mostly generic so far.** Only the 20 piloted icons have descriptions, and 165 more unit icons have hints. The rest say only what the bucket is. A describe pass over everything (about 6 h of GPU) should come before training, or the LoRA learns style but can't tie it to subjects.
+
 ### Tests
 
 ```sh
@@ -121,9 +153,27 @@ The parity test pulls the three decode functions out of ReMoM's `MoX/src/FLIC_Dr
 - **Smooth downscaling to 18×16 turns to mush.** Now the image is mapped to the palette at 8× size, each 8×8 block becomes its most common colour, and a dark outline is redrawn. This gives flat colours and hard edges.
 
 **Still open:**
-- **SDXL base ignores "plain magenta background"** and draws muted, graded backgrounds, sometimes with frames or several figures. Background removal works only when the backdrop happens to be plain. Next: a background-removal model (e.g. rembg, MIT licence) instead of colour keying, plus negative prompts for frames and character sheets.
+- **SDXL base ignores "plain magenta background"** and draws muted, graded backgrounds, sometimes with frames or several figures. Background removal works only when the backdrop happens to be plain. Plan: train the LoRA on originals on a flat key colour (see the training set above), so the colour key works again. Keep a background-removal model as a fallback.
 - **The originals share one template:** a small figure on a brown mount, under the green banner. Generated icons are free-standing figures. Style and composition are what the LoRA trained on the originals is for.
 - **Banner colour:** the green patch is the owner's banner, but the vision model calls it a "green helmet". Banner colours need handling per unit.
+
+## Background-removal test (2026-10-30)
+
+Three rembg models (MIT licence) on pilot 1's 20 SDXL images, CPU only (onnxruntime), each run in its own process with RAM capped at 20 GB:
+
+| Model | Per image | Peak RAM | Result |
+|---|---|---|---|
+| isnet-general-use | 0.2 s | 1.5 GB | Clean figures; also drops most of SDXL's frames and circles. **The one to use.** |
+| isnet-anime | 0.2 s | 1.8 GB | Drops the whole figure in about 6 of 20. |
+| birefnet-general | 4.9 s | 13.9 GB | Keeps frames, character sheets and crowds as subject. |
+
+BiRefNet's 13.9 GB is a fixed working set (reached by image 3, then flat), not a leak. An earlier uncapped run of it filled 30 GB of RAM plus 8 GB of swap and took the desktop session down with it. The coder model's `llama-server` alone holds 7.7 GB of ordinary RAM.
+
+**Rule from this:** every heavy job runs under a memory cap, so the job dies instead of the desktop:
+
+```sh
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 .venv/bin/python -m assetforge.<step> ...
+```
 
 ## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 
@@ -232,7 +282,7 @@ Each step is small, finishes, and is useful on its own:
 
 1. **LBX → PNG exporter.** Gives you the reference set. *Built and checked on the real files.*
 2. **Describe:** image → description + prompt (one vision-LLM call). *Built; piloted.*
-3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built; piloted. Next: a background-removal model, then the LoRA.*
+3. **Generate + post-process:** prompt → image → resized, palette-quantized PNG. *Built; piloted. Next: describe everything, then train the LoRA on `assetforge.dataset` output.*
 4. **Style guide:** batch of references → style guide text.
 5. **Refine loop:** prompt → image → judge → revised prompt, with round and cost caps and provenance records.
 6. **Pack runner:** manifest in, approved images plus a review gallery out.
