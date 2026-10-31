@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from courier.agent import Seen, receive
+from courier.agent import Seen, native_text, receive
 from courier.envelope import ULID, Invalid, canonical, make_submission, new_id, sign
 from courier.gateway import Token, admit
 from courier.screen import Rejected, Ruleset
@@ -118,6 +118,14 @@ class ReceiveTests(Fixture):
     def test_unpinned_ruleset(self):
         with self.assertRaises(Invalid):
             self.receive(self.admit(self.submit()), accept_rulesets=frozenset({"sha256:other"}))
+
+    def test_crlf_travels_as_lf_and_becomes_native_only_at_hand_off(self):
+        env = self.admit(self.submit("line one\r\nline two"))
+        self.assertEqual(env.body, "line one\nline two")
+        d = self.receive(env)
+        self.assertEqual(native_text(d.body, "win32"), "line one\r\nline two")
+        self.assertEqual(native_text(d.body, "linux"), "line one\nline two")
+        self.assertEqual(native_text(d.body, "darwin"), "line one\nline two")
 
     def test_agent_rescreens_what_a_compromised_gateway_let_through(self):
         # A gateway that signs without screening still cannot deliver a live paste.

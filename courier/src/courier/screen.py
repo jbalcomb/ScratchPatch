@@ -26,7 +26,7 @@ class Rejected(ValueError):
 
 @dataclass(frozen=True)
 class Ruleset:
-    digest: str  # "sha256:<hex>" of the ruleset file's bytes
+    digest: str  # "sha256:<hex>" of the ruleset file's bytes, with LF line endings
     version: str
     limits: dict[str, int]
     content_types: frozenset[str]
@@ -42,6 +42,8 @@ class Ruleset:
             raw = resources.files("courier").joinpath("ruleset.toml").read_bytes()
         else:
             raw = path.read_bytes()
+        # LF is canonical, as in git's object store: a CRLF checkout on Windows hashes the same.
+        raw = raw.replace(b"\r\n", b"\n")
         data = tomllib.loads(raw.decode("utf-8"))
         return cls(
             digest="sha256:" + hashlib.sha256(raw).hexdigest(),

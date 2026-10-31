@@ -174,6 +174,14 @@ class OriginAndRulesetTests(unittest.TestCase):
         self.assertNotEqual(Ruleset.load(path).digest, RULES.digest)
         self.assertTrue(RULES.digest.startswith("sha256:"))
 
+    def test_line_endings_of_the_checkout_do_not_change_the_digest(self):
+        lf = resources.files("courier").joinpath("ruleset.toml").read_bytes().replace(b"\r\n", b"\n")
+        folder = Path(tempfile.mkdtemp())
+        (folder / "lf.toml").write_bytes(lf)
+        (folder / "crlf.toml").write_bytes(lf.replace(b"\n", b"\r\n"))
+        self.assertEqual(Ruleset.load(folder / "lf.toml").digest, Ruleset.load(folder / "crlf.toml").digest)
+        self.assertEqual(Ruleset.load(folder / "lf.toml").digest, RULES.digest)
+
 
 if __name__ == "__main__":
     unittest.main()

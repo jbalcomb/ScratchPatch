@@ -7,6 +7,7 @@ skipped screening, and labels it stamped can only be added to, never dropped.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
@@ -20,8 +21,16 @@ from courier.screen import Ruleset, screen
 @dataclass(frozen=True)
 class Delivery:
     envelope: Envelope
-    body: str
+    body: str  # LF line endings, as everywhere inside Courier
     labels: frozenset[str]
+
+
+def native_text(body: str, platform: str = sys.platform) -> str:
+    """Line endings for the host OS, applied only at the hand-off (clipboard, file, handler).
+
+    Courier stores, signs and screens text with LF only; this is the one place it changes.
+    """
+    return body.replace("\n", "\r\n") if platform == "win32" else body
 
 
 class Seen:
