@@ -8,6 +8,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
 | [home-runner/](home-runner/) | Home Runner: a small authenticated HTTP service on the workstation that runs a fixed list of jobs, so TaskDeck can start them over Tailscale. |
 | [discord-capture/](discord-capture/) | Discord Capture: pulls Discord server messages into SQLite, with a resumable historic backfill and a scheduled sync that stays far inside the rate limits. |
+| [courier/](courier/) | Courier: a cross-device message bus. So far, the signed envelope and the fixed screening stage that every message passes before any device acts on it. |
 
 ## Conventions
 

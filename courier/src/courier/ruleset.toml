@@ -1,0 +1,59 @@
+# Courier screening ruleset.
+#
+# The SHA-256 of this file's bytes is stamped into every envelope as screen.ruleset, so any
+# change here, even whitespace, is a new ruleset that agents must choose to accept.
+# Stages may add labels or reject; nothing in this file can remove a label.
+
+version = "0.1.0"
+
+[limits]
+text_bytes = 65536        # UTF-8 bytes of a text body
+image_bytes = 1048576     # decoded bytes of an image body
+long_chars = 2000         # above this a text body is labelled "long"
+max_lifetime_s = 86400    # expires - created
+max_skew_s = 300          # how far created may sit in the future
+
+[envelope]
+content_types = ["text/plain", "text/uri-list", "image/png"]
+modes = ["fanout", "queue"]
+channel = '^[a-z0-9-]{1,48}$'
+
+[inspect]
+# Characters that change meaning when the text lands in a shell.
+shell_chars = ';|&$`<>'
+# Schemes recognised as links when they appear without "//" (javascript:alert(1), data:...).
+bare_schemes = ["javascript", "vbscript", "data", "file", "mailto", "tel", "sms"]
+
+# High-signal secret shapes only: a false positive costs a dropped clipboard entry,
+# a false negative broadcasts a credential to every device.
+[[secrets]]
+name = "private-key"
+pattern = '-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----'
+
+[[secrets]]
+name = "aws-access-key"
+pattern = '\b(?:AKIA|ASIA)[0-9A-Z]{16}\b'
+
+[[secrets]]
+name = "github-token"
+pattern = '\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b'
+
+[[secrets]]
+name = "slack-token"
+pattern = '\bxox[abprs]-[A-Za-z0-9-]{10,}'
+
+[[secrets]]
+name = "stripe-live-key"
+pattern = '\b[rs]k_live_[A-Za-z0-9]{16,}'
+
+[[secrets]]
+name = "anthropic-key"
+pattern = '\bsk-ant-[A-Za-z0-9_-]{20,}'
+
+[[secrets]]
+name = "openai-key"
+pattern = '\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}'
+
+[[secrets]]
+name = "jwt"
+pattern = '\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}'
