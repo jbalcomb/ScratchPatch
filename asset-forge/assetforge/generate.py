@@ -26,9 +26,10 @@ import numpy as np
 from PIL import Image
 
 from . import pixelize
+from .buckets import background_phrase, bucket_of
 
 STYLE = "pixel art game sprite, 1990s DOS fantasy strategy game, hand-drawn, crisp outlines, limited palette"
-BACKGROUND = "isolated on a plain flat magenta background"
+BACKGROUND = background_phrase("magenta")
 NEGATIVE = "photo, 3d render, blurry, text, watermark, signature, border, frame, scenery, ground, cast shadow, magenta in the subject"
 SDXL_SIZES = [(1024, 1024), (1152, 896), (896, 1152), (1216, 832), (832, 1216), (1344, 768), (768, 1344),
               (1536, 640), (640, 1536)]
@@ -46,14 +47,16 @@ def sprite_seed(base, archive, entry):
     return (base + zlib.crc32(f"{archive}/{entry}".encode())) % 2**31
 
 
-def build_prompt(desc, style, count_tokens=None, limit=75):
-    """Description prompt, then the background instruction, then the style. If count_tokens is given, drop phrases
-    from the end of the description until it all fits (SDXL's text encoders read only 77 tokens, 2 of them markers)."""
+def build_prompt(desc, style, count_tokens=None, limit=75, token=None, background=BACKGROUND):
+    """Trigger word (if any), description prompt, the background instruction, then the style. If count_tokens is
+    given, drop phrases from the end of the description until it all fits (SDXL's text encoders read only 77 tokens,
+    2 of them markers)."""
     phrases = [p.strip() for p in desc["prompt"].replace("transparent background", "").split(",") if p.strip()]
-    tail = [BACKGROUND, style]
+    phrases = ([token] if token else []) + phrases
+    tail = [background, style]
     while True:
         prompt = ", ".join(phrases + [t for t in tail if t])
-        if count_tokens is None or count_tokens(prompt) <= limit or len(phrases) <= 1:
+        if count_tokens is None or count_tokens(prompt) <= limit or len(phrases) <= 1 + bool(token):
             return prompt
         phrases.pop()
 
@@ -150,6 +153,9 @@ def main(argv=None):
     ap.add_argument("--no-outline", dest="outline", action="store_false",
                     help="don't redraw the sprite's edge in the darkest allowed colour (MoM sprites have dark outlines)")
     ap.add_argument("--style", help="text file with the style guide to add to every prompt")
+    ap.add_argument("--buckets", type=Path,
+                    help="buckets.json of the LoRA's training set (assetforge.dataset): start each prompt with the "
+                         "bucket's trigger word and ask for its key colour, as the training captions did")
     ap.add_argument("--archive", action="append", help="only this archive, e.g. SPELLS (repeatable)")
     ap.add_argument("--limit", type=int, help="generate at most this many sprites")
     ap.add_argument("--redo", action="store_true", help="generate again even if the sprite already has one")
@@ -158,6 +164,7 @@ def main(argv=None):
 
     style = args.style and Path(args.style).read_text(encoding="utf-8").strip() or STYLE
     game_palette = [tuple(c) for c in json.loads((args.originals / "palette.json").read_text())]
+    trained = json.loads(args.buckets.read_text()) if args.buckets else {}
     descs = sorted(args.originals.glob("*/*/describe.json"))
     if args.archive:
         wanted = {a.upper().removesuffix(".LBX") for a in args.archive}
@@ -187,7 +194,10 @@ def main(argv=None):
         target = (desc["width"] * args.scale, desc["height"] * args.scale)
         size = model_size(*target)
         seed = sprite_seed(args.seed, desc["archive"], desc["entry"])
-        prompt = build_prompt(desc, style, getattr(generator, "count_tokens", None))
+        bucket = trained.get(bucket_of(desc["archive"], desc["width"], desc["height"]), {})
+        key = bucket.get("key", "magenta")
+        prompt = build_prompt(desc, style, getattr(generator, "count_tokens", None), token=bucket.get("token"),
+                              background=background_phrase(key))
         negative = ", ".join(p for p in (desc.get("negative_prompt", ""), NEGATIVE) if p)
         started = time.time()
         raw = generator(prompt, negative, size, seed)
@@ -201,7 +211,7 @@ def main(argv=None):
         pixelize.index_image(sprite).save(dst_dir / "frame_00_index.png")
         record = {"archive": desc["archive"], "entry": desc["entry"], "name": desc["name"], "subject": desc["subject"],
                   "width": target[0], "height": target[1], "frames_generated": 1, "frames_original": desc["frames"],
-                  "prompt": prompt, "negative_prompt": negative, "seed": seed, "model_size": list(size),
+                  "prompt": prompt, "negative_prompt": negative, "key": key, "seed": seed, "model_size": list(size),
                   "colours": args.colours, "allowed_indices": len(allowed), "outline": args.outline, "seconds": round(took, 1),
                   "when": time.strftime("%Y-%m-%dT%H:%M:%S"), **generator.info,
                   "described_by": desc.get("provenance", {}).get("model")}

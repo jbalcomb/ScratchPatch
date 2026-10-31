@@ -54,6 +54,11 @@ SCREEN_SIZE = (200, 150)        # at least this wide and tall: a screen or a ful
 PORTRAIT_SIZE = 64              # DIPLOMAC pictures at least this big are wizard portraits
 
 
+def background_phrase(key):
+    """How prompts and training captions ask for a flat background of the key colour."""
+    return f"isolated on a plain flat {key} background"
+
+
 def bucket_of(archive, width, height):
     """Bucket name for a graphic, from its archive (without .LBX) and size in pixels."""
     archive = archive.upper()

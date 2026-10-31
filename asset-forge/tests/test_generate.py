@@ -54,6 +54,17 @@ class GenerateTest(unittest.TestCase):
     def run_generate(self, *extra):
         return generate.main([str(self.orig), str(self.pack), "--model", "base.safetensors", "--backend", "fake", *extra])
 
+    def test_trigger_word_and_key_colour_from_training_set(self):
+        trained = self.pack.parent / "buckets.json"
+        trained.write_text(json.dumps({"ui": {"token": "momui", "key": "green"}}))      # UNITS is a ui archive
+        self.assertEqual(self.run_generate("--buckets", str(trained), "--limit", "1"), 0)
+        prompt = FakeModel.calls[0][0]
+        self.assertTrue(prompt.startswith("momui, "))
+        self.assertIn("isolated on a plain flat green background", prompt)
+        self.assertNotIn("magenta", prompt)
+        record = json.loads(next(self.pack.glob("*/*/generate.json")).read_text())
+        self.assertEqual(record["key"], "green")
+
     def test_generates_game_ready_sprites(self):
         self.assertEqual(self.run_generate("--lora", "style.safetensors"), 0)
         self.assertEqual(len(FakeModel.calls), 2)

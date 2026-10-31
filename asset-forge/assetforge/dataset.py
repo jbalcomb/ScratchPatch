@@ -33,17 +33,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .buckets import BUCKETS, bucket_of
+from .buckets import BUCKETS, background_phrase, bucket_of
 from .generate import model_size
 
 KEYS = {"magenta": (255, 0, 255), "cyan": (0, 255, 255), "green": (0, 255, 0), "yellow": (255, 255, 0),
         "blue": (0, 0, 255), "red": (255, 0, 0)}
 MIN_SIDE = 6                 # smaller pictures (dots, 1x1 spacers, thin bars) teach nothing
 MIN_COLOUR_SHARE = 0.0005    # colours rarer than this in a bucket don't count against a key colour
-
-
-def background_phrase(key):
-    return f"isolated on a plain flat {key} background"
 
 
 def load_rgba(path):

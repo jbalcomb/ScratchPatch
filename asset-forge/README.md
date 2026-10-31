@@ -94,6 +94,7 @@ Per sprite, in `out/pack/<ARCHIVE>/<entry>_<name>/`:
 | `--colours sprite` / `game` | `sprite` | `sprite`: only the palette indices the original uses (falls back to `game` when the original uses fewer than 8). Keeps each replacement in its original's colours and its banner-colour indices available. `game`: indices 1–223. 0 is transparent; 224 and up overlap remap and colour cycling. |
 | `--style FILE` | built-in | Style text added to every prompt. The step 4 style guide goes here. |
 | `--seed N` | 1 | Each sprite's seed is derived from N and the sprite, so a re-run reproduces it. |
+| `--buckets FILE` | | `buckets.json` of the LoRA's training set: each prompt starts with the bucket's trigger word and asks for its key colour, as the training captions did. |
 | `--archive`, `--limit`, `--redo` | | As in step 2. Already-generated sprites are skipped: the first image is kept. |
 
 Only frame 0 of an animation is generated for now.
