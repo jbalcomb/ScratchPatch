@@ -15,7 +15,9 @@ DEFAULT_ENDPOINT = "http://localhost:8080/v1"      # llama-server's default port
 
 
 class VisionError(RuntimeError):
-    pass
+    def __init__(self, message, reply=None):
+        super().__init__(message)
+        self.reply = reply          # the model's text, when the trouble is with what it said
 
 
 def png_data_url(image):
@@ -24,13 +26,18 @@ def png_data_url(image):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def chat(endpoint, model, system, text, images, json_mode=True, temperature=0.2, timeout=600):
-    """Send one user turn (text plus PIL images) and return the reply text."""
+def chat(endpoint, model, system, text, images, json_mode=True, temperature=0.2, timeout=600, max_tokens=1024,
+         extra=None):
+    """Send one user turn (text plus PIL images) and return the reply text. A reply cut off at max_tokens raises
+    VisionError (with the text in .reply): a model stuck repeating itself would otherwise run to the context limit.
+    extra: further request fields, e.g. llama-server's repeat_penalty or seed."""
     content = [{"type": "text", "text": text}]
     content += [{"type": "image_url", "image_url": {"url": png_data_url(img)}} for img in images]
     body = {
         "model": model,
         "temperature": temperature,
+        "max_tokens": max_tokens,
+        **(extra or {}),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
     }
     if json_mode:
@@ -45,9 +52,13 @@ def chat(endpoint, model, system, text, images, json_mode=True, temperature=0.2,
     except urllib.error.URLError as e:
         raise VisionError(f"cannot reach {endpoint}: {e.reason}") from e
     try:
-        return reply["choices"][0]["message"]["content"]
+        choice = reply["choices"][0]
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError) as e:
         raise VisionError(f"unexpected reply from {endpoint}: {json.dumps(reply)[:500]}") from e
+    if choice.get("finish_reason") == "length":
+        raise VisionError(f"reply cut off at {max_tokens} tokens", reply=content)
+    return content
 
 
 def parse_json_reply(text):
@@ -62,4 +73,4 @@ def parse_json_reply(text):
                 return json.loads(text[start:end + 1])
             except json.JSONDecodeError:
                 pass
-    raise VisionError(f"reply is not JSON: {text[:300]}")
+    raise VisionError(f"reply is not JSON ({len(text)} characters)", reply=text)

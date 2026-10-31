@@ -48,6 +48,9 @@ Return JSON with these keys:
 Do not mention the magenta background or transparency in description, style or tags."""
 
 REQUIRED = ("subject", "category", "description", "prompt")
+# A bad reply is asked for again once, less greedily and penalising repeats: in the first full run the failures were
+# the model stuck repeating itself.
+ATTEMPTS = [{}, {"temperature": 0.7, "extra": {"repeat_penalty": 1.15}}]
 
 
 def enlarge(image):
@@ -70,11 +73,18 @@ def describe_sprite(row, folder, args):
     if hint:
         text += f"\nKnown identity, from the game's data (trust it): {hint}."
     started = time.time()
-    reply = chat(args.endpoint, args.model, SYSTEM, text, [image], json_mode=not args.no_json_mode)
-    result = parse_json_reply(reply)
-    missing = [k for k in REQUIRED if not result.get(k)]
-    if missing:
-        raise VisionError(f"reply is missing {', '.join(missing)}")
+    for attempt, extra in enumerate(ATTEMPTS, 1):
+        try:
+            reply = chat(args.endpoint, args.model, SYSTEM, text, [image], json_mode=not args.no_json_mode,
+                         max_tokens=args.max_tokens, **extra)
+            result = parse_json_reply(reply)
+            missing = [k for k in REQUIRED if not result.get(k)]
+            if missing:
+                raise VisionError(f"reply is missing {', '.join(missing)}", reply=reply)
+            break
+        except VisionError as e:
+            if e.reply is None or attempt == len(ATTEMPTS):     # unreachable server, or out of attempts
+                raise
     if isinstance(result.get("tags"), str):
         result["tags"] = [t.strip() for t in result["tags"].split(",") if t.strip()]
     return {
@@ -83,7 +93,8 @@ def describe_sprite(row, folder, args):
         **result,
         "hint": hint or "",
         "provenance": {"model": args.model, "endpoint": args.endpoint, "prompt_version": PROMPT_VERSION,
-                       "seconds": round(time.time() - started, 1), "image_size": list(image.size),
+                       "seconds": round(time.time() - started, 1), "attempts": attempt,
+                       "image_size": list(image.size),
                        "when": time.strftime("%Y-%m-%dT%H:%M:%S")},
     }
 
@@ -99,6 +110,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, help="describe at most this many sprites")
     ap.add_argument("--redo", action="store_true", help="describe sprites again even if describe.json exists")
     ap.add_argument("--no-json-mode", action="store_true", help="don't ask the server for JSON output mode")
+    ap.add_argument("--max-tokens", type=int, default=1024,
+                    help="longest reply allowed (default 1024; a good one is about 300)")
     args = ap.parse_args(argv)
 
     with open(args.export_dir / "catalog.csv", encoding="utf-8") as f:
@@ -128,20 +141,24 @@ def main(argv=None):
                 skipped += 1
                 continue
             label = f"{row['archive']}[{row['entry']}] {row['name']}"
+            started = time.time()
             try:
                 result = describe_sprite(row, folder, args)
             except VisionError as e:
                 failed += 1
-                print(f"{label}: FAILED {e}", file=sys.stderr)
+                if e.reply is not None:
+                    (folder / "describe_failed.txt").write_text(f"{e}\n\n{e.reply}\n", encoding="utf-8")
+                print(f"{label}: FAILED {e} ({time.time() - started:.1f}s)", flush=True)
                 if "cannot reach" in str(e):
                     break
                 continue
             out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            (folder / "describe_failed.txt").unlink(missing_ok=True)
             log.write(json.dumps(result) + "\n")
             log.flush()
             done += 1
             seconds += result["provenance"]["seconds"]
-            print(f"{label}: {result['subject']} ({result['provenance']['seconds']}s)")
+            print(f"{label}: {result['subject']} ({result['provenance']['seconds']}s)", flush=True)
     average = f", {seconds / done:.1f}s each" if done else ""
     print(f"{done} described{average}, {failed} failed, {skipped} already done")
     return 1 if failed and not done else 0

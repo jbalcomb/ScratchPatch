@@ -181,6 +181,17 @@ BiRefNet's 13.9 GB is a fixed working set (reached by image 3, then flat), not a
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 .venv/bin/python -m assetforge.<step> ...
 ```
 
+## Full describe run (2026-10-30 to 31)
+
+Everything except world terrain: 4,670 graphics, Qwen3-VL 8B (4-bit), with the coder container stopped. Run with `out/run-describe.sh`, which isn't committed (it stops and starts the workstation's containers).
+
+- **4,463 described**, at 3.6 s each.
+- **207 failed** and the run took 10.8 h instead of about 5. Each failure took a median of 113 s (up to 332 s), 6.5 h in all. The model got stuck repeating itself inside the JSON. With no length limit, it ran until the 8,192-token context was full, and the reply was cut off before the JSON closed. Failures cluster in the hard-to-read archives: FIGURES3, FIGURES6, FIGURE13, CMBDESRC, CMBMAGIC.
+- **Fixes:**
+  - A reply is now capped at 1,024 tokens (`--max-tokens`); a good one is about 300. A cut-off reply is reported as such.
+  - A bad reply is asked for again once, at temperature 0.7 with `repeat_penalty` 1.15. `provenance.attempts` records which try worked.
+  - The full text of a reply that still fails is saved as `describe_failed.txt` next to the sprite.
+
 ## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 
 - **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch built for CUDA 12.8 or newer (`cu128`, see `requirements-gpu.txt`). Older builds fail with errors about `sm_120`.
