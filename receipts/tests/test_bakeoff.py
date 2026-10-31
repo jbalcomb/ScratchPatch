@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bakeoff  # noqa: E402
 
 
-
 def _png():
     """A valid 1x1 PNG, so no real receipt photos are needed."""
     def chunk(kind, data):

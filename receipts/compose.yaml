@@ -1,11 +1,30 @@
-# Bake-off harness, run on demand: docker compose run --rm bakeoff run --all
+# From this folder:
+#   docker compose up -d --build                          the service (web.py), always on
+#   docker compose run --rm bakeoff run --all             the bake-off, on demand
+x-common: &common
+  build: .
+  # Host networking: reaches llama-server / llama-swap and Immich on the workstation like any local
+  # program. The service listens on localhost:8093 only; Tailscale Serve makes it reachable (README).
+  network_mode: host
+  user: "${UID:-1000}:${GID:-1000}"   # files in ~/receipts belong to you, not root
+  env_file:
+    - ${HOME}/.config/secrets.env                   # LLM_URL, LLM_API_KEY, LLM_MODEL
+    - path: ${HOME}/.config/receipts.env            # IMMICH_*, RECEIPTS_*, GOOGLE_* (README)
+      required: false
+  volumes:
+    - ${HOME}/receipts:/data                        # store, photo cache, bake-off set and results
+    - ./engines.json:/app/engines.json:ro           # edit engines without a rebuild
+    - ${HOME}/budget:/budget:ro                     # the budget store, for "Sync from budget"
+    - /etc/localtime:/etc/localtime:ro
+
 services:
+  receipts:
+    <<: *common
+    container_name: receipts
+    restart: unless-stopped
+    environment:
+      BUDGET_DB: /budget/budget.db
   bakeoff:
-    build: .
-    # Host networking: reaches llama-server / llama-swap on the workstation like any local program.
-    network_mode: host
-    user: "${UID:-1000}:${GID:-1000}"
-    env_file: ${HOME}/.config/secrets.env  # LLM_URL, LLM_API_KEY, LLM_MODEL (RECEIPTS_* override them)
-    volumes:
-      - ${HOME}/receipts/bakeoff:/data   # test set (photos + labels) and results
-      - ./engines.json:/app/engines.json:ro  # edit candidates without a rebuild
+    <<: *common
+    profiles: ["bakeoff"]
+    entrypoint: ["python", "bakeoff.py"]
