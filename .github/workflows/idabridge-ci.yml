@@ -1,0 +1,30 @@
+name: IDA bridge CI
+
+on:
+  push:
+    paths:
+      - "idabridge/**"
+      - ".github/workflows/idabridge-ci.yml"
+  pull_request:
+    paths:
+      - "idabridge/**"
+      - ".github/workflows/idabridge-ci.yml"
+
+defaults:
+  run:
+    working-directory: idabridge
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]  # Windows exercises the Job Object and window checks
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test]"
+      - run: pytest -q
