@@ -191,6 +191,8 @@ Everything except world terrain: 4,670 graphics, Qwen3-VL 8B (4-bit), with the c
   - A reply is now capped at 1,024 tokens (`--max-tokens`); a good one is about 300. A cut-off reply is reported as such.
   - A bad reply is asked for again once, at temperature 0.7 with `repeat_penalty` 1.15. `provenance.attempts` records which try worked.
   - The full text of a reply that still fails is saved as `describe_failed.txt` next to the sprite.
+- **Re-run of the 207 with the fixes:** all described. 186 worked first time and 21 on the retry; the slowest took 18 s.
+- **Captions** now come from descriptions for every bucket except world terrain. The vision model sees transparency as magenta, so some descriptions say "solid magenta interior". Unless the sprite itself has magenta-like pixels, the training set builder swaps "magenta" for the bucket's key colour (54 captions had the word; the 10 left are real magenta).
 
 ## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 

@@ -24,6 +24,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import shutil
 import sys
 from collections import Counter, defaultdict
@@ -78,11 +79,20 @@ def enlarge(rgb, drawn, key_rgb):
     return canvas, k
 
 
-def caption(bucket, key, desc, hint, transparent):
-    """(caption text, where it came from)."""
+def has_magenta(rgb, drawn):
+    """Whether the drawn pixels include anything magenta-like (strong red and blue, little green)."""
+    px = rgb[drawn].astype(int)
+    return bool(((px[:, 0] > 150) & (px[:, 2] > 150) & (px[:, 1] < 100)).any())
+
+
+def caption(bucket, key, desc, hint, transparent, magenta_drawn=True):
+    """(caption text, where it came from). The vision model saw transparency as magenta, so unless the picture itself
+    has magenta in it (magenta_drawn), a description's "magenta" means the transparent parts: the key colour here."""
     if desc:
         phrases = [p.strip() for p in desc["prompt"].replace("transparent background", "").split(",") if p.strip()]
         text, source = ", ".join(phrases), "describe"
+        if not magenta_drawn and key != "magenta":
+            text = re.sub(r"\bmagenta\b", key, text, flags=re.I)
     elif hint:
         text, source = hint, "hint"
     else:
@@ -160,7 +170,8 @@ def main(argv=None):
             desc = json.loads(desc_file.read_text(encoding="utf-8")) if desc_file.exists() else None
             transparent = not drawn.all()
             image, scale = enlarge(rgb, drawn, KEYS[key])
-            text, source = caption(name, key, desc, hints.get((r["archive"], int(r["entry"]))), transparent)
+            text, source = caption(name, key, desc, hints.get((r["archive"], int(r["entry"]))), transparent,
+                                   has_magenta(rgb, drawn))
             stem = f"{r['archive']}_{int(r['entry']):04d}_{frame.stem.removeprefix('frame_')}"
             image.save(folder / f"{stem}.png")
             (folder / f"{stem}.txt").write_text(text + "\n", encoding="utf-8")

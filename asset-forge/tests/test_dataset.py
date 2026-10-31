@@ -23,6 +23,21 @@ class PickKeyTest(unittest.TestCase):
                          "magenta")
 
 
+class CaptionTest(unittest.TestCase):
+
+    def test_magenta_meaning_transparency_becomes_the_key(self):
+        desc = {"prompt": "golden frame, solid Magenta interior"}
+        self.assertEqual(dataset.caption("icon", "blue", desc, None, True, magenta_drawn=False)[0],
+                         "momicon, golden frame, solid blue interior, isolated on a plain flat blue background")
+        self.assertIn("solid Magenta interior", dataset.caption("icon", "blue", desc, None, True, True)[0])
+        self.assertIn("solid Magenta interior", dataset.caption("icon", "magenta", desc, None, True, False)[0])
+
+    def test_has_magenta(self):
+        rgb = np.array([[[200, 30, 220], [10, 10, 10]]], np.uint8)
+        self.assertTrue(dataset.has_magenta(rgb, np.array([[True, True]])))
+        self.assertFalse(dataset.has_magenta(rgb, np.array([[False, True]])))
+
+
 class EnlargeTest(unittest.TestCase):
 
     def test_transparent_sprite_on_key_canvas(self):
