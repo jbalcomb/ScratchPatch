@@ -287,6 +287,7 @@ def rebuild(db):
 def load_rules(path):
     """Lines of `PATTERN = Category`. Case-insensitive substring match; first match wins.
 
+    `[bills] PATTERN = Category` only applies to that account (the same fee text appears in all three).
     Lines starting with # are comments (patterns may contain #, as in 'GIANT EAGLE #4').
     """
     rules = []
@@ -298,25 +299,43 @@ def load_rules(path):
         if "=" not in line:
             raise ValueError(f"{path}:{n}: expected 'PATTERN = Category', got {line!r}")
         pattern, category = (s.strip() for s in line.split("=", 1))
-        rules.append((pattern.upper(), category))
+        account = None
+        m = re.fullmatch(r"\[(\w+)\]\s*(.+)", pattern)
+        if m:
+            account, pattern = m.groups()
+        rules.append((pattern.upper(), category, account))
     return rules
 
 
-def match(rules, description):
+def match(rules, description, account=None):
     d = description.upper()
-    for pattern, category in rules:
-        if pattern in d:
+    for pattern, category, only in rules:
+        if pattern in d and (only is None or only == account):
             return category
     return None
 
 
 def categorize(db, rules):
     """Re-apply the rules to every row, so edits to rules.txt take effect. Returns the uncategorized count."""
-    rows = db.execute("SELECT id, description FROM transactions").fetchall()
+    rows = db.execute("SELECT id, description, account FROM transactions").fetchall()
     db.executemany("UPDATE transactions SET category = ? WHERE id = ?",
-                   [(match(rules, d), i) for i, d in rows])
+                   [(match(rules, d, a), i) for i, d, a in rows])
     db.commit()
     return db.execute("SELECT COUNT(*) FROM transactions WHERE category IS NULL").fetchone()[0]
+
+
+def feed(db, since=None):
+    """What the TaskDeck budget jobs read (GET /api/transactions): each account's latest balance, and the
+    transactions from ``since`` (YYYY-MM-DD) on, oldest first. Amounts and balances in cents."""
+    accounts = {}
+    for (account,) in db.execute("SELECT DISTINCT account FROM transactions ORDER BY account"):
+        date, balance = db.execute("SELECT date, balance FROM transactions WHERE account = ?"
+                                   " ORDER BY date DESC, id DESC LIMIT 1", (account,)).fetchone()
+        accounts[account] = {"balance": balance, "as_of": date}
+    cols = ("account", "date", "description", "amount", "balance", "category")
+    rows = db.execute(f"SELECT {', '.join(cols)} FROM transactions WHERE date >= ? ORDER BY date, id",
+                      (since or "0000-00-00",)).fetchall()
+    return {"accounts": accounts, "transactions": [dict(zip(cols, r)) for r in rows]}
 
 
 # ---------- suggestions for unmatched transactions ----------
@@ -378,7 +397,7 @@ def suggest(db, rules, suggestions_path, llm_url=None, llm_key=None, llm_model=N
     for desc, amount in rows:
         groups.setdefault(merchant(desc).upper(), []).append(f"{desc}  {amount / 100:.2f}")
     already = load_suggested(suggestions_path)
-    categories = {c for _, c in rules}
+    categories = {c for _, c, _ in rules}
     lines = []
     for name, examples in sorted(groups.items(), key=lambda kv: -len(kv[1])):
         if name in already:
