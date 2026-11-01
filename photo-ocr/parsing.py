@@ -159,7 +159,7 @@ SCHEMA = {
 
 
 def chat(engine, content, schema=None):
-    """One request to an OpenAI-compatible chat endpoint (llama-server, or llama-swap in front of it)."""
+    """One request to an OpenAI-compatible chat endpoint (llama.cpp's llama-server, in router mode on the workstation)."""
     body = {
         **({"model": engine["model"]} if engine.get("model") else {}),
         "messages": [{"role": "user", "content": content}],

@@ -1,5 +1,5 @@
 {
-  "_comment": "Bake-off candidates (PRD.md). url: llama-server, or llama-swap in front of it, which loads the model named in 'model' (one model on the GPU at a time). ${VAR:-default} comes from the environment. Model names must match your llama-swap config; they are placeholders until then.",
+  "_comment": "Bake-off candidates (PRD.md). url: the workstation's llama.cpp server in router mode; 'model' must be a section name in its preset file (one model on the GPU at a time). ${VAR:-default} comes from the environment. qwen3-vl-8b is in the preset; paddleocr-vl has to be added.",
   "engines": [
     {
       "name": "qwen3-vl-8b",
@@ -14,28 +14,28 @@
       "ocr": "vlm",
       "ocr_engine": {"model": "paddleocr-vl", "prompt": "OCR:", "max_side": 2048, "json_schema": false},
       "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-${LLM_MODEL}}"
+      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "paddleocr+llm",
       "kind": "ocr_llm",
       "ocr": "paddleocr",
       "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-${LLM_MODEL}}"
+      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "doctr+llm",
       "kind": "ocr_llm",
       "ocr": "doctr",
       "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-${LLM_MODEL}}"
+      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "tesseract+llm",
       "kind": "ocr_llm",
       "ocr": "tesseract",
       "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-${LLM_MODEL}}"
+      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
     }
   ]
 }

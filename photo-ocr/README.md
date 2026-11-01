@@ -29,7 +29,7 @@ and link to them.
 ## The service
 
 One process: the API, the phone pages and a background worker. The worker checks Immich every minute (and
-right away after an upload), parses pending receipts engine by engine (so llama-swap loads each model once
+right away after an upload), parses pending receipts engine by engine (so the model server loads each model once
 per batch), reads new product photos and matches line items to the catalog. Python 3.10+, standard
 library; Pillow recommended.
 
@@ -49,7 +49,7 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
    | `IMMICH_URL`, `IMMICH_API_KEY` | Immich, e.g. `http://localhost:2283`. The key needs asset upload/read and album read/create/update. Without them, photos stay in `~/receipts/photos/`. |
    | `RECEIPTS_ENGINE` | engine(s) from `engines.json`, e.g. `qwen3-vl-8b` or `qwen3-vl-8b,tesseract+llm` |
    | `RECEIPTS_PRODUCT_ENGINE` | vision engine for product photos (default: the first `vlm` engine) |
-   | `RECEIPTS_LLM_URL`, `RECEIPTS_TEXT_MODEL` | text model for orders and hard catalog matches (default `LLM_URL`, `LLM_MODEL`) |
+   | `RECEIPTS_LLM_URL`, `RECEIPTS_TEXT_MODEL` | model server and text model for orders and hard catalog matches (default `LLM_URL` and `qwen3-vl-8b`, so receipt work doesn't load the coding model) |
    | `RECEIPTS_ALBUM`, `PRODUCTS_ALBUM` | album names (default `Receipts`, `Products`; created if missing) |
    | `IMMICH_LIBRARY_ID` | the Syncthing external library (below) |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RECEIPTS_PUBLIC_URL` | Google Photos Picker (below) |
@@ -125,9 +125,10 @@ photos go to vision models unrotated and full size.
 | `tesseract+llm` | Tesseract, the same way (baseline) |
 
 These candidates came from web roundups and haven't been tried on these receipts; the bake-off decides.
-Every model is reached through an OpenAI-compatible endpoint (llama-server, or llama-swap in front of it,
-which keeps one model on the shared GPU at a time). The `model` names in `engines.json` must match your
-llama-swap config. Edit the file to add, drop or retune candidates.
+Every model is reached through the workstation's llama.cpp server in router mode (one endpoint; the
+request's `model` field picks a section of its preset file, and `--models-max 1` keeps one model on the GPU
+at a time). The `model` names in `engines.json` must match the preset's section names: `qwen3-vl-8b` is
+there; `paddleocr-vl` still has to be added. Edit the file to add, drop or retune candidates.
 
 ### 1. Build the test set
 
@@ -182,7 +183,8 @@ python bakeoff.py score                    # writes ~/receipts/bakeoff/results/r
 ```
 
 The model server comes from `RECEIPTS_LLM_URL`, falling back to `LLM_URL`. The text model for the
-OCR + LLM engines comes from `RECEIPTS_TEXT_MODEL`, falling back to `LLM_MODEL`, and the key from
+OCR + LLM engines comes from `RECEIPTS_TEXT_MODEL`, default `qwen3-vl-8b` (the vision model also handles
+text, so no swap to another model is needed), and the key from
 `LLM_API_KEY`. These are the same `~/.config/secrets.env` names that budget uses.
 
 Each engine's output is saved per receipt in `results/<engine>/<receipt>.json`, holding the raw reply,
@@ -218,8 +220,9 @@ docker compose run --rm bakeoff score
 - docTR: `pip install "python-doctr[torch]"`
 - PaddleOCR: `pip install paddleocr paddlepaddle-gpu` (the `paddlepaddle` CPU build also works). Both
   PaddleOCR 2.x and 3.x APIs are handled, but neither has been run here yet.
-- PaddleOCR-VL needs a server that speaks the OpenAI chat API, behind llama-swap like the others. Whether
-  llama.cpp serves it, or it needs vLLM, still has to be checked on the workstation.
+- PaddleOCR-VL: llama.cpp supports it (since February 2026). Add a `[paddleocr-vl]` section to the
+  preset with its model and mmproj files. It takes one image per request and fixed task prompts such as
+  `OCR:`, which is how `engines.json` calls it.
 
 ## Tests
 
@@ -238,8 +241,8 @@ first tonight:
 - **Immich API calls** (`immich.py`): upload, albums, original download, and metadata search for the external
   library. The upload retries without the `deviceAssetId`/`deviceId` fields if the server refuses them.
 - **Google Photos Picker** (`picker.py`): OAuth, sessions, media items, download.
-- **The engines:** model names in `engines.json` must match your llama-swap config; PaddleOCR and docTR
-  haven't been run (Tesseract has); whether llama.cpp can serve PaddleOCR-VL is unknown.
+- **The engines:** `qwen3-vl-8b` is in the workstation's preset and answers; `paddleocr-vl` isn't added
+  yet. PaddleOCR and docTR haven't been run (Tesseract has).
 - **Instacart:** order emails are read by the text model; there's no Instacart API (PRD open question).
 - **Model output on real receipts:** the checks and buckets are only as good as the readings. The bake-off
   measures that.

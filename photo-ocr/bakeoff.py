@@ -185,7 +185,7 @@ def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print):
     """Run one engine over the test set; one JSON per receipt (the engine_runs row of PRD.md), kept between runs.
 
     Two-step engines OCR every receipt first and then structure every receipt, so with one model loaded at a
-    time (llama-swap) the GPU swaps models once per run instead of once per receipt."""
+    time (llama.cpp router, --models-max 1) the GPU swaps models once per run instead of once per receipt."""
     out_dir.mkdir(parents=True, exist_ok=True)
     todo = [r for r in receipts(set_dir) if (not only or r.name in only)
             and (force or not (out_dir / f"{r.name}.json").exists())]

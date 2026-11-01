@@ -49,7 +49,8 @@ class Service:
         self.product_engine = self.engines.get(vision) if vision else None
         url = env.get("RECEIPTS_LLM_URL") or env.get("LLM_URL")
         self.text_engine = {"name": "text", "kind": "text", "url": url,
-                            "model": env.get("RECEIPTS_TEXT_MODEL") or env.get("LLM_MODEL")} if url else None
+                            # The vision model also does text, so receipt work never swaps the coding model in.
+                            "model": env.get("RECEIPTS_TEXT_MODEL") or "qwen3-vl-8b"} if url else None
         self.library_id = env.get("IMMICH_LIBRARY_ID")
         self.budget_db = env.get("BUDGET_DB") or str(Path.home() / "budget" / "budget.db")
         self.wake = threading.Event()
