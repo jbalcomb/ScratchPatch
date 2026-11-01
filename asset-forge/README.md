@@ -195,6 +195,14 @@ Everything except world terrain: 4,670 graphics, Qwen3-VL 8B (4-bit), with the c
 - **Re-run of the 207 with the fixes:** all described. 186 worked first time and 21 on the retry; the slowest took 18 s.
 - **Captions** now come from descriptions for every bucket except world terrain. The vision model sees transparency as magenta, so some descriptions say "solid magenta interior". Unless the sprite itself has magenta-like pixels, the training set builder swaps "magenta" for the bucket's key colour (54 captions had the word; the 10 left are real magenta).
 
+## LoRA pilot 1 (2026-10-31): unit icons and combat figures
+
+kohya sd-scripts v0.12.3 in `~/develai/sd-scripts` (Python 3.12 via uv, PyTorch for CUDA 12.8). SDXL base, LoRA rank 32, U-Net only, AdamW8bit, 1e-4 cosine, 1,500 steps at batch 1. Data: `assetforge.dataset --bucket unit_icon --bucket figure` (1,735 images, unit icons repeated 3 times). Training took 23 min (1.1 steps/s); the whole pilot took 44 min. Then the 20 hero icons were generated again with the LoRA.
+
+- **The background was learned.** Every image now has a magenta background, where SDXL base painted greys, browns, frames and parchment. The shade differs from image to image (hot pink to lavender) but the hue doesn't (287–308°). Generation now keys by hue (`pixelize.key_mask`) when `--buckets` is given, and that removes every background cleanly.
+- **Shapes were not learned.** The figures come out as scattered chunky blocks: worse than without the LoRA. Likely cause: each icon was enlarged 56 times to fill 1024 px, so a training image is a few hundred big squares and carries very little shape information. Pixel-art LoRAs that work usually use about 8× (one game pixel = one cell of SDXL's 8× smaller latent image).
+- **Next:** pilot 2 (`out/lora/run-pilot2.sh`) generates with the 500 and 1,000 step checkpoints and at strength 0.6, and retrains at 8× and 16× (`assetforge.dataset --scale`).
+
 ## AI Workstation (RTX 5060 Ti, 16 GB, Linux)
 
 - **RTX 50-series cards need recent builds.** You need a current NVIDIA driver, a CUDA 12.8 or newer build of llama.cpp, and PyTorch built for CUDA 12.8 or newer (`cu128`, see `requirements-gpu.txt`). Older builds fail with errors about `sm_120`.

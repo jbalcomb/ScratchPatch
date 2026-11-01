@@ -33,11 +33,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .buckets import BUCKETS, background_phrase, bucket_of
+from .buckets import BUCKETS, KEYS, background_phrase, bucket_of
 from .generate import model_size
 
-KEYS = {"magenta": (255, 0, 255), "cyan": (0, 255, 255), "green": (0, 255, 0), "yellow": (255, 255, 0),
-        "blue": (0, 0, 255), "red": (255, 0, 0)}
 MIN_SIDE = 6                 # smaller pictures (dots, 1x1 spacers, thin bars) teach nothing
 MIN_COLOUR_SHARE = 0.0005    # colours rarer than this in a bucket don't count against a key colour
 
@@ -59,13 +57,13 @@ def pick_key(colour_counts):
     return max(KEYS, key=lambda k: nearest(KEYS[k]))
 
 
-def enlarge(rgb, drawn, key_rgb):
-    """Enlarge by the biggest whole number that fits the SDXL training size closest in shape (nearest neighbour, so
-    pixels stay square and sharp). With transparency, centre it on a canvas of exactly that size in the key colour,
-    which keeps the trainer from resizing it; fully drawn pictures are just enlarged."""
+def enlarge(rgb, drawn, key_rgb, scale=None):
+    """Enlarge by the biggest whole number that fits the SDXL training size closest in shape, or by scale if that is
+    smaller (nearest neighbour, so pixels stay square and sharp). With transparency, centre it on a canvas of exactly
+    that size in the key colour, which keeps the trainer from resizing it; fully drawn pictures are just enlarged."""
     h, w = drawn.shape
     cw, ch = model_size(w, h)
-    k = max(1, min(cw // w, ch // h))
+    k = max(1, min(cw // w, ch // h, scale or cw))
     img = Image.fromarray(np.where(drawn[:, :, None], rgb, np.array(key_rgb, np.uint8)).astype(np.uint8), "RGB")
     img = img.resize((w * k, h * k), Image.NEAREST)
     if drawn.all():
@@ -121,6 +119,9 @@ def main(argv=None):
     ap.add_argument("--bucket", action="append", choices=sorted(BUCKETS), help="only this bucket (repeatable)")
     ap.add_argument("--frames", choices=["first", "all"], default="first",
                     help="first frame of each sprite (default), or every animation frame")
+    ap.add_argument("--scale", type=int,
+                    help="enlarge at most this many times (default: as big as fits; 8 makes one game pixel one cell "
+                         "of SDXL's 8x-smaller latent image)")
     ap.add_argument("--balance", type=int, default=500,
                     help="repeat smaller buckets up to about this many images per epoch (0: no repeats)")
     args = ap.parse_args(argv)
@@ -165,7 +166,7 @@ def main(argv=None):
             desc_file = args.originals / r["folder"] / "describe.json"
             desc = json.loads(desc_file.read_text(encoding="utf-8")) if desc_file.exists() else None
             transparent = not drawn.all()
-            image, scale = enlarge(rgb, drawn, KEYS[key])
+            image, scale = enlarge(rgb, drawn, KEYS[key], args.scale)
             text, source = caption(name, key, desc, hints.get((r["archive"], int(r["entry"]))), transparent,
                                    has_magenta(rgb, drawn))
             stem = f"{r['archive']}_{int(r['entry']):04d}_{frame.stem.removeprefix('frame_')}"

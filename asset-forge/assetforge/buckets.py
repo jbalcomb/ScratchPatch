@@ -54,6 +54,11 @@ SCREEN_SIZE = (200, 150)        # at least this wide and tall: a screen or a ful
 PORTRAIT_SIZE = 64              # DIPLOMAC pictures at least this big are wizard portraits
 
 
+# Key colours: the flat colour a bucket's transparency is filled with for training, and keyed out after generation.
+KEYS = {"magenta": (255, 0, 255), "cyan": (0, 255, 255), "green": (0, 255, 0), "yellow": (255, 255, 0),
+        "blue": (0, 0, 255), "red": (255, 0, 0)}
+
+
 def background_phrase(key):
     """How prompts and training captions ask for a flat background of the key colour."""
     return f"isolated on a plain flat {key} background"

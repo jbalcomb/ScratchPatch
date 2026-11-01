@@ -51,6 +51,14 @@ class EnlargeTest(unittest.TestCase):
         self.assertEqual(tuple(a[0, 0]), (255, 0, 255))
         self.assertEqual(set(map(tuple, a.reshape(-1, 3).tolist())), {(255, 0, 255), (100, 100, 100)})
 
+    def test_fixed_scale_keeps_the_canvas(self):
+        drawn = np.zeros((16, 18), bool)
+        drawn[4:12, 5:13] = True
+        img, k = dataset.enlarge(np.full((16, 18, 3), 100, np.uint8), drawn, (255, 0, 255), scale=8)
+        self.assertEqual((img.size, k), ((1024, 1024), 8))
+        a = np.asarray(img)
+        self.assertEqual((a[:, :, 1] == 100).sum(), (8 * 8) * (8 * 8))      # 8x8 drawn pixels, each 8x8
+
     def test_opaque_picture_just_enlarged(self):
         img, k = dataset.enlarge(np.zeros((200, 320, 3), np.uint8), np.ones((200, 320), bool), (0, 255, 0))
         self.assertEqual((img.size, k), ((960, 600), 3))

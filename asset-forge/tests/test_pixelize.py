@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 from PIL import Image, ImageDraw
 
-from assetforge.pixelize import background_mask, block_mode, darkest, fit, index_image, outline, pixelize, quantize
+from assetforge.pixelize import (background_mask, block_mode, darkest, fit, index_image, key_mask, outline, pixelize,
+                                 quantize)
 
 PALETTE = [(i, i, i) for i in range(256)]
 PALETTE[10] = (200, 30, 30)       # red
@@ -81,3 +82,23 @@ class PixelizeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KeyMaskTest(unittest.TestCase):
+
+    def test_any_shade_of_the_key_hue_touching_the_border(self):
+        for shade in [(211, 27, 191), (175, 90, 190), (222, 74, 228)]:       # pink to lavender, as a LoRA paints
+            rgb = np.zeros((20, 20, 3), np.uint8)
+            rgb[:] = shade
+            rgb[2:18, 2:18] = (90, 60, 30)                                    # brown figure
+            rgb[8:12, 8:12] = shade                                           # key-coloured, but enclosed
+            mask = key_mask(rgb, (255, 0, 255))
+            self.assertTrue(mask[0, 0] and mask[19, 19])
+            self.assertFalse(mask[5, 5])
+            self.assertFalse(mask[10, 10])
+
+    def test_grey_and_dark_are_not_the_key(self):
+        rgb = np.zeros((10, 10, 3), np.uint8)
+        rgb[:, :5] = (128, 120, 128)                                          # greyish: too little saturation
+        rgb[:, 5:] = (40, 0, 40)                                              # dark magenta: too dark
+        self.assertFalse(key_mask(rgb, (255, 0, 255)).any())

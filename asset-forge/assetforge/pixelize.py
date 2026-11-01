@@ -22,14 +22,29 @@ class Sprite:
 
 def background_mask(rgb, tolerance=60):
     """Pixels connected to the border whose colour is close to the border's most common colour."""
-    h, w, _ = rgb.shape
     border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]).astype(int)
     colours, counts = np.unique(border, axis=0, return_counts=True)
     bg = colours[counts.argmax()]
-    near = np.abs(rgb.astype(int) - bg).sum(axis=2) <= tolerance
-    mask = np.zeros((h, w), bool)
+    return border_connected(np.abs(rgb.astype(int) - bg).sum(axis=2) <= tolerance)
+
+
+def key_mask(rgb, key_rgb, hue_window=35, min_saturation=0.3, min_value=0.3):
+    """Pixels connected to the border whose hue is within hue_window degrees of the key colour's and that are
+    saturated and bright enough to be that colour at all. A LoRA trained on a flat key colour paints a different
+    shade of it in each image (pink to lavender for magenta), but always the same hue."""
+    hsv = np.asarray(Image.fromarray(rgb.astype(np.uint8), "RGB").convert("HSV")).astype(int)
+    key_hue = np.asarray(Image.new("RGB", (1, 1), tuple(key_rgb)).convert("HSV")).astype(int)[0, 0, 0]
+    diff = np.abs(hsv[:, :, 0] - key_hue)
+    diff = np.minimum(diff, 256 - diff) * 360 / 256
+    near = (diff <= hue_window) & (hsv[:, :, 1] >= min_saturation * 255) & (hsv[:, :, 2] >= min_value * 255)
+    return border_connected(near)
+
+
+def border_connected(near):
+    """The part of the boolean mask near that is connected (4-neighbour) to the image's border."""
+    mask = np.zeros(near.shape, bool)
     mask[0], mask[-1], mask[:, 0], mask[:, -1] = near[0], near[-1], near[:, 0], near[:, -1]
-    while True:       # grow the border-connected region one step at a time (4-neighbour flood fill)
+    while True:       # grow the border-connected region one step at a time (flood fill)
         grown = mask.copy()
         grown[1:] |= mask[:-1]
         grown[:-1] |= mask[1:]
@@ -104,13 +119,16 @@ def darkest(palette, allowed):
     return min(allowed, key=lambda i: sum(palette[i]))
 
 
-def pixelize(image, size, palette, allowed, tolerance=60, pad=0, supersample=8, outline_colour=None):
+def pixelize(image, size, palette, allowed, tolerance=60, pad=0, supersample=8, outline_colour=None, key_rgb=None):
     """Generated image (any mode) -> Sprite of the given size using only the allowed palette indices.
 
+    The background is what touches the border and is close to the border's most common colour, or, with key_rgb,
+    close in hue to that key colour (see key_mask).
     The image is fitted at supersample x the target size, mapped to the palette there, then each block becomes one
     pixel (block_mode). outline_colour, if given, redraws the sprite's edge in that palette index."""
     rgba = image.convert("RGBA")
-    mask = background_mask(np.asarray(rgba.convert("RGB")), tolerance)
+    rgb = np.asarray(rgba.convert("RGB"))
+    mask = key_mask(rgb, key_rgb) if key_rgb else background_mask(rgb, tolerance)
     arr = np.asarray(rgba).copy()
     arr[mask, 3] = 0
     big = quantize(fit(Image.fromarray(arr, "RGBA"), size, pad, supersample), palette, allowed)

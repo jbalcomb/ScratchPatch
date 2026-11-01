@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 from . import pixelize
-from .buckets import background_phrase, bucket_of
+from .buckets import KEYS, background_phrase, bucket_of
 
 STYLE = "pixel art game sprite, 1990s DOS fantasy strategy game, hand-drawn, crisp outlines, limited palette"
 BACKGROUND = background_phrase("magenta")
@@ -82,7 +82,9 @@ class Diffusers:
         import torch
         from diffusers import AutoPipelineForText2Image, StableDiffusionXLPipeline
         from diffusers.utils import logging as diffusers_logging
+        from transformers.utils import logging as transformers_logging
         diffusers_logging.set_verbosity_error()
+        transformers_logging.set_verbosity_error()      # count_tokens measures over-long prompts on purpose
         self.torch = torch
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         kw = {"torch_dtype": torch.float16 if device == "cuda" else torch.float32}
@@ -204,7 +206,9 @@ def main(argv=None):
         took = time.time() - started
         allowed = allowed_colours(src_dir, args.colours)
         edge = pixelize.darkest(palette, allowed) if args.outline else None
-        sprite = pixelize.pixelize(raw, target, palette, allowed, outline_colour=edge)
+        # Key by hue only when the LoRA was trained on the key colour; base SDXL ignores the background request.
+        sprite = pixelize.pixelize(raw, target, palette, allowed, outline_colour=edge,
+                                   key_rgb=KEYS[key] if bucket else None)
         dst_dir.mkdir(parents=True, exist_ok=True)
         raw.save(dst_dir / "raw.png")
         sprite.rgba.save(dst_dir / "frame_00.png")
