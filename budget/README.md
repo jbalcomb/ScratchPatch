@@ -73,9 +73,11 @@ the previous store in `backups/` first. To force a file in from the command line
 
 ## Categories
 
-`rules.txt` lines look like `SUNOCO = Gas`: if the pattern appears anywhere in the description (any case), the
-transaction gets that category. The first matching line wins, so put specific patterns above general ones.
-After editing:
+`rules.txt` lines look like `SUNOCO = Motor Fuel`: if the pattern appears anywhere in the description (any case),
+the transaction gets that category. The first matching line wins, so put specific patterns above general ones.
+`[bills] PATTERN = Category` only applies to that account. Categories for budget lines are named exactly like the
+Expense column of the budget sheet's SnapShot tab: that's how the TaskDeck budget jobs match them
+([taskdeck/docs/jobs/budget.md](../taskdeck/docs/jobs/budget.md)). After editing:
 
 ```bash
 python budget/budget.py categorize     # re-applies rules.txt to every stored row
@@ -148,6 +150,11 @@ The page only listens on the workstation's own `localhost:8092`; Tailscale Serve
 firewall port to open.
 
 **After pulling new code:** `git pull && docker compose up -d --build`. Rules edits need no rebuild.
+
+### Feed for the TaskDeck budget jobs
+
+`GET /api/transactions?since=YYYY-MM-DD` (same address as the upload page) returns each account's latest
+balance and the transactions from that day on, as JSON. Read-only; the phone reaches it through Tailscale Serve.
 
 ### Commands by hand
 
