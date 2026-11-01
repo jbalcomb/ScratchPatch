@@ -169,7 +169,7 @@ def test_model_server_down_keeps_receipts_pending(tmp_path, model):
 def test_text_model_defaults_to_the_vision_model(tmp_path, model):
     """LLM_MODEL is the coding model on the workstation; receipt work must not load it."""
     assert make_service(tmp_path, model).text_engine["model"] == "qwen3-vl-8b"
-    assert make_service(tmp_path / "b", model, RECEIPTS_TEXT_MODEL="other").text_engine["model"] == "other"
+    assert make_service(tmp_path, model, RECEIPTS_TEXT_MODEL="other").text_engine["model"] == "other"
 
 
 def test_merge(tmp_path, model):
