@@ -19,6 +19,8 @@ EXETERFINA = Car Payment
 PROG DIRECT INS = Car Insurance
 PLANET FITNESS = Planet Fitness
 GOOGLE *GOOGLE = Google Gemini
+# Same plan, billed under a new name from October 2026
+GOOGLE *G1AI = Google Gemini
 ANTHROPIC = Claude AI Subscription
 CLAUDE.AI = Claude AI Subscription
 NETFLIX = Netflix
