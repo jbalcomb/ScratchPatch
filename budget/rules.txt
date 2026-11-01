@@ -5,6 +5,8 @@
 
 # Income
 INSTACART = Income: Instacart
+# Part of the paycheck, sent over from the US Bank account (must stay above the Transfer lines)
+Transfer James William Balcomb = Income: Paycheck
 
 # Moving money between your own accounts (not spending)
 Online Banking transfer = Transfer
@@ -16,6 +18,8 @@ EXETERFINA = Car loan
 PROG DIRECT INS = Car insurance
 PLANET FITNESS = Gym
 COURSERA = Education
+# Ashtabula County YMCA, $52.68 a month
+ASHTABULA COUNTY = YMCA
 
 # Bank
 Monthly Maintenance Fee = Bank fees
