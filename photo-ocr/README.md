@@ -127,8 +127,8 @@ photos go to vision models unrotated and full size.
 These candidates came from web roundups and haven't been tried on these receipts; the bake-off decides.
 Every model is reached through the workstation's llama.cpp server in router mode (one endpoint; the
 request's `model` field picks a section of its preset file, and `--models-max 1` keeps one model on the GPU
-at a time). The `model` names in `engines.json` must match the preset's section names: `qwen3-vl-8b` is
-there; `paddleocr-vl` still has to be added. Edit the file to add, drop or retune candidates.
+at a time). The `model` names in `engines.json` must match the preset's section names; `qwen3-vl-8b` and
+`paddleocr-vl` are both there. Edit the file to add, drop or retune candidates.
 
 ### 1. Build the test set
 
@@ -220,8 +220,8 @@ docker compose run --rm bakeoff score
 - docTR: `pip install "python-doctr[torch]"`
 - PaddleOCR: `pip install paddleocr paddlepaddle-gpu` (the `paddlepaddle` CPU build also works). Both
   PaddleOCR 2.x and 3.x APIs are handled, but neither has been run here yet.
-- PaddleOCR-VL: llama.cpp supports it (since February 2026). Add a `[paddleocr-vl]` section to the
-  preset with its model and mmproj files. It takes one image per request and fixed task prompts such as
+- PaddleOCR-VL: llama.cpp supports it (since February 2026), and the workstation's preset has a
+  `[paddleocr-vl]` section. It takes one image per request and fixed task prompts such as
   `OCR:`, which is how `engines.json` calls it.
 
 ## Tests
@@ -241,8 +241,8 @@ first tonight:
 - **Immich API calls** (`immich.py`): upload, albums, original download, and metadata search for the external
   library. The upload retries without the `deviceAssetId`/`deviceId` fields if the server refuses them.
 - **Google Photos Picker** (`picker.py`): OAuth, sessions, media items, download.
-- **The engines:** `qwen3-vl-8b` is in the workstation's preset and answers; `paddleocr-vl` isn't added
-  yet. PaddleOCR and docTR haven't been run (Tesseract has).
+- **The engines:** `qwen3-vl-8b` and `paddleocr-vl` are in the workstation's preset and load; neither
+  has read a receipt yet. PaddleOCR and docTR haven't been run (Tesseract has).
 - **Instacart:** order emails are read by the text model; there's no Instacart API (PRD open question).
 - **Model output on real receipts:** the checks and buckets are only as good as the readings. The bake-off
   measures that.

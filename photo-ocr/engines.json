@@ -1,5 +1,5 @@
 {
-  "_comment": "Bake-off candidates (PRD.md). url: the workstation's llama.cpp server in router mode; 'model' must be a section name in its preset file (one model on the GPU at a time). ${VAR:-default} comes from the environment. qwen3-vl-8b is in the preset; paddleocr-vl has to be added.",
+  "_comment": "Bake-off candidates (PRD.md). url: the workstation's llama.cpp server in router mode; 'model' must be a section name in its preset file (one model on the GPU at a time). ${VAR:-default} comes from the environment. qwen3-vl-8b and paddleocr-vl are both in the preset.",
   "engines": [
     {
       "name": "qwen3-vl-8b",
