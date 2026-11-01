@@ -1,14 +1,14 @@
 # Receipts
 
 Six jobs in the **Receipts** category are thin screens over the receipts service on the AI Workstation
-([receipts/API.md](../../../receipts/API.md)), reached over Tailscale. The service does the parsing, matching
+([photo-ocr/API.md](../../../photo-ocr/API.md)), reached over Tailscale. The service does the parsing, matching
 and storage; the phone sends photos and shows lists. The design is in
 [receipts/PRD.md](../../../receipts/PRD.md).
 
 ## Setup
 
 1. On the workstation, start the service and expose it with Tailscale Serve, as in the Tailscale Serve step of
-   [receipts/README.md](../../../receipts/README.md). Note the HTTPS address it prints.
+   [photo-ocr/README.md](../../../photo-ocr/README.md). Note the HTTPS address it prints.
 2. On the phone, connect Tailscale.
 3. Open **Receipt capture**, tap the **tune** icon and set **Receipts service URL** to that address, e.g.
    `https://ai-workstation.tail1234.ts.net:8443`. All six jobs use this one setting.

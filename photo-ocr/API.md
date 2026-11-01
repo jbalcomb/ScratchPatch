@@ -1,6 +1,6 @@
 # Receipts service HTTP API
 
-The service (`receipts/web.py`) listens on the workstation's `localhost:8093`. Tailscale Serve exposes it
+The service (`photo-ocr/web.py`) listens on the workstation's `localhost:8093`. Tailscale Serve exposes it
 over HTTPS to your own devices only. Nothing here needs a login, so keep it off the open internet.
 
 All JSON. Amounts are **integer cents**, dates `YYYY-MM-DD`. Errors are `{"error": "message"}` with a

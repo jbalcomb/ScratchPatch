@@ -1,18 +1,18 @@
-name: Receipts CI
+name: Photo OCR CI
 
 on:
   push:
     paths:
-      - "receipts/**"
-      - ".github/workflows/receipts-ci.yml"
+      - "photo-ocr/**"
+      - ".github/workflows/photo-ocr-ci.yml"
   pull_request:
     paths:
-      - "receipts/**"
-      - ".github/workflows/receipts-ci.yml"
+      - "photo-ocr/**"
+      - ".github/workflows/photo-ocr-ci.yml"
 
 defaults:
   run:
-    working-directory: receipts
+    working-directory: photo-ocr
 
 jobs:
   test:

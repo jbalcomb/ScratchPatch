@@ -1,4 +1,4 @@
-"""The Receipts service's HTTP API (receipts/API.md), its settings and readiness checks, shared by the
+"""The Receipts service's HTTP API (photo-ocr/API.md), its settings and readiness checks, shared by the
 Receipts jobs. Amounts from the service are integer cents."""
 
 from __future__ import annotations

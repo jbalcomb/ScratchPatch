@@ -1,4 +1,4 @@
-"""Receipts jobs against a fake receipts service (receipts/API.md) on a local socket."""
+"""Receipts jobs against a fake receipts service (photo-ocr/API.md) on a local socket."""
 
 import email.parser
 import email.policy

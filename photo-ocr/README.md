@@ -1,4 +1,4 @@
-# Receipts
+# Photo OCR (receipts)
 
 Phone photos of receipts and products, read by local models on the AI Workstation, turned into structured
 records and cataloged: purchase history, prices, where you buy things, shopping lists and bank
@@ -54,7 +54,7 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
    | `IMMICH_LIBRARY_ID` | the Syncthing external library (below) |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RECEIPTS_PUBLIC_URL` | Google Photos Picker (below) |
 
-2. **Start it:** `cd ~/ScratchPatch/receipts && docker compose up -d --build`. Logs: `docker logs -f receipts`.
+2. **Start it:** `cd ~/ScratchPatch/photo-ocr && docker compose up -d --build`. Logs: `docker logs -f receipts`.
 
 3. **Reach it from the phone** with Tailscale Serve, HTTPS and your own devices only:
 
@@ -132,7 +132,7 @@ llama-swap config. Edit the file to add, drop or retune candidates.
 ### 1. Build the test set
 
 ```bash
-cd ~/ScratchPatch/receipts
+cd ~/ScratchPatch/photo-ocr
 python bakeoff.py add ~/Downloads/IMG_0412.jpg --tags thermal,faded
 python bakeoff.py add IMG_0413.jpg IMG_0414.jpg IMG_0415.jpg --tags long   # one receipt, top to bottom
 ```
@@ -206,7 +206,7 @@ its name is at least 60% similar (`--name-threshold`) and its price is within a 
 ### Bake-off with Docker
 
 ```bash
-cd ~/ScratchPatch/receipts
+cd ~/ScratchPatch/photo-ocr
 docker compose build                                 # Tesseract built in; see Dockerfile for the others
 docker compose run --rm bakeoff run --all
 docker compose run --rm bakeoff score
@@ -224,7 +224,7 @@ docker compose run --rm bakeoff score
 ## Tests
 
 ```bash
-cd receipts && pytest -q
+cd photo-ocr && pytest -q
 ```
 
 They use stand-ins for llama-server, Immich and Google (`tests/fakes.py`), so they need no GPU, models,
