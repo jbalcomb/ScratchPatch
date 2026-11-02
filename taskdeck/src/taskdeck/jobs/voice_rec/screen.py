@@ -27,6 +27,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 POLL_DELAYS = (5, 10, 20, 30, 60, 120)  # seconds between checks while the workstation is busy with a note
+BREADCRUMB = "voice_rec:native_step"
+REOPEN_WITHIN = 300  # seconds: after an unexpected close this soon, the app opens Voice notes again
+MIC_JUST_ALLOWED = "Microphone allowed. Tap the button again to record."
+MIC_BLOCKED = ("The microphone is blocked for TaskDeck. Open TaskDeck's app info → Permissions → Microphone → "
+               "“Allow only while using the app”.")
 NEEDS_APK = "Recording needs the newest TaskDeck APK (the microphone plugin is built into the app). " \
             "Install it from Settings → App updates, or the taskdeck-latest release."
 STATUS_TEXT = {
@@ -49,8 +54,9 @@ def recorder_supported() -> bool:
 class Recorder:
     """Wraps flet-audio-recorder. Kept by VoiceSync, so a recording carries on when the screen closes."""
 
-    def __init__(self, lib: Library):
+    def __init__(self, lib: Library, store: Any = None):
         self.lib = lib
+        self.store = store  # app.store: breadcrumbs survive a crash (see mark / last_crash)
         self.service: Any = None
         self.rec_id = ""
         self.path = None
@@ -86,16 +92,60 @@ class Recorder:
             self.service = far.AudioRecorder(configuration=config)
         return self.service
 
+    # ---- breadcrumbs: which native step was running if the app closed unexpectedly ----
+
+    def mark(self, step: str) -> None:
+        """Note the step about to run ("" = finished). JsonStore writes atomically, so it survives a crash."""
+        if self.store is not None:
+            self.store.set(BREADCRUMB, {"step": step, "at": time.time()} if step else {})
+
+    def last_crash(self) -> dict | None:
+        """The step that was running when TaskDeck last closed unexpectedly (and forget it)."""
+        if self.store is None:
+            return None
+        crumb = self.store.get(BREADCRUMB) or {}
+        if crumb.get("step") and not self.active:
+            self.store.set(BREADCRUMB, {})
+            return crumb
+        return None
+
+    async def mic_permission(self) -> str:
+        """"" when allowed; otherwise what to tell the user. Asks through flet-permission-handler (the plugin
+        TaskDeck already uses for notifications and file access), not the recorder's own permission call:
+        the app closed when the recorder plugin asked for it."""
+        if not is_android():
+            return ""
+        try:
+            from flet_permission_handler import Permission, PermissionHandler, PermissionStatus
+        except ImportError:
+            return NEEDS_APK
+        handler = PermissionHandler()
+        if await handler.get_status(Permission.MICROPHONE) == PermissionStatus.GRANTED:
+            return ""
+        self.mark("asking for microphone permission")
+        status = await handler.request(Permission.MICROPHONE)
+        self.mark("")
+        if status == PermissionStatus.GRANTED:
+            # Don't start in the same tap: let Android finish returning to TaskDeck first.
+            return MIC_JUST_ALLOWED
+        if status == PermissionStatus.PERMANENTLY_DENIED:
+            return MIC_BLOCKED
+        return "TaskDeck needs the microphone to record. Tap the button again and choose “While using the app”."
+
     async def start(self) -> str:
         """Start recording; returns "" or a problem to show."""
         if not recorder_supported():
             return NEEDS_APK
+        problem = await self.mic_permission()
+        if problem:
+            return problem
+        self.mark("setting up the recorder")
         svc = self._ensure()
-        if not await svc.has_permission():
-            return "TaskDeck isn't allowed to use the microphone. Allow it when Android asks, or in TaskDeck's " \
-                   "app info → Permissions → Microphone."
         rec_id, path = self.lib.new_path()
-        if not await svc.start_recording(output_path=str(path)):
+        self.mark("starting the recording")
+        ok = await svc.start_recording(output_path=str(path))
+        self.mark("")
+        if not ok:
             return "The microphone didn't start (another app may be using it)."
         self.rec_id, self.path, self.started_at = rec_id, path, now_iso()
         self._t0, self._paused_total, self._paused_at = time.monotonic(), 0.0, None
@@ -116,7 +166,9 @@ class Recorder:
         if not self.active:
             return None
         duration = self.elapsed
+        self.mark("stopping the recording")
         saved = await self.service.stop_recording()
+        self.mark("")
         path = self.path
         if saved and not str(saved).startswith("blob:"):
             from pathlib import Path
@@ -158,7 +210,7 @@ class VoiceSync:
         self.app = app
         self.plugin = plugin
         self.lib = Library(app.store.path.parent / "voice_rec")
-        self.recorder = Recorder(self.lib)
+        self.recorder = Recorder(self.lib, app.store)
         self.listeners: list[Callable[[], None]] = []
         self.last: SyncResult | None = None
         self.last_at = 0.0
@@ -309,6 +361,8 @@ class VoiceRecScreen:
                 self.history_box,
             ],
         )
+        self.notice = ""  # last problem or hint from the record button
+        self.crash = self.recorder.last_crash()  # set when TaskDeck closed during a native step
         self.render(update=False)
 
     # ---- lifecycle (called by the app) -------------------------------------------------------
@@ -345,10 +399,13 @@ class VoiceRecScreen:
     # ---- recording ---------------------------------------------------------------------------
 
     async def start(self, e=None) -> None:
+        self.crash = None
         problem = await self.recorder.start()
         if problem:
-            self.app.toast(problem)
+            self.notice = problem
+            self.render()
             return
+        self.notice = ""
         self.render()
         await self._tick()
 
@@ -397,6 +454,7 @@ class VoiceRecScreen:
                 ft.IconButton(ft.Icons.MIC, icon_size=56, tooltip="Record", on_click=self.start,
                               style=ft.ButtonStyle(bgcolor=ft.Colors.PRIMARY_CONTAINER, padding=24)),
                 ft.Text("Tap to record", color=ft.Colors.ON_SURFACE_VARIANT),
+                *self._notices(),
                 self.use_mobile,
             ]
             return
@@ -415,6 +473,20 @@ class VoiceRecScreen:
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=16),
             self.use_mobile,
         ]
+
+    def _notices(self) -> list[ft.Control]:
+        out: list[ft.Control] = []
+        if self.crash:
+            out.append(_note(ft.Icons.WARNING_AMBER, f"TaskDeck closed unexpectedly last time, while "
+                                                     f"{self.crash['step']}. If it keeps happening, tell Claude "
+                                                     "this step's name.", error=True))
+        if self.notice:
+            ok = self.notice == MIC_JUST_ALLOWED
+            out.append(_note(ft.Icons.CHECK_CIRCLE_OUTLINE if ok else ft.Icons.MIC_OFF, self.notice, error=not ok))
+            if self.notice == MIC_BLOCKED:
+                out.append(ft.TextButton("Open app settings", icon=ft.Icons.SETTINGS,
+                                         on_click=lambda e: self.app.page.run_task(_open_app_settings)))
+        return out
 
     def _render_status(self) -> None:
         pending = self.sync.lib.pending()
@@ -530,6 +602,15 @@ class VoiceRecScreen:
             title=ft.Text(r.display_title),
             content=ft.Column(rows, tight=True, scroll=ft.ScrollMode.AUTO, spacing=8, width=480),
             actions=actions, scrollable=True))
+
+
+async def _open_app_settings() -> None:
+    try:
+        from flet_permission_handler import PermissionHandler
+
+        await PermissionHandler().open_app_settings()
+    except Exception:
+        pass
 
 
 def _note(icon, text: str, error: bool = False) -> ft.Control:

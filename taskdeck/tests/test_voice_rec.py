@@ -287,3 +287,99 @@ def test_screen_recording_state_and_closing(tmp_path):
     app.back()
     sync._notify()  # a closed screen unsubscribes instead of redrawing
     assert screen._on_sync not in sync.listeners
+
+
+# ---- microphone permission and crash breadcrumbs ----------------------------------------------
+
+
+class FakeRecorderService:
+    def __init__(self):
+        self.calls = []
+
+    async def has_permission(self):
+        raise AssertionError("the recorder plugin's own permission call must not be used")
+
+    async def start_recording(self, output_path=None):
+        self.calls.append("start")
+        open(output_path, "wb").write(b"audio")
+        return True
+
+    async def stop_recording(self):
+        self.calls.append("stop")
+        return None
+
+
+def fake_permissions(monkeypatch, statuses):
+    """flet_permission_handler stand-in: get_status / request answer from ``statuses`` in turn."""
+    import enum
+    import sys
+    import types
+
+    class Status(enum.Enum):
+        GRANTED, DENIED, PERMANENTLY_DENIED = "granted", "denied", "permanentlyDenied"
+
+    answers = iter(statuses)
+
+    class Handler:
+        async def get_status(self, p):
+            return Status[next(answers)]
+
+        async def request(self, p):
+            return Status[next(answers)]
+
+    mod = types.SimpleNamespace(Permission=types.SimpleNamespace(MICROPHONE="mic"), PermissionHandler=Handler,
+                                PermissionStatus=Status)
+    monkeypatch.setitem(sys.modules, "flet_permission_handler", mod)
+    from taskdeck.jobs.voice_rec import screen
+    monkeypatch.setattr(screen, "is_android", lambda: True)
+    monkeypatch.setattr(screen, "recorder_supported", lambda: True)
+
+
+def run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_fresh_permission_grant_doesnt_start_recording(monkeypatch, tmp_path):
+    from taskdeck.core import JsonStore
+    from taskdeck.jobs.voice_rec.screen import MIC_BLOCKED, MIC_JUST_ALLOWED, Recorder
+
+    store = JsonStore(tmp_path / "state.json")
+    rec = Recorder(Library(tmp_path / "v"), store)
+    rec.service = FakeRecorderService()
+
+    fake_permissions(monkeypatch, ["DENIED", "GRANTED"])  # not yet allowed → Android asks → allowed
+    assert run(rec.start()) == MIC_JUST_ALLOWED
+    assert rec.service.calls == [] and not rec.active
+    assert store.get("voice_rec:native_step") == {}  # the prompt finished: no breadcrumb left
+
+    fake_permissions(monkeypatch, ["GRANTED"])  # the next tap records
+    assert run(rec.start()) == "" and rec.active and rec.service.calls == ["start"]
+    assert run(rec.stop({})) is not None
+
+    fake_permissions(monkeypatch, ["DENIED", "PERMANENTLY_DENIED"])
+    assert run(rec.start()) == MIC_BLOCKED
+
+
+def test_after_a_crash_voice_notes_reopens_and_says_where(tmp_path):
+    import time
+
+    from test_extract_archive import make_app
+
+    from taskdeck.core import JsonStore
+    from taskdeck.jobs.voice_rec.screen import VoiceRecScreen
+
+    store = JsonStore(tmp_path / "state.json")
+    store.set("voice_rec:native_step", {"step": "asking for microphone permission", "at": time.time()})
+    app = make_app(tmp_path)  # the same state file: TaskDeck starting again after it closed
+    screen = app.stack[-1]
+    assert isinstance(screen, VoiceRecScreen)
+    assert screen.crash["step"] == "asking for microphone permission"
+    texts = [c.controls[1].value for c in screen.record_box.controls if isinstance(c, type(screen.status_box.controls[0]))
+             and len(c.controls) == 2 and hasattr(c.controls[1], "value")]
+    assert any("while asking for microphone permission" in t for t in texts)
+    assert app.store.get("voice_rec:native_step") == {}  # shown once
+
+    app2 = make_app(tmp_path)  # a normal start afterwards stays on Home
+    assert not app2.stack

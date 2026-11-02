@@ -82,9 +82,19 @@ class VoiceRec(JobPlugin):
 
     def on_app_start(self, app) -> None:
         """Start the background sync, so queued notes move on without opening this job."""
-        from .screen import VoiceSync
+        import time
+
+        from .screen import BREADCRUMB, REOPEN_WITHIN, VoiceSync
 
         VoiceSync.for_app(app, self).kick()
+        crumb = app.store.get(BREADCRUMB) or {}
+        if crumb.get("step") and time.time() - crumb.get("at", 0) < REOPEN_WITHIN:
+            # TaskDeck closed while the recorder was busy (e.g. the microphone permission prompt):
+            # come back to Voice notes instead of Home. The screen shows what happened.
+            async def reopen():
+                app.open_job(self.id)
+
+            app.page.run_task(reopen)
 
 
 PLUGIN = VoiceRec()
