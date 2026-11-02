@@ -1,21 +1,23 @@
-# Receipts service HTTP API
+# Photo OCR service HTTP API
 
 The service (`photo-ocr/web.py`) listens on the workstation's `localhost:8093`. Tailscale Serve exposes it
 over HTTPS to your own devices only. Nothing here needs a login, so keep it off the open internet.
 
 All JSON. Amounts are **integer cents**, dates `YYYY-MM-DD`. Errors are `{"error": "message"}` with a
-4xx/5xx status. The TaskDeck plug-ins (`taskdeck/src/taskdeck/jobs/receipts/`) and the web pages use
+4xx/5xx status. The TaskDeck jobs (`taskdeck/src/taskdeck/jobs/photo_ocr/`) and the web pages use
 this API only.
 
 ## Health and counts
 
-`GET /api/health` → `{"ok": true, "immich": true|false|null, "engines": ["qwen3-vl-8b"], "version": 1}`
-(`immich` is null when Immich isn't set up and photos are kept locally, false when it doesn't answer.)
+`GET /api/health` → `{"ok": true, "immich": true|false|null, "engines": ["qwen3-vl-8b"], "product_engines": ["qwen3-vl-8b"], "version": 1}`
+(`immich` is null when Immich isn't set up and photos are kept locally, false when it doesn't answer;
+`engines` read receipts and `product_engines` products, the first of each being the one whose reading is used.)
 
 `GET /api/summary` →
 ```json
-{"pending": 2, "review": 3, "retake": 1, "approved": 40, "unmatched_items": 12,
- "products": 25, "due": 4, "unreconciled_receipts": 5, "unreconciled_bank": 7}
+{"pending": 2, "review": 3, "retake": 1, "approved": 40, "failed": 0, "unmatched_items": 12,
+ "products": 25, "products_review": 2, "products_pending": 1, "due": 4,
+ "unreconciled_receipts": 5, "unreconciled_bank": 7}
 ```
 
 ## Receipts
@@ -86,17 +88,29 @@ photographed as separate album photos), removes this one and re-parses 16. → r
 text matches automatically next time, and applies it to other unmatched items with the same text.
 → `{"matched": 3, "product_id": 5}`
 
-`GET /api/products?q=milk` → `{"products": [{"id": 5, "name": "Whole milk", "brand": "Great Value",
-"size": "1 gal", "image_url": "/api/images/40", "purchases": 6, "last_bought": "2026-10-12",
-"last_price": 329, "last_store": "Walmart"}]}`
+`GET /api/products?q=milk&status=review` → `{"products": [{"id": 5, "name": "Whole milk", "brand": "Great Value",
+"size": "1 gal", "status": "ready", "bucket": "auto", "suspect": [], "image_url": "/api/images/40",
+"purchases": 6, "last_bought": "2026-10-12", "last_price": 329, "last_store": "Walmart", "url": "/products/5"}]}`
+(both filters optional).
 
-`GET /api/products/{id}` → the product plus `aliases: [..]`, `images: [..]` and
-`history: [{"date", "merchant", "location", "line_total", "quantity", "receipt_id"}]`.
+- `status`: `pending` (waiting to be read), `review` (a person should check it), `ready`, `failed` (the
+  engine errored; the reason is in `error`). Products waiting for review can already be matched to receipt
+  lines.
+- `bucket`: `auto`, `review` or `retake`, as for receipts; null for a product named by hand.
+- `suspect`: fields with low confidence, out of `name`, `brand` and `size` (only while in review).
 
-`POST /api/products`: multipart with `photo` (one or more photos of one product). The photos go to the
-Immich *Products* album, and the vision model reads the name, brand and size in the background.
-→ `201 {"id": 26, "status": "pending"}`
-`POST /api/products/{id}`: JSON `{"name", "brand", "size"}`. → the product.
+`GET /api/products/{id}` → the product plus `aliases: [..]`, `images: [..]`,
+`history: [{"date", "merchant", "location", "line_total", "quantity", "receipt_id"}]`,
+`checks: [{"name", "ok", "detail"}]`, `confidence: {field: 0..1}`, `disagreements: {field: {engine: value}}`,
+`error` and `runs: [{"engine", "seconds", "error"}]`.
+
+`POST /api/products`: multipart with `photo` (one or more photos of one product, e.g. front and back) and an
+optional `name`. The photos go to the Immich *Products* album. Without a name, the product engines read the
+name, brand and size in the background and the checks decide `auto` or `review`; with a name it is `ready`
+at once. → `201 {"id": 26, "status": "pending"}`
+`POST /api/products/{id}`: JSON `{"name", "brand", "size", "approve": true}`, all optional. Every changed value
+is kept as a correction; `approve` makes it `ready` (it needs a name). → the product.
+`POST /api/products/{id}/reparse` → `{"status": "pending"}`
 `POST /api/products/{id}/merge` `{"into": 5}`: moves photos, aliases and purchases to 5. → product 5.
 
 `GET /api/shopping-list` →
@@ -133,5 +147,5 @@ imported in budget, and new accounts or banks are added there; this service has 
 
 ## Pages (for a phone browser)
 
-`/` home with counts · `/capture` camera PWA · `/review` queue · `/review/{id}` photo beside the fields ·
+`/` home with counts · `/capture` camera PWA (receipt or product) · `/review` queue (receipts; `?products` for products) · `/review/{id}` photo beside the fields ·
 `/items` unmatched items · `/products` gallery · `/products/{id}` · `/shopping` · `/reconcile` · `/picker`

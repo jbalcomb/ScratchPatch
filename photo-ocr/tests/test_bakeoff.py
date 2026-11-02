@@ -83,12 +83,12 @@ def test_match_items_one_to_one():
 
 
 def test_load_engines_fills_nested_defaults(tmp_path, monkeypatch):
-    monkeypatch.delenv("RECEIPTS_LLM_URL", raising=False)
+    monkeypatch.delenv("PHOTO_OCR_LLM_URL", raising=False)
     monkeypatch.setenv("LLM_URL", "http://ws:8080")
     f = tmp_path / "e.json"
-    f.write_text(json.dumps({"engines": [{"name": "a", "kind": "vlm", "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}"}]}))
+    f.write_text(json.dumps({"engines": [{"name": "a", "kind": "vlm", "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}"}]}))
     assert bakeoff.load_engines(f)["a"]["url"] == "http://ws:8080"
-    monkeypatch.setenv("RECEIPTS_LLM_URL", "http://swap:9292")
+    monkeypatch.setenv("PHOTO_OCR_LLM_URL", "http://swap:9292")
     assert bakeoff.load_engines(f)["a"]["url"] == "http://swap:9292"
 
 

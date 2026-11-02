@@ -2,7 +2,7 @@
 
 The Library API can no longer read photos an app didn't create (PRD.md), so this is the only way in from
 Google Photos. It needs a Google Cloud project with the Photos Picker API enabled and an OAuth client of
-type "Web application" whose redirect URI is <RECEIPTS_PUBLIC_URL>/picker/callback (README.md). Written
+type "Web application" whose redirect URI is <PHOTO_OCR_PUBLIC_URL>/picker/callback (README.md). Written
 from Google's Picker API reference; not yet run against Google.
 """
 import json

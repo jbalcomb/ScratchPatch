@@ -35,6 +35,9 @@ checking, bills checking, savings) and what's coming due, so the bills account d
 2. **Budget view on the phone:** monthly summary, the upload list with an undo button, and accepting
    suggested rules, instead of running commands over SSH.
 3. **Nightly copy of the store**, keeping the last 7.
+4. **Later, to consider (noted 2026-11-02 from photo-ocr):** move the store to Postgres, and read photo-ocr's
+   receipt data to tag each transaction as having a receipt photo or not. Whether photo-ocr's store moves to
+   the same Postgres is part of that decision (see photo-ocr/README.md, Later).
 
 ## Scope guard
 

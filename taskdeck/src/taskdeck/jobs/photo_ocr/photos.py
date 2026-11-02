@@ -1,4 +1,4 @@
-"""Receipt capture and product photos: upload photos from the phone to the receipts service."""
+"""Receipt capture and product photos: upload photos from the phone to the photo OCR service."""
 
 from __future__ import annotations
 
@@ -55,10 +55,10 @@ def show_product(ctx):
     )
 
 
-class ReceiptCapture(api.ReceiptsJob):
+class ReceiptCapture(api.PhotoOcrJob):
     id = api.SETTINGS_ID
     title = "Receipt capture"
-    description = "Send photos of one receipt to the receipts service, top to bottom, to be parsed and reviewed."
+    description = "Send photos of one receipt to the photo OCR service, top to bottom, to be parsed and reviewed."
     icon = "RECEIPT_LONG"
     tags = ("receipt", "photo", "scan", "ocr", "capture", "groceries", "immich")
     fields = (
@@ -73,10 +73,10 @@ class ReceiptCapture(api.ReceiptsJob):
         return Pipeline([api.service_configured, read_photos, send_receipt, show_receipt])
 
 
-class ProductPhoto(api.ReceiptsJob):
-    id = "receipts_product_photo"
+class ProductPhoto(api.PhotoOcrJob):
+    id = "photo_ocr_product_photo"
     title = "Product photo"
-    description = "Add a product to the receipts catalog from one or more photos of it."
+    description = "Add a product to the catalog from one or more photos of it; the service reads name, brand and size."
     icon = "ADD_A_PHOTO_OUTLINED"
     tags = ("product", "photo", "catalog", "gallery", "groceries", "receipts", "immich")
     fields = (Field.files("photos", "Product photos", required=True, extensions=api.PHOTO_EXTENSIONS,

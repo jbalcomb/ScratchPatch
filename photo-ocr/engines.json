@@ -4,7 +4,7 @@
     {
       "name": "qwen3-vl-8b",
       "kind": "vlm",
-      "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
       "model": "qwen3-vl-8b",
       "max_side": 2048
     },
@@ -13,29 +13,29 @@
       "kind": "ocr_llm",
       "ocr": "vlm",
       "ocr_engine": {"model": "paddleocr-vl", "prompt": "OCR:", "max_side": 2048, "json_schema": false},
-      "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "paddleocr+llm",
       "kind": "ocr_llm",
       "ocr": "paddleocr",
-      "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "doctr+llm",
       "kind": "ocr_llm",
       "ocr": "doctr",
-      "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
     },
     {
       "name": "tesseract+llm",
       "kind": "ocr_llm",
       "ocr": "tesseract",
-      "url": "${RECEIPTS_LLM_URL:-${LLM_URL}}",
-      "model": "${RECEIPTS_TEXT_MODEL:-qwen3-vl-8b}"
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
     }
   ]
 }

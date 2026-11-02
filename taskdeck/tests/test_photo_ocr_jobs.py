@@ -1,4 +1,4 @@
-"""Receipts jobs against a fake receipts service (photo-ocr/API.md) on a local socket."""
+"""Photo OCR jobs against a fake photo OCR service (photo-ocr/API.md) on a local socket."""
 
 import email.parser
 import email.policy
@@ -9,8 +9,8 @@ import urllib.parse
 
 import pytest
 
-from taskdeck.jobs import receipts
-from taskdeck.jobs.receipts import api, items, lists, photos, reconcile
+from taskdeck.jobs import photo_ocr
+from taskdeck.jobs.photo_ocr import api, items, lists, photos, reconcile
 from taskdeck.shared import http
 
 RECEIPT = {"id": 17, "status": "parsed", "bucket": "review", "merchant": "Giant Eagle", "purchase_date": "2026-10-12",
@@ -19,7 +19,9 @@ RECEIPT = {"id": 17, "status": "parsed", "bucket": "review", "merchant": "Giant 
 RETAKE = {**RECEIPT, "id": 18, "bucket": "retake", "merchant": None, "purchase_date": None, "total": None,
           "suspect": ["merchant", "purchase_date", "total", "tax", "items"], "url": "/review/18"}
 SUMMARY = {"pending": 2, "review": 3, "retake": 1, "approved": 40, "unmatched_items": 12, "products": 25, "due": 4,
-           "unreconciled_receipts": 5, "unreconciled_bank": 7}
+           "products_review": 1, "products_pending": 1, "unreconciled_receipts": 5, "unreconciled_bank": 7}
+PRODUCT_TO_CHECK = {"id": 5, "name": "product", "brand": None, "size": "large", "status": "review", "bucket": "review",
+                    "suspect": ["name", "size"], "url": "/products/5"}
 UNMATCHED = [
     {"id": 201, "receipt_id": 17, "raw_text": "GV WHL MLK GAL", "line_total": 329, "merchant": "Walmart",
      "purchase_date": "2026-10-12", "suggestion": {"product_id": 5, "name": "Whole milk", "by": "text", "score": 0.95}},
@@ -97,6 +99,8 @@ class FakeService:
         if path == "/api/receipts" and method == "POST":
             n = sum(1 for p in parse_multipart(req["content_type"], req["body"]) if p[0] == "photo")
             return 201, {"id": 17, "photos": n, "status": "pending"}
+        if path == "/api/products" and method == "GET":
+            return 200, {"products": [PRODUCT_TO_CHECK]}
         if path == "/api/products" and method == "POST":
             return 201, {"id": 26, "status": "pending"}
         if path == "/api/items/unmatched":
@@ -147,17 +151,17 @@ def run(plugin, settings, **inputs):
 # ---- package and settings ---------------------------------------------------------------------------
 
 def test_plugins_share_one_settings_set_and_category():
-    ids = [p.id for p in receipts.PLUGINS]
-    assert ids == ["receipts_capture", "receipts_review", "receipts_unmatched", "receipts_product_photo",
-                   "receipts_shopping", "receipts_reconcile"]
-    assert {p.settings_id for p in receipts.PLUGINS} == {"receipts_capture"}
-    assert {p.category for p in receipts.PLUGINS} == {"Receipts"}
-    assert all(p.settings == api.SETTINGS for p in receipts.PLUGINS)
+    ids = [p.id for p in photo_ocr.PLUGINS]
+    assert ids == ["photo_ocr_capture", "photo_ocr_review", "photo_ocr_unmatched", "photo_ocr_product_photo",
+                   "photo_ocr_shopping", "photo_ocr_reconcile"]
+    assert {p.settings_id for p in photo_ocr.PLUGINS} == {"photo_ocr_capture"}
+    assert {p.category for p in photo_ocr.PLUGINS} == {"Photo OCR"}
+    assert all(p.settings == api.SETTINGS for p in photo_ocr.PLUGINS)
     assert next(f for f in api.SETTINGS if f.name == "service_url").default is None  # no default host
 
 
 @pytest.mark.parametrize("url,expected", [
-    ("", "Set “Receipts service URL”"),
+    ("", "Set “Photo OCR service URL”"),
     ("ai-workstation.tail1234.ts.net:8443", "must start with https://"),
     ("http://localhost:8093", "localhost"),
     ("https://ai-workstation.tail1234.ts.net:8443", None),
@@ -193,7 +197,7 @@ def test_check_ready_online_unreachable_explains_tailscale(monkeypatch):
 def test_check_ready_online_not_the_service(service, settings):
     service.errors["GET /api/health"] = (200, b"<html>hello</html>")
     [problem] = photos.CAPTURE.check_ready_online(settings)
-    assert "didn't answer like the receipts service" in problem.message
+    assert "didn't answer like the photo OCR service" in problem.message
 
 
 # ---- capture and product photos ----------------------------------------------------------------------
@@ -242,7 +246,7 @@ def test_server_error_is_the_job_error(service, settings, tmp_path):
 def test_server_error_without_json(service, settings):
     service.errors["GET /api/shopping-list"] = (502, b"Bad Gateway")
     report = run(lists.SHOPPING, settings)
-    assert not report.ok and report.error.startswith("The receipts service answered: HTTP 502")
+    assert not report.ok and report.error.startswith("the photo OCR service answered: HTTP 502")
 
 
 def test_product_photo(service, settings, tmp_path):
@@ -262,16 +266,19 @@ def test_product_photo(service, settings, tmp_path):
 def test_review_queue(service, settings):
     report = run(lists.REVIEW, settings)
     assert report.ok, report.error
-    assert service.calls() == [("GET", "/api/summary"), ("GET", "/api/receipts")]
+    assert service.calls() == [("GET", "/api/summary"), ("GET", "/api/receipts"), ("GET", "/api/products")]
     assert service.requests[1]["query"] == {"status": "parsed"}
+    assert service.requests[2]["query"] == {"status": "review"}
     assert report.result.rows == [
-        ("To review", "3"), ("Retake", "1"), ("Waiting to be parsed", "2"), ("Approved", "40"),
+        ("Receipts to review", "3"), ("Receipts to retake", "1"), ("Products to check", "1"),
+        ("Waiting to be read", "3"), ("Receipts approved", "40"),
         ("#17 Giant Eagle", "2026-10-12 · $45.19 · review · check: total, store"),
         ("#18 Unknown store", "no date · — · retake · check: store, date, total, tax, items · new photo needed"),
+        ("Product #5 product", "large · check: name, size"),
     ]
     assert report.result.text == f"Review them on {service.url}/review"
-    assert report.result.warning == "1 receipt needs a new photo."
-    assert report.result.title == "2 receipts to check"
+    assert report.result.warning == "1 photo needs retaking."
+    assert report.result.title == "2 receipts and 1 product to check"
 
 
 def test_shopping_list(service, settings):
@@ -356,7 +363,7 @@ def test_reconcile_matches_against_budget(service, settings):
 
 def test_jobs_refuse_to_run_without_url(service):
     report = run(lists.SHOPPING, {"service_url": ""})
-    assert not report.ok and "Set the receipts service URL" in report.error
+    assert not report.ok and "Set the photo OCR service URL" in report.error
     assert service.requests == []
 
 

@@ -1,4 +1,4 @@
-"""Read-only Receipts jobs: the review queue and the shopping list."""
+"""Read-only Photo OCR jobs: the review queue (receipts and products) and the shopping list."""
 
 from __future__ import annotations
 
@@ -18,23 +18,38 @@ def receipt_row(r: dict) -> tuple[str, str]:
     return f"#{r.get('id')} {r.get('merchant') or 'Unknown store'}", " · ".join(p for p in parts if p)
 
 
+def product_row(p: dict) -> tuple[str, str]:
+    """One product to check as a result row: "Product #5 Whole milk" → "Great Value · 1 gal · check: size"."""
+    parts = [p.get("brand") or "", p.get("size") or ""]
+    if p.get("suspect"):
+        parts.append("check: " + ", ".join(p["suspect"]))
+    if p.get("bucket") == "retake":
+        parts.append("new photo needed")
+    return f"Product #{p.get('id')} {p.get('name') or 'unnamed'}", " · ".join(x for x in parts if x) or "check it"
+
+
 @step(Stage.EXECUTE, name="get queue")
 def get_queue(ctx):
     ctx["summary"] = api.call(ctx.settings, "GET", "/api/summary")
     ctx["receipts"] = api.call(ctx.settings, "GET", "/api/receipts", params={"status": "parsed"}).get("receipts") or []
+    ctx["products"] = api.call(ctx.settings, "GET", "/api/products", params={"status": "review"}).get("products") or []
 
 
 @step(Stage.PRESENT)
 def show_queue(ctx):
-    s, receipts = ctx["summary"], ctx["receipts"]
-    counts = [("To review", s.get("review", 0)), ("Retake", s.get("retake", 0)),
-              ("Waiting to be parsed", s.get("pending", 0)), ("Approved", s.get("approved", 0))]
-    retakes = sum(r.get("bucket") == "retake" for r in receipts)
+    s, receipts, products = ctx["summary"], ctx["receipts"], ctx["products"]
+    counts = [("Receipts to review", s.get("review", 0)), ("Receipts to retake", s.get("retake", 0)),
+              ("Products to check", s.get("products_review", 0)),
+              ("Waiting to be read", s.get("pending", 0) + s.get("products_pending", 0)), ("Receipts approved", s.get("approved", 0))]
+    retakes = sum(r.get("bucket") == "retake" for r in receipts) + sum(p.get("bucket") == "retake" for p in products)
+    n = len(receipts) + len(products)
+    parts = [f"{len(receipts)} receipt{'s' * (len(receipts) != 1)}"] * bool(receipts) + \
+            [f"{len(products)} product{'s' * (len(products) != 1)}"] * bool(products)
     ctx.result = Result(
-        title=f"{len(receipts)} receipt{'s' * (len(receipts) != 1)} to check" if receipts else "Nothing to review",
-        rows=[(k, str(v)) for k, v in counts] + [receipt_row(r) for r in receipts],
+        title=" and ".join(parts) + " to check" if n else "Nothing to review",
+        rows=[(k, str(v)) for k, v in counts] + [receipt_row(r) for r in receipts] + [product_row(p) for p in products],
         text=f"Review them on {api.page_url(ctx.settings, '/review')}",
-        warning=f"{retakes} receipt{'s need' if retakes != 1 else ' needs'} a new photo." if retakes else None,
+        warning=f"{retakes} photo{'s need' if retakes != 1 else ' needs'} retaking." if retakes else None,
     )
 
 
@@ -69,20 +84,20 @@ def show_shopping_list(ctx):
     )
 
 
-class ReceiptsReview(api.ReceiptsJob):
-    id = "receipts_review"
-    title = "Receipts to review"
-    description = "List the parsed receipts that need a person to check them, with the fields to look at."
+class ReceiptsReview(api.PhotoOcrJob):
+    id = "photo_ocr_review"
+    title = "Review queue"
+    description = "List the receipts and products whose readings need a person to check them, with the fields to look at."
     icon = "FACT_CHECK_OUTLINED"
-    tags = ("receipt", "review", "queue", "retake", "approve", "check", "groceries")
+    tags = ("receipt", "product", "review", "queue", "retake", "approve", "check", "groceries", "ocr")
     run_label = "Check queue"
 
     def build_pipeline(self):
         return Pipeline([api.service_configured, get_queue, show_queue])
 
 
-class ShoppingList(api.ReceiptsJob):
-    id = "receipts_shopping"
+class ShoppingList(api.PhotoOcrJob):
+    id = "photo_ocr_shopping"
     title = "Shopping list"
     description = "Products that are due again, from how often you buy them, with the usual and the cheapest store."
     icon = "SHOPPING_CART_OUTLINED"

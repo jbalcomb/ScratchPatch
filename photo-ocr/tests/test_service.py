@@ -42,7 +42,7 @@ def make_service(tmp_path, model, engines=("vl-a",), photos=None, **env):
         {"name": "vl-a", "kind": "vlm", "url": model.url, "model": "a"},
         {"name": "vl-b", "kind": "vlm", "url": model.url, "model": "b"},
     ]}))
-    env = {"RECEIPTS_ENGINE": ",".join(engines), "LLM_URL": model.url, "LLM_MODEL": "text", **env}
+    env = {"PHOTO_OCR_RECEIPT_ENGINE": ",".join(engines), "LLM_URL": model.url, "LLM_MODEL": "text", **env}
     return Service(tmp_path / "home", engines_path=eng, photos=photos, env=env)
 
 
@@ -169,7 +169,7 @@ def test_model_server_down_keeps_receipts_pending(tmp_path, model):
 def test_text_model_defaults_to_the_vision_model(tmp_path, model):
     """LLM_MODEL is the coding model on the workstation; receipt work must not load it."""
     assert make_service(tmp_path, model).text_engine["model"] == "qwen3-vl-8b"
-    assert make_service(tmp_path, model, RECEIPTS_TEXT_MODEL="other").text_engine["model"] == "other"
+    assert make_service(tmp_path, model, PHOTO_OCR_TEXT_MODEL="other").text_engine["model"] == "other"
 
 
 def test_merge(tmp_path, model):
@@ -286,10 +286,10 @@ def test_two_engines_disagree_on_a_product(tmp_path, model):
 
 
 def test_product_engines_can_differ_from_receipt_engines(tmp_path, model):
-    svc = make_service(tmp_path, model, RECEIPTS_PRODUCT_ENGINE="vl-b")
+    svc = make_service(tmp_path, model, PHOTO_OCR_PRODUCT_ENGINE="vl-b")
     assert [e["name"] for e in svc.parse_engines] == ["vl-a"] and [e["name"] for e in svc.product_engines] == ["vl-b"]
     with pytest.raises(ValueError):
-        make_service(tmp_path, model, RECEIPTS_PRODUCT_ENGINE="nope")
+        make_service(tmp_path, model, PHOTO_OCR_PRODUCT_ENGINE="nope")
 
 
 def test_text_suggestion_and_product_merge(tmp_path, model):
@@ -397,7 +397,7 @@ def test_api_receipt_flow(api):
     assert r["status"] == "approved" and r["total"] == 720
     status, s = api("GET", "/api/summary")
     assert s["approved"] == 1 and s["review"] == 0
-    assert api("GET", "/api/health")[1] == {"ok": True, "immich": None, "engines": ["vl-a"], "version": 1}
+    assert api("GET", "/api/health")[1] == {"ok": True, "immich": None, "engines": ["vl-a"], "product_engines": ["vl-a"], "version": 1}
 
 
 def test_api_errors(api):

@@ -78,7 +78,7 @@ class Immich:
     def upload(self, data, filename, album=None, taken=None):
         """Upload one photo; returns its asset id (an existing one if Immich already has the same file)."""
         stamp = (taken or datetime.now(timezone.utc)).isoformat()
-        fields = {"deviceAssetId": f"receipts-{uuid.uuid4().hex}", "deviceId": "receipts-service",
+        fields = {"deviceAssetId": f"photo-ocr-{uuid.uuid4().hex}", "deviceId": "photo-ocr-service",
                   "fileCreatedAt": stamp, "fileModifiedAt": stamp}
         mime = mimetypes.guess_type(filename)[0] or "image/jpeg"
         try:

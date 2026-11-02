@@ -4,8 +4,8 @@ from taskdeck.core import Field, JobPlugin, Pipeline, PluginRegistry, StepError
 from taskdeck.review.analyzer import check_plugin
 
 BUILTIN = {"voice_rec", "text_stats", "case_convert", "hash_text", "json_format", "unit_convert", "tip_split", "daily_log", "extract_archive", "exe_parse", "dll_parse",
-           "daily_log_reconcile", "receipts_capture", "receipts_review", "receipts_unmatched", "receipts_product_photo",
-           "receipts_shopping", "receipts_reconcile"}
+           "daily_log_reconcile", "photo_ocr_capture", "photo_ocr_review", "photo_ocr_unmatched", "photo_ocr_product_photo",
+           "photo_ocr_shopping", "photo_ocr_reconcile"}
 
 
 @pytest.fixture(scope="module")

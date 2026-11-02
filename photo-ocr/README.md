@@ -1,81 +1,116 @@
-# Photo OCR (receipts)
+# Photo OCR
 
-Phone photos of receipts and products, read by local models on the AI Workstation, turned into structured
-records and cataloged: purchase history, prices, where you buy things, shopping lists and bank
-reconciliation. The design is in [PRD.md](PRD.md); the HTTP API is in [API.md](API.md).
+Phone photos read by local models on the AI Workstation and turned into checked, structured records. Two kinds
+of photo go through the same pipeline:
+
+- **Receipts:** store, date, tax, total and line items.
+- **Products:** name, brand and size from the packaging.
+
+Two things are built on those records:
+
+- **Shopping list:** receipt lines are matched to products, which gives purchase history, prices and where
+  you buy things, and from that what is due again.
+- **Bank reconciliation:** receipts are matched to the bank transactions in the budget project's store.
+
+The design is in [PRD.md](PRD.md); the HTTP API is in [API.md](API.md).
+
+## How it fits together
+
+```
+photos (capture page, Immich albums, Syncthing, Google Photos Picker)
+  -> Immich, and one row per photo in the store
+  -> read by each configured engine (engines.json, through the workstation's llama.cpp router)
+  -> checks + engine agreement -> auto-accepted, or the review queue (or "retake")
+  -> receipts and products
+       -> receipt lines matched to products -> purchase history -> shopping list
+       -> receipts matched to bank charges read from budget.db
+```
+
+| Part | Where |
+|---|---|
+| Reading photos: prompts and schemas per kind, model and OCR calls | `parsing.py` |
+| Checks, engine disagreement, confidence and buckets, per kind | `checks.py` |
+| The pipeline: ingest, batches per engine, review, corrections | `service.py` |
+| Store: SQLite, the PRD's tables plus corrections, stores, bank copy | `db.py` |
+| Immich client (or a local folder without Immich) | `immich.py` |
+| Google Photos Picker | `picker.py` |
+| Catalog matching, purchase history, shopping list | `catalog.py` |
+| Bank reconciliation against budget | `reconcile.py` |
+| HTTP API, phone pages, background worker | `web.py`, `pages.py` |
+| Bake-off: compare engines on labeled receipts and products | `bakeoff.py` |
+
+The TaskDeck jobs are in `taskdeck/src/taskdeck/jobs/photo_ocr/`
+([taskdeck/docs/jobs/photo_ocr.md](../taskdeck/docs/jobs/photo_ocr.md)). The screens that need the photo
+beside the editable fields are web pages served by the service; the TaskDeck jobs list what needs doing and
+link to them.
 
 ## Status
 
-Every phase in the PRD is built. Nothing has run yet against the real Immich, Google, models or receipts:
-the tests use stand-ins for those (see **Not yet tried for real** at the end).
+Built: everything above. Not yet run against the real Immich, Google, or on real photos; the tests use
+stand-ins for those (see **Not yet tried for real** at the end). The models are on the workstation and load
+(`qwen3-vl-8b`, `paddleocr-vl`).
 
-| Phase | What | Where |
-|---|---|---|
-| 1 | Parsing bake-off: run candidate engines on labeled receipts, score, compare | `bakeoff.py`, `parsing.py` |
-| 2 | Service, Immich albums, capture PWA with multi-photo receipts | `web.py`, `service.py`, `immich.py`, `pages.py` |
-| 3 | Parsing, checks, confidence buckets, review page | `checks.py`, `/review` |
-| 4 | Syncthing (Immich external library), Google Photos Picker | `service.py`, `picker.py`, `/picker` |
-| 5 | Product gallery, catalog, line-item matching with aliases, shopping list | `catalog.py`, `/items`, `/products`, `/shopping` |
-| 6 | Reconciliation against budget's bank transactions | `reconcile.py`, `/reconcile` |
-
-The TaskDeck plug-ins (Receipts and Reconciliation jobs) are in `taskdeck/src/taskdeck/jobs/receipts/`
-([taskdeck/docs/jobs/receipts.md](../taskdeck/docs/jobs/receipts.md)). The heavy screens, such as the photo
-beside the editable fields, are web pages served by the service; the TaskDeck jobs list what needs doing
-and link to them.
-
-**Until the bake-off picks an engine,** the service uses the first engine in `engines.json`
-(`RECEIPTS_ENGINE` chooses; two names, comma-separated, runs both and uses their disagreement for review).
+**Until the bake-off picks engines,** both kinds use the first engine in `engines.json`.
+`PHOTO_OCR_RECEIPT_ENGINE` and `PHOTO_OCR_PRODUCT_ENGINE` choose; two names, comma-separated, run both and
+send readings they disagree on to review.
 
 ## The service
 
 One process: the API, the phone pages and a background worker. The worker checks Immich every minute (and
-right away after an upload), parses pending receipts engine by engine (so the model server loads each model once
-per batch), reads new product photos and matches line items to the catalog. Python 3.10+, standard
-library; Pillow recommended.
+right away after an upload), reads pending receipts and products engine by engine (so the model server loads
+each model once per batch), and matches receipt lines to the catalog. Python 3.10+, standard library;
+Pillow recommended.
 
 ```bash
-python web.py                      # http://127.0.0.1:8093, data in ~/receipts (RECEIPTS_HOME)
+python web.py                      # http://127.0.0.1:8093, data in ~/photo-ocr (PHOTO_OCR_HOME)
 python web.py work                 # one round of background work, printed (handy over SSH)
-python web.py export-labels        # approved receipts -> the bake-off set, so corrections grow it
+python web.py export-labels        # approved receipts and products -> the bake-off set
 ```
 
 ### On the workstation (Docker)
 
-1. **Settings.** Put these in `~/.config/receipts.env` (model settings come from `~/.config/secrets.env`,
-   like budget):
+1. **Settings** (optional to start). Put any of these in `~/.config/photo-ocr.env`; the model server and key
+   come from `~/.config/secrets.env` (`LLM_URL`, `LLM_API_KEY`), like budget:
 
    | Variable | What |
    |---|---|
-   | `IMMICH_URL`, `IMMICH_API_KEY` | Immich, e.g. `http://localhost:2283`. The key needs asset upload/read and album read/create/update. Without them, photos stay in `~/receipts/photos/`. |
-   | `RECEIPTS_ENGINE` | engine(s) from `engines.json`, e.g. `qwen3-vl-8b` or `qwen3-vl-8b,tesseract+llm` |
-   | `RECEIPTS_PRODUCT_ENGINE` | vision engine for product photos (default: the first `vlm` engine) |
-   | `RECEIPTS_LLM_URL`, `RECEIPTS_TEXT_MODEL` | model server and text model for hard catalog matches (default `LLM_URL` and `qwen3-vl-8b`, so receipt work doesn't load the coding model) |
-   | `RECEIPTS_ALBUM`, `PRODUCTS_ALBUM` | album names (default `Receipts`, `Products`; created if missing) |
+   | `IMMICH_URL`, `IMMICH_API_KEY` | Immich, e.g. `http://localhost:2283`. The key needs asset upload/read and album read/create/update. Without them, photos stay in `~/photo-ocr/photos/`. |
+   | `PHOTO_OCR_RECEIPT_ENGINE` | engine(s) from `engines.json` for receipts, e.g. `qwen3-vl-8b` or `qwen3-vl-8b,tesseract+llm` |
+   | `PHOTO_OCR_PRODUCT_ENGINE` | engine(s) for product photos (default: the receipt engines) |
+   | `PHOTO_OCR_LLM_URL`, `PHOTO_OCR_TEXT_MODEL` | model server and text model for the OCR engines' text step and hard catalog matches (default `LLM_URL` and `qwen3-vl-8b`, so this work doesn't load the coding model) |
+   | `PHOTO_OCR_RECEIPTS_ALBUM`, `PHOTO_OCR_PRODUCTS_ALBUM` | Immich album names (default `Receipts`, `Products`; created if missing) |
    | `IMMICH_LIBRARY_ID` | the Syncthing external library (below) |
-   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RECEIPTS_PUBLIC_URL` | Google Photos Picker (below) |
+   | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PHOTO_OCR_PUBLIC_URL` | Google Photos Picker (below) |
 
-2. **Start it:** `cd ~/ScratchPatch/photo-ocr && docker compose up -d --build`. Logs: `docker logs -f receipts`.
+2. **Start it:**
+
+   ```bash
+   mkdir -p ~/photo-ocr && cd ~/ScratchPatch/photo-ocr && docker compose up -d --build photo-ocr
+   ```
+
+   Logs: `docker logs -f photo-ocr`. Check: `curl -s http://127.0.0.1:8093/api/health`.
 
 3. **Reach it from the phone** with Tailscale Serve, HTTPS and your own devices only:
 
    ```bash
    sudo tailscale serve status                      # see what already uses which port
-   sudo tailscale serve --bg --https=8444 8093      # budget may already have 443 or 8443
+   sudo tailscale serve --bg --https=8444 8093      # budget already has 443
    ```
 
-   The address is like `https://ai-workstation.tail1234.ts.net:8444`. Open `/capture` on the phone and
-   use the browser's *Add to Home screen* to install it like an app. Put the same address in the TaskDeck
-   Receipts jobs' settings.
+   The address is like `https://<workstation>.<tailnet>.ts.net:8444`. Open `/capture` on the phone and use
+   the browser's *Add to Home screen* to install it like an app. Put the same address in the TaskDeck Photo
+   OCR jobs' settings.
 
-**After pulling new code:** `git pull && docker compose up -d --build`.
+**After pulling new code:** `git pull && docker compose up -d --build photo-ocr`.
 
 ### Getting photos in
 
-- **Capture page** (`/capture`): take one or more photos, *Add another photo* between shots of a long
-  receipt, then *Done*. All photos before *Done* are one receipt. Switch to *Product* for product photos.
-- **Immich albums:** a photo added to the *Receipts* album in the Immich app becomes a receipt (one photo
-  each; on the review page, *Merge into* joins a receipt photographed in parts). The *Products* album works
-  the same way for products.
+- **Capture page** (`/capture`): choose *Receipt* or *Product*, take one or more photos (*Add another photo*
+  between shots of a long receipt, or of a product's front and back), then *Done*. All photos before *Done*
+  are one receipt or one product.
+- **Immich albums:** a photo added to the *Receipts* album in the Immich app becomes a receipt, and one added
+  to *Products* becomes a product (one photo each; *Merge into* on the receipt page joins a receipt
+  photographed in parts, and on the product page joins two photos of one product).
 - **Syncthing:** sync a phone folder to the workstation, with `Receipts/` and `Products/` subfolders. In
   Immich, add the synced folder as an external library (Administration → External libraries) and set
   `IMMICH_LIBRARY_ID` to its id (it's in the library page's URL). The service adds new photos from those
@@ -85,49 +120,59 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
   1. Create a project, enable the **Google Photos Picker API**.
   2. OAuth consent screen: External, add yourself as a test user.
   3. Credentials → OAuth client ID → **Web application**, with authorized redirect URI
-     `https://<your Tailscale Serve address>/picker/callback`. Set `RECEIPTS_PUBLIC_URL` to that address
-     (without `/picker/callback`) and the client id and secret in `receipts.env`.
+     `https://<your Tailscale Serve address>/picker/callback`. Set `PHOTO_OCR_PUBLIC_URL` to that address
+     (without `/picker/callback`) and the client id and secret in `photo-ocr.env`.
   4. Open `/picker` and sign in. While the consent screen is in *Testing*, Google expires the sign-in
      after 7 days; sign in again then.
 
-### Review, catalog, shopping, reconciliation
+### Checks and review
 
-- **`/review`:** receipts that need a person: *review* (a check failed, a new store, or the engines
-  disagree; suspect fields are highlighted) and *retake* (total or date unreadable: add a photo or type
-  them). *Approve* saves the edits, keeps every change as a correction and moves to the next receipt.
-  Receipts that pass every check from a known store are approved without review. Every store starts as new,
-  so the first receipt from each store gets a look.
-- **`/items`:** line items with no product yet, with a suggestion (text similarity, or the text model for
+Every reading, receipt or product, lands in one of three buckets:
+
+| Bucket | Receipt | Product |
+|---|---|---|
+| **auto** (saved without review) | items + tax = total, plausible date, known store, prices look like prices, engines agree | the name says what it is, the size has an amount and a unit, engines agree |
+| **review** | a check failed (including a store seen for the first time) or the engines disagree | a check failed or the engines disagree on name, brand or size |
+| **retake** | total or date unreadable | no name readable |
+
+`/review` shows receipts that need a look and, under *Products to check*, products. Suspect fields are
+highlighted and each engine's reading is shown where they differ. *Approve* saves the edits, keeps every
+change as a correction (so `export-labels` grows the bake-off set) and moves to the next one. *Read again*
+re-reads with the current engines.
+
+### Catalog, shopping, reconciliation
+
+- **`/items`:** receipt lines with no product yet, with a suggestion (text similarity, or the text model for
   abbreviations). Confirming saves an alias, so the same receipt text matches by itself next time.
-  *Not a product* is for bag fees and the like.
-- **`/products`:** the gallery. A product photo is read by the vision model for name, brand and size;
-  fix them on the product page, merge duplicates, see the purchase history.
+  *Not a product* is for bag fees and the like. Products waiting for review can already be matched.
+- **`/products`:** the gallery; each product page has its readings, checks, aliases and purchase history.
 - **`/shopping`:** products due again. The rule is a placeholder until the PRD's open question is settled:
   due when the days since the last purchase reach 90% of the usual days between purchases (two or more
   purchases needed).
-- **`/reconcile`:** *Match* reads the latest bank transactions from the budget store (`~/budget/budget.db`;
-  bank exports are imported in budget, not here), then matches each approved receipt to a charge with the
-  same amount, a similar merchant, and a bank date from one day before to five days after the purchase.
+- **`/reconcile`:** *Match* reads the latest bank transactions from the budget store (`~/budget/budget.db`,
+  read-only; bank exports are imported in budget, and more accounts are added there), then matches each
+  approved receipt to a charge with the same amount, a similar merchant, and a bank date from one day before
+  to five days after the purchase.
 
 ## The bake-off (phase 1)
 
-`bakeoff.py` runs each candidate engine on 25 to 30 real, hand-labeled receipts and scores the results. It
-needs Python 3.10+ and the standard library; Pillow is optional but recommended, because without it phone
-photos go to vision models unrotated and full size.
+`bakeoff.py` runs each candidate engine on hand-labeled photos, 25 to 30 receipts plus some products, and
+scores the results. It needs Python 3.10+ and the standard library; Pillow is optional but recommended,
+because without it phone photos go to vision models unrotated and full size.
 
-| Engine (`engines.json`) | How it reads a receipt |
+| Engine (`engines.json`) | How it reads |
 |---|---|
-| `qwen3-vl-8b` | All photos of the receipt in one request to a vision model; JSON back |
-| `paddleocr-vl+llm` | PaddleOCR-VL transcribes each photo (`OCR:` prompt); a text LLM structures it |
-| `paddleocr+llm` | PaddleOCR text with per-line confidence; a text LLM structures it |
+| `qwen3-vl-8b` | All photos of the receipt or product in one request to a vision model; JSON back |
+| `paddleocr-vl+llm` | PaddleOCR-VL transcribes each photo (`OCR:` prompt); a text model structures it |
+| `paddleocr+llm` | PaddleOCR text with per-line confidence; a text model structures it |
 | `doctr+llm` | docTR, the same way |
 | `tesseract+llm` | Tesseract, the same way (baseline) |
 
-These candidates came from web roundups and haven't been tried on these receipts; the bake-off decides.
-Every model is reached through the workstation's llama.cpp server in router mode (one endpoint; the
-request's `model` field picks a section of its preset file, and `--models-max 1` keeps one model on the GPU
-at a time). The `model` names in `engines.json` must match the preset's section names; `qwen3-vl-8b` and
-`paddleocr-vl` are both there. Edit the file to add, drop or retune candidates.
+These candidates came from web roundups and haven't been tried on these photos; the bake-off decides, and
+it may pick different engines for receipts and products. Every model is reached through the workstation's
+llama.cpp server in router mode (one endpoint; the request's `model` field picks a section of its preset
+file, and `--models-max 1` keeps one model on the GPU at a time). The `model` names in `engines.json` must
+match the preset's section names; `qwen3-vl-8b` and `paddleocr-vl` are both there.
 
 ### 1. Build the test set
 
@@ -135,16 +180,17 @@ at a time). The `model` names in `engines.json` must match the preset's section 
 cd ~/ScratchPatch/photo-ocr
 python bakeoff.py add ~/Downloads/IMG_0412.jpg --tags thermal,faded
 python bakeoff.py add IMG_0413.jpg IMG_0414.jpg IMG_0415.jpg --tags long   # one receipt, top to bottom
+python bakeoff.py add --product front.jpg back.jpg                          # one product
 ```
 
-Each receipt gets a folder under `~/receipts/bakeoff/set/` (`r001`, `r002`, …; or set `RECEIPTS_BAKEOFF_HOME`), with its
-photos numbered in order. Receipts with more than one photo are tagged `multi-photo` automatically. Include
-crumpled, faded, thermal-paper and long receipts. Photos must be JPEG, PNG or WebP, so export HEIC as JPEG
-first. They stay out of the repo.
+Each receipt gets a folder `r001`, `r002`, …, and each product `p001`, `p002`, …, under
+`~/photo-ocr/bakeoff/set/` (or `PHOTO_OCR_BAKEOFF_HOME`), with the photos numbered in order. Items with more
+than one photo are tagged `multi-photo` automatically. Include crumpled, faded, thermal-paper and long
+receipts. Photos must be JPEG, PNG or WebP, so export HEIC as JPEG first. They stay out of the repo.
 
 ### 2. Label it
 
-Write `label.json` in each receipt folder:
+A receipt's `label.json`:
 
 ```json
 {
@@ -165,44 +211,53 @@ Write `label.json` in each receipt folder:
   negative price, and deposits and bag fees are items too, so that items + tax = total.
 - Leave out payment, change and loyalty lines.
 
+A product's `label.json`:
+
+```json
+{"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}
+```
+
+- `name`: what the product is, without brand or size. `brand` and `size` may be `null`.
+- `size`: amount and unit as printed; "12 FL. OZ" and "12 fl oz" count as the same, and a pack keeps its
+  count ("12 x 12 fl oz").
+
 To save typing, run one engine first and start from its output: `python bakeoff.py label qwen3-vl-8b`
-writes `label.draft.json` next to each unlabeled receipt. Correct the draft against the photos, then
-rename it to `label.json`. Then run:
+writes `label.draft.json` next to each unlabeled item. Correct the draft against the photos, then rename it
+to `label.json`. Then run:
 
 ```bash
-python bakeoff.py check      # unparseable values, implausible dates, items + tax != total
+python bakeoff.py check      # unparseable values, implausible dates, items + tax != total, product sizes
 ```
+
+Approved readings from the service join the set too: `python web.py export-labels` writes `sNNNN`
+(receipts) and `psNNNN` (products) folders.
 
 ### 3. Run and score
 
 ```bash
 python bakeoff.py run qwen3-vl-8b          # one engine
 python bakeoff.py run --all                # every engine in engines.json, one after another
-python bakeoff.py score                    # writes ~/receipts/bakeoff/results/report.md
+python bakeoff.py score                    # writes ~/photo-ocr/bakeoff/results/report.md
 ```
 
-The model server comes from `RECEIPTS_LLM_URL`, falling back to `LLM_URL`. The text model for the
-OCR + LLM engines comes from `RECEIPTS_TEXT_MODEL`, default `qwen3-vl-8b` (the vision model also handles
-text, so no swap to another model is needed), and the key from
-`LLM_API_KEY`. These are the same `~/.config/secrets.env` names that budget uses.
+The model server comes from `PHOTO_OCR_LLM_URL`, falling back to `LLM_URL`; the OCR engines' text model from
+`PHOTO_OCR_TEXT_MODEL`, default `qwen3-vl-8b`; and the key from `LLM_API_KEY`.
 
-Each engine's output is saved per receipt in `results/<engine>/<receipt>.json`, holding the raw reply,
-the parsed JSON, the seconds taken and any OCR lines with confidence (the `engine_runs` table of the PRD).
-Re-running skips receipts that are already done; use `--force` to redo them, or `--receipt r007` for one.
-OCR + LLM engines first OCR every receipt and then structure every receipt, so the GPU swaps models once
-per run rather than once per receipt. Because the first request also loads the model, compare engines on
-median seconds.
+Each engine's output is saved per item in `results/<engine>/<item>.json`, holding the raw reply, the parsed
+JSON, the seconds taken and any OCR lines with confidence (the `engine_runs` table of the PRD). Re-running
+skips items that are already done; use `--force` to redo them, or `--receipt r007` (or `p002`) for one. OCR
+engines first OCR every item and then structure every item, so the GPU swaps models once per run. Because
+the first request also loads the model, compare engines on median seconds.
 
-Scoring follows the PRD. Total, date, store and tax must match exactly. A line item counts as found when
-its name is at least 60% similar (`--name-threshold`) and its price is within a cent. The report has:
+The report has a section per kind:
 
-- **Per engine:** field accuracy, line-item precision / recall / F1, receipts fully right, and seconds.
-  It also shows how often the engine's own items + tax = total check passes, and how often the receipt
-  is fully right when that check passes, which tells you whether the check can be trusted for auto-accept.
-- **By condition:** total accuracy for each tag (thermal, faded, multi-photo, …).
-- **Engine pairs:** how often two engines agree on total and date, and whether they are right when they
-  agree. This answers whether to run two engines permanently and use their disagreement for confidence.
-- **Per receipt:** what each engine got right or wrong.
+- **Receipts** (scoring follows the PRD): total, date, store and tax must match exactly; a line item counts
+  as found when its name is at least 60% similar (`--name-threshold`) and its price is within a cent. Per
+  engine: field accuracy, line-item precision / recall / F1, receipts fully right, seconds, and how far the
+  items + tax = total check alone can be trusted. Then accuracy by condition (thermal, faded, …), engine
+  pairs (are they right when they agree?) and per receipt.
+- **Products:** name at least 80% similar, brand and size equal once normalized. Per engine: name, brand,
+  size, all right, seconds; then per product.
 
 ### Bake-off with Docker
 
@@ -219,9 +274,8 @@ docker compose run --rm bakeoff score
 - docTR: `pip install "python-doctr[torch]"`
 - PaddleOCR: `pip install paddleocr paddlepaddle-gpu` (the `paddlepaddle` CPU build also works). Both
   PaddleOCR 2.x and 3.x APIs are handled, but neither has been run here yet.
-- PaddleOCR-VL: llama.cpp supports it (since February 2026), and the workstation's preset has a
-  `[paddleocr-vl]` section. It takes one image per request and fixed task prompts such as
-  `OCR:`, which is how `engines.json` calls it.
+- PaddleOCR-VL: in the workstation's llama.cpp preset (`[paddleocr-vl]`). It takes one image per request and
+  fixed task prompts such as `OCR:`, which is how `engines.json` calls it.
 
 ## Tests
 
@@ -234,13 +288,19 @@ accounts or OCR installs.
 
 ## Not yet tried for real
 
-These were written from the services' documentation and tested only against the stand-ins. Check them
-first tonight:
+These were written from the services' documentation and tested only against the stand-ins:
 
 - **Immich API calls** (`immich.py`): upload, albums, original download, and metadata search for the external
   library. The upload retries without the `deviceAssetId`/`deviceId` fields if the server refuses them.
 - **Google Photos Picker** (`picker.py`): OAuth, sessions, media items, download.
-- **The engines:** `qwen3-vl-8b` and `paddleocr-vl` are in the workstation's preset and load; neither
-  has read a receipt yet. PaddleOCR and docTR haven't been run (Tesseract has).
-- **Model output on real receipts:** the checks and buckets are only as good as the readings. The bake-off
-  measures that.
+- **The engines on real photos:** `qwen3-vl-8b` and `paddleocr-vl` load on the workstation but haven't read
+  a receipt or product yet; PaddleOCR and docTR haven't been run (Tesseract has). The checks and buckets are
+  only as good as the readings; the bake-off measures that.
+
+## Later
+
+- **Budget on Postgres, with receipt tags** (noted 2026-11-02): migrate the budget project to a Postgres
+  database, and have budget read this project's receipt data so it can tag each bank transaction as having a
+  receipt photo or not. That work belongs in budget. Open with it: whether photo-ocr's store moves to the
+  same Postgres (the PRD's "SQLite or Postgres?" question), which would let budget read receipts directly
+  instead of through this service's API. No Postgres runs on the workstation yet.

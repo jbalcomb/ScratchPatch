@@ -1,5 +1,5 @@
-"""The Receipts service's HTTP API (photo-ocr/API.md), its settings and readiness checks, shared by the
-Receipts jobs. Amounts from the service are integer cents."""
+"""The photo OCR service's HTTP API (photo-ocr/API.md), its settings and readiness checks, shared by the
+Photo OCR jobs. Amounts from the service are integer cents."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ from typing import Any
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Problem, Stage, Step, StepError, step
 from taskdeck.shared import http, tailscale
 
-SETTINGS_ID = "receipts_capture"  # the job that stores the settings all Receipts jobs use
-CATEGORY = "Receipts"
+SETTINGS_ID = "photo_ocr_capture"  # the job that stores the settings all Photo OCR jobs use
+CATEGORY = "Photo OCR"
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 SETTINGS = (
-    Field.text("service_url", "Receipts service URL", required=True,
-               help="The workstation's Tailscale Serve address, e.g. https://ai-workstation.tail1234.ts.net:8443"),
+    Field.text("service_url", "Photo OCR service URL", required=True,
+               help="The workstation's Tailscale Serve address, e.g. https://<workstation>.<tailnet>.ts.net:8444"),
     WIFI_ONLY,
 )
 
@@ -43,12 +43,12 @@ def dollars(cents: Any) -> str:
 def _error_message(exc: http.HttpError, url: str) -> str:
     if exc.status is None:
         why = tailscale.why_unreachable(url)
-        return f"Can't reach the receipts service: {why}." if why else str(exc)
+        return f"Can't reach the photo OCR service: {why}." if why else str(exc)
     try:
         error = json.loads(exc.body).get("error")
     except (ValueError, AttributeError):
         error = None
-    return str(error) if error else f"The receipts service answered: {exc}"
+    return str(error) if error else f"the photo OCR service answered: {exc}"
 
 
 def call(settings: dict[str, Any], method: str, path: str, *, params: dict[str, Any] | None = None,
@@ -66,7 +66,7 @@ def call(settings: dict[str, Any], method: str, path: str, *, params: dict[str, 
     except http.HttpError as exc:
         raise StepError(_error_message(exc, url)) from None
     if not isinstance(data, dict):
-        raise StepError(f"{base_url(settings)} didn't answer like the receipts service. Check the service URL.")
+        raise StepError(f"{base_url(settings)} didn't answer like the photo OCR service. Check the service URL.")
     return data
 
 
@@ -103,12 +103,12 @@ def service_configured(ctx):
 def url_problems(settings: dict[str, Any], phone_itself: bool = True) -> list[Problem]:
     url = base_url(settings)
     if not url:
-        return [Problem("Set the receipts service URL in this job's settings (the tune icon at the top).")]
+        return [Problem("Set the photo OCR service URL in this job's settings (the tune icon at the top).")]
     if not url.startswith(("http://", "https://")):
-        return [Problem("The receipts service URL must start with https:// "
+        return [Problem("the photo OCR service URL must start with https:// "
                         "(e.g. https://ai-workstation.tail1234.ts.net:8443).")]
     if phone_itself and tailscale.host_of(url) in ("localhost", "127.0.0.1"):
-        return [Problem("The receipts service URL points at the phone itself (localhost). "
+        return [Problem("the photo OCR service URL points at the phone itself (localhost). "
                         "Use the workstation's Tailscale Serve address.")]
     return []
 
@@ -120,14 +120,14 @@ def health_problems(settings: dict[str, Any], uses_immich: bool = False) -> list
     except StepError as exc:
         return [Problem(str(exc), fix="recheck")]
     if health.get("ok") is not True:
-        return [Problem("The receipts service isn't ready (its health check failed).", fix="recheck")]
+        return [Problem("the photo OCR service isn't ready (its health check failed).", fix="recheck")]
     if uses_immich and health.get("immich") is False:
-        return [Problem("The receipts service can't reach Immich right now.", blocking=False, fix="recheck")]
+        return [Problem("the photo OCR service can't reach Immich right now.", blocking=False, fix="recheck")]
     return []
 
 
-class ReceiptsJob(JobPlugin):
-    """What every Receipts job shares: the category, the settings and the readiness checks."""
+class PhotoOcrJob(JobPlugin):
+    """What every Photo OCR job shares: the category, the settings and the readiness checks."""
 
     category = CATEGORY
     settings = SETTINGS

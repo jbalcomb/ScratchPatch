@@ -77,8 +77,8 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 
 BODIES = {}
 
-BODIES[""] = ("Receipts", """
-<h1>Receipts</h1>
+BODIES[""] = ("Photo OCR", """
+<h1>Photo OCR</h1>
 <div class="counts" id="counts"></div>
 <p class="muted">Photos of receipts and products land in Immich; the service reads them with the local models. Readings that need a look are under Review.</p>
 <script>
@@ -397,7 +397,7 @@ BODIES["picker"] = ("Google Photos", """
 <script>
 async function load() {
   const s = await api('/api/picker/status');
-  if (!s.configured) { $('#body').innerHTML = '<p class="muted">Not set up yet: the service needs a Google Cloud OAuth client (see the receipts README, Google Photos Picker).</p>'; return; }
+  if (!s.configured) { $('#body').innerHTML = '<p class="muted">Not set up yet: the service needs a Google Cloud OAuth client (see the photo-ocr README, Google Photos Picker).</p>'; return; }
   if (!s.signed_in) { $('#body').innerHTML = `<a class="btn primary" href="${s.auth_url}">Sign in to Google</a>`; return; }
   $('#body').innerHTML = `<p class="muted">Pick photos in Google Photos; they are copied into Immich. Each receipt photo becomes its own receipt.</p>
     <div class="row"><button class="primary" data-a="receipts">Pick receipts</button><button data-a="products">Pick products</button></div>`;
@@ -425,12 +425,12 @@ def render(path):
     section = path.split("/")[0]
     nav = "".join(f'<a href="/{p}" class="{"on" if p == section else ""}">{label}</a>' for p, label in NAV)
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<title>{title} · Receipts</title><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg">'
+            f'<title>{title} · Photo OCR</title><link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg">'
             f'<meta name="theme-color" content="#2f6f4f"><style>{CSS}</style></head>'
             f'<body><header>{nav}</header><main><script>{COMMON_JS}</script>{body}</main></body></html>')
 
 
-MANIFEST = """{"name": "Receipts", "short_name": "Receipts", "start_url": "/capture", "display": "standalone",
+MANIFEST = """{"name": "Photo OCR", "short_name": "Photo OCR", "start_url": "/capture", "display": "standalone",
  "background_color": "#f6f6f4", "theme_color": "#2f6f4f",
  "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]}"""
 

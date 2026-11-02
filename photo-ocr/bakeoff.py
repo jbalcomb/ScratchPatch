@@ -35,7 +35,7 @@ PRODUCT_NAME_MATCH = 0.8  # a product name this similar to the label counts as r
 
 
 def home():
-    return Path(os.environ.get("RECEIPTS_BAKEOFF_HOME") or Path.home() / "receipts" / "bakeoff")
+    return Path(os.environ.get("PHOTO_OCR_BAKEOFF_HOME") or Path.home() / "photo-ocr" / "bakeoff")
 
 
 # ---------------------------------------------------------------- scoring
@@ -417,7 +417,7 @@ def cmd_score(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--home", type=Path, default=home(),
-                   help="test set and results (default ~/receipts/bakeoff, or RECEIPTS_BAKEOFF_HOME)")
+                   help="test set and results (default ~/photo-ocr/bakeoff, or PHOTO_OCR_BAKEOFF_HOME)")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add", help="add one receipt (photos top to bottom) or, with --product, one product")
     a.add_argument("photos", nargs="+")
@@ -429,9 +429,9 @@ def main(argv=None):
     r.add_argument("--all", action="store_true")
     r.add_argument("--force", action="store_true")
     r.add_argument("--receipt", action="append", help="only this item (repeatable), e.g. r007 or p002")
-    r.add_argument("--engines", default=os.environ.get("RECEIPTS_ENGINES") or HERE / "engines.json")
+    r.add_argument("--engines", default=os.environ.get("PHOTO_OCR_ENGINES") or HERE / "engines.json")
     r.set_defaults(func=cmd_run)
-    lb = sub.add_parser("label", help="draft label.draft.json for unlabeled receipts from an engine's output")
+    lb = sub.add_parser("label", help="draft label.draft.json for unlabeled items from an engine's output")
     lb.add_argument("engine")
     lb.set_defaults(func=cmd_label)
     c = sub.add_parser("check", help="sanity-check the hand labels")

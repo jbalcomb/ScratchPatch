@@ -45,8 +45,8 @@ def show_items(ctx):
     )
 
 
-class UnmatchedItems(api.ReceiptsJob):
-    id = "receipts_unmatched"
+class UnmatchedItems(api.PhotoOcrJob):
+    id = "photo_ocr_unmatched"
     title = "Unmatched items"
     description = "Receipt lines not yet matched to a product, with the suggested match; accept the confident ones."
     icon = "LINK_OFF"

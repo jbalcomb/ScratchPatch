@@ -1,4 +1,4 @@
-"""The receipts service's work, without the HTTP: photos in, records out (PRD.md, Architecture).
+"""The photo OCR service's work, without the HTTP: photos of receipts and products in, records out (PRD.md).
 
 web.py serves this over HTTP; a background worker (Service.work_once in a loop) parses what's pending and
 watches Immich for new photos.
@@ -19,10 +19,10 @@ import reconcile
 from db import Store, loads, now
 from parsing import load_engines, norm_store, ocr_photos, parse_photos
 
-log = logging.getLogger("receipts")
+log = logging.getLogger("photo-ocr")
 HERE = Path(__file__).resolve().parent
-ALBUMS = {"receipts": os.environ.get("RECEIPTS_ALBUM", "Receipts"),
-          "products": os.environ.get("PRODUCTS_ALBUM", "Products")}
+ALBUMS = {"receipts": os.environ.get("PHOTO_OCR_RECEIPTS_ALBUM", "Receipts"),
+          "products": os.environ.get("PHOTO_OCR_PRODUCTS_ALBUM", "Products")}
 
 
 class NotFound(Exception):
@@ -36,16 +36,16 @@ class Service:
         self.home.mkdir(parents=True, exist_ok=True)
         self.cache = self.home / "cache"
         self.cache.mkdir(exist_ok=True)
-        self.store = Store(self.home / "receipts.db")
+        self.store = Store(self.home / "photo-ocr.db")
         self.photos = photos if photos is not None else immich.from_env(self.home)
-        self.engines = load_engines(engines_path or env.get("RECEIPTS_ENGINES") or HERE / "engines.json")
+        self.engines = load_engines(engines_path or env.get("PHOTO_OCR_ENGINES") or HERE / "engines.json")
         # Which engines read each kind of photo; the first one's reading is used, the others are second opinions.
-        self.parse_engines = self._engine_list(env, "RECEIPTS_ENGINE", [next(iter(self.engines))])
-        self.product_engines = self._engine_list(env, "RECEIPTS_PRODUCT_ENGINE", [e["name"] for e in self.parse_engines])
-        url = env.get("RECEIPTS_LLM_URL") or env.get("LLM_URL")
+        self.parse_engines = self._engine_list(env, "PHOTO_OCR_RECEIPT_ENGINE", [next(iter(self.engines))])
+        self.product_engines = self._engine_list(env, "PHOTO_OCR_PRODUCT_ENGINE", [e["name"] for e in self.parse_engines])
+        url = env.get("PHOTO_OCR_LLM_URL") or env.get("LLM_URL")
         self.text_engine = {"name": "text", "kind": "text", "url": url,
                             # The vision model also does text, so receipt work never swaps the coding model in.
-                            "model": env.get("RECEIPTS_TEXT_MODEL") or "qwen3-vl-8b"} if url else None
+                            "model": env.get("PHOTO_OCR_TEXT_MODEL") or "qwen3-vl-8b"} if url else None
         self.library_id = env.get("IMMICH_LIBRARY_ID")
         self.budget_db = env.get("BUDGET_DB") or str(Path.home() / "budget" / "budget.db")
         self.wake = threading.Event()

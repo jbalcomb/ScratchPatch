@@ -6,21 +6,21 @@ x-common: &common
   # Host networking: reaches the llama.cpp server and Immich on the workstation like any local
   # program. The service listens on localhost:8093 only; Tailscale Serve makes it reachable (README).
   network_mode: host
-  user: "${UID:-1000}:${GID:-1000}"   # files in ~/receipts belong to you, not root
+  user: "${UID:-1000}:${GID:-1000}"   # files in ~/photo-ocr belong to you, not root
   env_file:
     - ${HOME}/.config/secrets.env                   # LLM_URL, LLM_API_KEY
-    - path: ${HOME}/.config/receipts.env            # IMMICH_*, RECEIPTS_*, GOOGLE_* (README)
+    - path: ${HOME}/.config/photo-ocr.env           # IMMICH_*, PHOTO_OCR_*, GOOGLE_* (README)
       required: false
   volumes:
-    - ${HOME}/receipts:/data                        # store, photo cache, bake-off set and results
+    - ${HOME}/photo-ocr:/data                       # store, photo cache, bake-off set and results
     - ./engines.json:/app/engines.json:ro           # edit engines without a rebuild
-    - ${HOME}/budget:/budget:ro                     # the budget store, for "Sync from budget"
+    - ${HOME}/budget:/budget:ro                     # budget's bank transactions, read for reconciliation
     - /etc/localtime:/etc/localtime:ro
 
 services:
-  receipts:
+  photo-ocr:
     <<: *common
-    container_name: receipts
+    container_name: photo-ocr
     restart: unless-stopped
     environment:
       BUDGET_DB: /budget/budget.db

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Receipts service: the HTTP API (API.md), the phone pages, and the background worker, in one process.
+"""Photo OCR service: the HTTP API (API.md), the phone pages, and the background worker, in one process.
 
-    python web.py                       # http://127.0.0.1:8093, data in ~/receipts (RECEIPTS_HOME)
+    python web.py                       # http://127.0.0.1:8093, data in ~/photo-ocr (PHOTO_OCR_HOME)
     python web.py --host 0.0.0.0 --port 8093
-    python web.py export-labels         # approved receipts -> the bake-off test set
+    python web.py export-labels         # approved receipts and products -> the bake-off test set
 
 No login: keep it behind Tailscale Serve (README.md); don't forward the port to the internet.
 """
@@ -29,7 +29,7 @@ from immich import LocalPhotos  # noqa: E402
 from picker import Picker, PickerError  # noqa: E402
 from service import ALBUMS, NotFound, Service  # noqa: E402
 
-log = logging.getLogger("receipts")
+log = logging.getLogger("photo-ocr")
 MAX_BYTES = 80 * 1024 * 1024   # one request: several full-size phone photos
 PHOTO_TYPES = (".jpg", ".jpeg", ".png", ".webp", ".heic")
 
@@ -144,6 +144,7 @@ class App:
         # immich: null when not set up (photos are kept locally), false when set up but not answering.
         immich_state = None if isinstance(self.s.photos, LocalPhotos) else self.s.photos.ping()
         return 200, {"ok": True, "immich": immich_state, "engines": [e["name"] for e in self.s.parse_engines],
+                     "product_engines": [e["name"] for e in self.s.product_engines],
                      "version": 1}
 
     def post_receipt(self, m, q, b, h):
@@ -212,7 +213,7 @@ class App:
     def _picker(self):
         if not self.picker or not self.picker.configured:
             raise HttpError(409, "Google Photos isn't set up: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and "
-                                 "RECEIPTS_PUBLIC_URL (README.md)")
+                                 "PHOTO_OCR_PUBLIC_URL (README.md)")
         return self.picker
 
     def picker_status(self, m, q, b, h):
@@ -300,7 +301,7 @@ class App:
 
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "receipts/1"
+        server_version = "photo-ocr/1"
 
         def _do(self, method):
             url = urlparse(self.path)
@@ -346,19 +347,19 @@ def make_handler(app):
             self._do("DELETE")
 
         def log_message(self, fmt, *args):
-            if os.environ.get("RECEIPTS_ACCESS_LOG"):
+            if os.environ.get("PHOTO_OCR_ACCESS_LOG"):
                 super().log_message(fmt, *args)
 
     return Handler
 
 
 def home():
-    return Path(os.environ.get("RECEIPTS_HOME") or Path.home() / "receipts")
+    return Path(os.environ.get("PHOTO_OCR_HOME") or Path.home() / "photo-ocr")
 
 
 def make_picker(service):
     env = os.environ
-    return Picker(service.store, env.get("GOOGLE_CLIENT_ID"), env.get("GOOGLE_CLIENT_SECRET"), env.get("RECEIPTS_PUBLIC_URL"))
+    return Picker(service.store, env.get("GOOGLE_CLIENT_ID"), env.get("GOOGLE_CLIENT_SECRET"), env.get("PHOTO_OCR_PUBLIC_URL"))
 
 
 def main(argv=None):
@@ -366,21 +367,21 @@ def main(argv=None):
     p.add_argument("command", nargs="?", default="serve", choices=["serve", "work", "export-labels"])
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8093)
-    p.add_argument("--home", type=Path, default=home(), help="store and photo cache (default ~/receipts, or RECEIPTS_HOME)")
+    p.add_argument("--home", type=Path, default=home(), help="store and photo cache (default ~/photo-ocr, or PHOTO_OCR_HOME)")
     p.add_argument("--set", type=Path, help="export-labels: the bake-off set folder (default <home>/bakeoff/set)")
     p.add_argument("--interval", type=int, default=60, help="seconds between checks of Immich for new photos")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     service = Service(args.home)
     if args.command == "export-labels":
-        print(f"{service.export_labels(args.set or args.home / 'bakeoff' / 'set')} receipts exported")
+        print(f"{service.export_labels(args.set or args.home / 'bakeoff' / 'set')} receipts and products exported")
         return 0
     if args.command == "work":
         print(json.dumps(service.work_once(), indent=1))
         return 0
     threading.Thread(target=service.run_worker, kwargs={"interval": args.interval}, daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(App(service, make_picker(service))))
-    print(f"receipts on http://{args.host}:{args.port}  (data in {args.home}; engines: "
+    print(f"photo-ocr on http://{args.host}:{args.port}  (data in {args.home}; engines: "
           f"{', '.join(e['name'] for e in service.parse_engines)}; photos: {type(service.photos).__name__})")
     try:
         server.serve_forever()

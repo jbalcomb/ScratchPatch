@@ -36,13 +36,13 @@ def show_unmatched(ctx):
     )
 
 
-class Reconciliation(api.ReceiptsJob):
-    id = "receipts_reconcile"
+class Reconciliation(api.PhotoOcrJob):
+    id = "photo_ocr_reconcile"
     title = "Reconciliation"
     description = ("Match receipts to the bank charges in the budget store, then list receipts with no bank match "
                    "and charges with no receipt.")
     icon = "COMPARE_ARROWS"
-    tags = ("bank", "reconcile", "statement", "budget", "charges", "receipts", "instacart")
+    tags = ("bank", "reconcile", "statement", "budget", "charges", "receipts")
     run_label = "Reconcile"
 
     def build_pipeline(self):
