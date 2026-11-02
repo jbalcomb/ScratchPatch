@@ -19,14 +19,13 @@ CREATE TABLE IF NOT EXISTS receipts (
     total         INTEGER,
     tax           INTEGER,
     location      TEXT,
-    source        TEXT NOT NULL DEFAULT 'in-store', -- in-store, instacart, other
+    source        TEXT NOT NULL DEFAULT 'in-store', -- in-store, other
     engine        TEXT,                             -- the engine whose reading the fields come from
     checks        TEXT,                             -- JSON [{name, ok, detail}]
     confidence    TEXT,                             -- JSON {field: 0..1}
     disagreements TEXT,                             -- JSON {field: {engine: value}}
     error         TEXT,
     note          TEXT,
-    order_text    TEXT,                             -- online orders: the confirmation text it was read from
     approved_at   TEXT
 );
 CREATE TABLE IF NOT EXISTS images (

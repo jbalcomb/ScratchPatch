@@ -169,8 +169,7 @@ async function load() {
   r = await api('/api/receipts/' + id);
   $('#title').textContent = r.merchant || 'Receipt ' + id;
   $('#bucket').innerHTML = `<span class="tag ${r.bucket || r.status}">${r.status === 'approved' ? 'approved' : (r.bucket || r.status)}</span>`;
-  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}" alt="photo ${i.position}"></a>`).join('')
-    + (r.order_text ? `<pre class="card" style="white-space:pre-wrap">${esc(r.order_text)}</pre>` : '');
+  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}" alt="photo ${i.position}"></a>`).join('');
   const sus = new Set(r.suspect);
   const val = (f, v) => (f === 'total' || f === 'tax') ? (v == null ? '' : (v / 100).toFixed(2)) : (v ?? '');
   const dis = r.disagreements || {};
@@ -331,9 +330,6 @@ BODIES["reconcile"] = ("Reconcile", """
 <div id="msg" class="msg"></div>
 <p class="muted">Bank charges come from the budget store; import bank exports there.</p>
 <div class="row"><button class="primary" id="run">Match</button></div>
-<h2>Online order (Instacart)</h2>
-<textarea id="order" rows="4" placeholder="Paste the order confirmation email text"></textarea>
-<div class="row" style="margin-top:6px"><button id="addorder">Add order</button></div>
 <div class="split" style="margin-top:10px"><div><h2>Receipts with no bank charge</h2><div id="receipts"></div></div>
 <div><h2>Charges with no receipt</h2><div id="bank"></div></div></div>
 <script>
@@ -353,8 +349,6 @@ async function load() {
 }
 $('#run').onclick = async () => { try { const r = await api('/api/reconcile/run', {json: {}});
   say(`${r.bank_new} new bank charges from budget; ${r.matched} matched.`); load(); } catch (x) { say(x.message, true); } };
-$('#addorder').onclick = async () => { try { const r = await api('/api/orders', {json: {text: $('#order').value, source: 'instacart'}});
-  $('#order').value = ''; say(`Order saved as receipt ${r.id}; it is being read, then appears under Review.`); } catch (x) { say(x.message, true); } };
 load().catch(e => say(e.message, true));
 </script>""")
 

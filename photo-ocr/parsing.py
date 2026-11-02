@@ -130,17 +130,6 @@ TEXT_PROMPT = """Below is OCR text from one store receipt (it may come from seve
 """ + PROMPT.split("\n\n", 1)[1] + "\n\nOCR text:\n{text}"
 
 
-ORDER_PROMPT = """Below is an online grocery order confirmation (for example an Instacart email). Structure the
-items actually delivered (leave out items marked refunded, unavailable or not found; use the replacement when
-an item was replaced).
-
-""" + PROMPT.split("\n\n", 1)[1].replace("printed for that line", "charged for that line") + """
-- Service fees, delivery fees and tips are items too, so that items + tax = the total charged.
-
-Order:
-{text}"""
-
-
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -327,19 +316,16 @@ def ocr_photos(engine, paths):
         return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.monotonic() - t0, 2)}
 
 
-def parse_receipt(engine, paths, ocr=None, text=None):
+def parse_receipt(engine, paths, ocr=None):
     """One receipt (its photos in order) through one engine; never raises.
 
     -> {"engine", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
-    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model).
-    text: structure this text instead of photos (an online order's email), with the engine's text model."""
+    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model)."""
     run = {"engine": engine["name"], "raw": None, "parsed": None, "error": None, "seconds": None,
            "at": datetime.now().isoformat(timespec="seconds")}
     t0, extra = time.monotonic(), 0.0
     try:
-        if text is not None:
-            content = ORDER_PROMPT.replace("{text}", text)
-        elif engine["kind"] == "vlm":
+        if engine["kind"] == "vlm":
             content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": PROMPT}]
         elif engine["kind"] == "ocr_llm":
             ocr = ocr or ocr_photos(engine, paths)

@@ -406,7 +406,7 @@ def test_google_photos_picker(api):
     assert api.svc.counts()["pending"] == 2 and api.google.deleted == ["sess1"]
 
 
-# ------------------------------------------------------------ reconciliation and orders
+# ------------------------------------------------------------ reconciliation
 
 def make_budget_db(path, rows):
     """A store laid out like budget.db's transactions table."""
@@ -417,7 +417,7 @@ def make_budget_db(path, rows):
     con.close()
 
 
-def test_reconcile_reads_budget(api, model, tmp_path):
+def test_reconcile_reads_budget(api, tmp_path):
     assert api("POST", "/api/reconcile/run", {})[0] == 409  # no budget store yet
     api.svc.budget_db = str(tmp_path / "budget.db")
     make_budget_db(api.svc.budget_db, [
@@ -428,20 +428,10 @@ def test_reconcile_reads_budget(api, model, tmp_path):
     api.svc.parse_pending()
     api.svc.edit(1, {"approve": True})
 
-    model.order = {"store": "Instacart (Aldi)", "date": "2026-10-15", "tax": 1.10,
-                   "items": [{"name": "Eggs", "price": 3.00}, {"name": "Service fee", "price": 48.00}], "total": 52.10}
-    eml = (b"From: orders@instacart.com\r\nSubject: Your order receipt\r\nContent-Type: text/html\r\n\r\n"
-           b"<html><body><p>Eggs $3.00</p><br>Total $52.10</body></html>")
-    status, o = api("POST", "/api/orders", eml, "message/rfc822")
-    assert status == 201
-    api.svc.parse_pending()
-    order = api.svc.receipt(o["id"])
-    assert order["source"] == "instacart" and order["total"] == 5210 and "Eggs $3.00" in order["order_text"]
-    api.svc.edit(o["id"], {"approve": True})
-
-    assert api("POST", "/api/reconcile/run", {})[1] == {"matched": 2, "bank_rows": 3, "bank_new": 3}
+    assert api("POST", "/api/reconcile/run", {})[1] == {"matched": 1, "bank_rows": 3, "bank_new": 3}
     rec = api("GET", "/api/reconcile")[1]
-    assert rec["receipts_unmatched"] == [] and [b["description"] for b in rec["bank_unmatched"]] == ["SUNOCO 0408780500 PURCHASE"]
+    assert rec["receipts_unmatched"] == []
+    assert [b["description"] for b in rec["bank_unmatched"]] == ["INSTACART*ORDER SAN FRANCISCO CA", "SUNOCO 0408780500 PURCHASE"]
     assert api("POST", "/api/reconcile/match", {"receipt_id": 1, "unmatch": True})[1] == {"ok": True}
     assert len(api("GET", "/api/reconcile")[1]["receipts_unmatched"]) == 1
 

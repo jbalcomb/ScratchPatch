@@ -115,15 +115,10 @@ Open `picker_uri`, choose the photos, then poll:
 `GET /api/picker/sessions/{id}` → `{"state": "waiting"|"importing"|"done"|"error", "imported": 3, "error": null}`.
 Photos chosen for `receipts` become **one receipt each**. Use merge for one receipt photographed in parts.
 
-## Reconciliation (bank and online orders)
+## Reconciliation (bank)
 
 Bank transactions come only from the budget project's store (`BUDGET_DB`, read-only). Bank exports are
 imported in budget, and new accounts or banks are added there; this service has no bank import of its own.
-
-`POST /api/orders`: an online order (Instacart and others). The body is the order confirmation email (`.eml`,
-or text pasted in as JSON `{"text": "...", "source": "instacart"}`). The text model structures it into a
-receipt with `source` `instacart`, with no photos, which then goes through the same checks.
-→ `201 {"id": 18, "status": "pending"}`
 
 `POST /api/reconcile/run` first copies new transactions from budget's store, then matches automatically
 (merchant, amount, bank date 1 day before to 5 days after the purchase).

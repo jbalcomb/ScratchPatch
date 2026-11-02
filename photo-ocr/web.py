@@ -98,7 +98,6 @@ class App:
             ("GET", r"/api/picker/status", self.picker_status),
             ("POST", r"/api/picker/sessions", self.picker_start),
             ("GET", r"/api/picker/sessions/([\w.-]+)", self.picker_session),
-            ("POST", r"/api/orders", self.post_order),
             ("POST", r"/api/reconcile/run", self.reconcile_run),
             ("GET", r"/api/reconcile", self.get_reconcile),
             ("POST", r"/api/reconcile/match", self.reconcile_match),
@@ -179,15 +178,6 @@ class App:
         path = self.s.image_path(int(m[1]))
         ctype = {".png": "image/png", ".webp": "image/webp", ".heic": "image/heic"}.get(path.suffix.lower(), "image/jpeg")
         return 200, (path.read_bytes(), ctype)
-
-    def post_order(self, m, q, b, h):
-        ctype = h.get("Content-Type", "")
-        if ctype.startswith("application/json"):
-            data = self.json(b)
-            text, source = str(data.get("text") or ""), data.get("source") or "instacart"
-        else:
-            text, source = email_text(b), q.get("source", "instacart")
-        return 201, {"id": self.s.create_order(text, source), "status": "pending"}
 
     # ---- items and products ----
 
@@ -301,26 +291,6 @@ class App:
 
     def page(self, m, q, b, h):
         return 200, (pages.render(m[1]).encode(), "text/html; charset=utf-8")
-
-
-def email_text(raw):
-    """The readable text of an .eml (plain part, else the HTML stripped), or the body as-is."""
-    msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(raw)
-    if not msg.get("From") and not msg.get("Subject"):
-        return raw.decode("utf-8", "replace")
-    part = msg.get_body(preferencelist=("plain", "html"))
-    if part is None:
-        return raw.decode("utf-8", "replace")
-    text = part.get_content()
-    if part.get_content_subtype() == "html":
-        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
-        text = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", text)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"&nbsp;", " ", text)
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n\s*\n+", "\n", text)
-    subject = msg.get("Subject")
-    return (f"Subject: {subject}\n" if subject else "") + text.strip()
 
 
 def make_handler(app):

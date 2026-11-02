@@ -16,7 +16,7 @@ the tests use stand-ins for those (see **Not yet tried for real** at the end).
 | 3 | Parsing, checks, confidence buckets, review page | `checks.py`, `/review` |
 | 4 | Syncthing (Immich external library), Google Photos Picker | `service.py`, `picker.py`, `/picker` |
 | 5 | Product gallery, catalog, line-item matching with aliases, shopping list | `catalog.py`, `/items`, `/products`, `/shopping` |
-| 6 | Reconciliation against budget's bank transactions, online orders | `reconcile.py`, `/reconcile` |
+| 6 | Reconciliation against budget's bank transactions | `reconcile.py`, `/reconcile` |
 
 The TaskDeck plug-ins (Receipts and Reconciliation jobs) are in `taskdeck/src/taskdeck/jobs/receipts/`
 ([taskdeck/docs/jobs/receipts.md](../taskdeck/docs/jobs/receipts.md)). The heavy screens, such as the photo
@@ -49,7 +49,7 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
    | `IMMICH_URL`, `IMMICH_API_KEY` | Immich, e.g. `http://localhost:2283`. The key needs asset upload/read and album read/create/update. Without them, photos stay in `~/receipts/photos/`. |
    | `RECEIPTS_ENGINE` | engine(s) from `engines.json`, e.g. `qwen3-vl-8b` or `qwen3-vl-8b,tesseract+llm` |
    | `RECEIPTS_PRODUCT_ENGINE` | vision engine for product photos (default: the first `vlm` engine) |
-   | `RECEIPTS_LLM_URL`, `RECEIPTS_TEXT_MODEL` | model server and text model for orders and hard catalog matches (default `LLM_URL` and `qwen3-vl-8b`, so receipt work doesn't load the coding model) |
+   | `RECEIPTS_LLM_URL`, `RECEIPTS_TEXT_MODEL` | model server and text model for hard catalog matches (default `LLM_URL` and `qwen3-vl-8b`, so receipt work doesn't load the coding model) |
    | `RECEIPTS_ALBUM`, `PRODUCTS_ALBUM` | album names (default `Receipts`, `Products`; created if missing) |
    | `IMMICH_LIBRARY_ID` | the Syncthing external library (below) |
    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RECEIPTS_PUBLIC_URL` | Google Photos Picker (below) |
@@ -107,8 +107,7 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
   purchases needed).
 - **`/reconcile`:** *Match* reads the latest bank transactions from the budget store (`~/budget/budget.db`;
   bank exports are imported in budget, not here), then matches each approved receipt to a charge with the
-  same amount, a similar merchant, and a bank date from one day before to five days after the purchase. Paste an Instacart order confirmation email to add it as a receipt (source
-  *instacart*); it goes through the same checks.
+  same amount, a similar merchant, and a bank date from one day before to five days after the purchase.
 
 ## The bake-off (phase 1)
 
@@ -243,6 +242,5 @@ first tonight:
 - **Google Photos Picker** (`picker.py`): OAuth, sessions, media items, download.
 - **The engines:** `qwen3-vl-8b` and `paddleocr-vl` are in the workstation's preset and load; neither
   has read a receipt yet. PaddleOCR and docTR haven't been run (Tesseract has).
-- **Instacart:** order emails are read by the text model; there's no Instacart API (PRD open question).
 - **Model output on real receipts:** the checks and buckets are only as good as the readings. The bake-off
   measures that.

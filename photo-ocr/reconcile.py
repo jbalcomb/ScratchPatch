@@ -1,4 +1,4 @@
-"""Bank and online-order reconciliation (PRD.md, Later): match each receipt to its bank charge.
+"""Bank reconciliation (PRD.md, Later): match each receipt to its bank charge.
 
 Bank transactions come only from the budget project's store (budget.db), read-only. Budget is where bank
 exports are imported; more accounts or banks are added there, not here.
@@ -69,8 +69,6 @@ def candidates(store, receipt, bank_rows=None):
         if not d - timedelta(days=DAYS_BEFORE) <= bd <= d + timedelta(days=DAYS_AFTER):
             continue
         ms = _merchant_score(receipt["merchant"], b["description"])
-        if receipt["source"] == "instacart" and "instacart" in b["description"].lower():
-            ms = max(ms, 1.0)
         if ms < 0.5:
             continue
         out.append((ms - abs((bd - d).days) * 0.02, b))

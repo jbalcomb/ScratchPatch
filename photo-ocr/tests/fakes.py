@@ -72,14 +72,13 @@ RECEIPT = {"store": "Giant Eagle", "location": "Mentor, OH", "date": "2026-10-12
 
 class FakeModel:
     """An OpenAI-compatible chat endpoint. Answers by what is asked: receipts get self.receipt (per model
-    name, see by_model), products self.product, catalog picks self.pick, online orders self.order."""
+    name, see by_model), products self.product and catalog picks self.pick."""
 
     def __init__(self):
         self.receipt = json.loads(json.dumps(RECEIPT))
         self.by_model = {}
         self.product = {"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}
         self.pick = None
-        self.order = None
         self.fail = False
         self.server = Server(self.handle)
         self.url = self.server.url
@@ -95,8 +94,6 @@ class FakeModel:
             reply = self.product
         elif "Which of these catalog products" in text:
             reply = {"product_id": self.pick}
-        elif "online grocery order" in text:
-            reply = self.order
         else:
             reply = self.by_model.get(req.get("model"), self.receipt)
         return 200, {"choices": [{"message": {"content": json.dumps(reply)}}]}, None

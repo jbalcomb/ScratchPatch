@@ -114,15 +114,6 @@ class Service:
         self.reparse(rid)
         return self.store.one("SELECT COUNT(*) AS n FROM images WHERE receipt_id = ?", rid)["n"]
 
-    def create_order(self, text, source="instacart"):
-        """An online order (no photos): its confirmation text, structured by the text model."""
-        if not text.strip():
-            raise ValueError("empty order text")
-        rid = self.store.x("INSERT INTO receipts (created_at, status, source, order_text) VALUES (?, 'pending', ?, ?)",
-                           now(), source, text)
-        self.wake.set()
-        return rid
-
     def reparse(self, rid):
         self._receipt_row(rid)
         self.store.x("UPDATE receipts SET status = 'pending', bucket = NULL, error = NULL, approved_at = NULL WHERE id = ?", rid)
@@ -155,7 +146,7 @@ class Service:
         if not pending:
             return 0
         runs = {r["id"]: {} for r in pending}
-        photo_receipts = [r for r in pending if not r["order_text"]]
+        photo_receipts = pending
         paths = {}
         for r in photo_receipts:
             try:
@@ -168,12 +159,7 @@ class Service:
             for r in ready:
                 runs[r["id"]][engine["name"]] = parse_receipt(engine, paths[r["id"]], ocr=ocr.get(r["id"]))
         for r in pending:
-            if r["order_text"]:
-                if not self.text_engine:
-                    self._fail(r["id"], "no text model configured (LLM_URL)")
-                    continue
-                runs[r["id"]]["text"] = parse_receipt(self.text_engine, [], text=r["order_text"])
-            elif r["id"] not in paths:
+            if r["id"] not in paths:
                 continue
             elif not paths[r["id"]]:
                 self._fail(r["id"], "the receipt has no photos")
@@ -269,7 +255,6 @@ class Service:
             "checks": loads(r["checks"], []), "confidence": loads(r["confidence"], {}),
             "disagreements": loads(r["disagreements"], {}),
             "runs": self.store.q("SELECT engine, seconds, error FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC LIMIT 4", rid),
-            "order_text": r["order_text"],
         })
         return out
 
@@ -496,7 +481,7 @@ class Service:
         """Approved photo receipts -> bake-off test-set folders (photos + label.json), so corrections grow it."""
         set_dir = Path(set_dir)
         n = 0
-        for r in self.store.q("SELECT * FROM receipts WHERE status = 'approved' AND order_text IS NULL"):
+        for r in self.store.q("SELECT * FROM receipts WHERE status = 'approved'"):
             dest = set_dir / f"s{r['id']:04d}"
             if dest.exists():
                 continue
