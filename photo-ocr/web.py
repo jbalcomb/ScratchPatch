@@ -89,11 +89,12 @@ class App:
             ("GET", r"/api/images/(\d+)", self.image),
             ("GET", r"/api/items/unmatched", lambda m, q, b, h: (200, {"items": self.s.unmatched_items(q.get("limit", 50))})),
             ("POST", r"/api/items/(\d+)/match", self.match_item),
-            ("GET", r"/api/products", lambda m, q, b, h: (200, {"products": self.s.products(q.get("q"))})),
+            ("GET", r"/api/products", lambda m, q, b, h: (200, {"products": self.s.products(q.get("q"), q.get("status"))})),
             ("POST", r"/api/products", self.post_product),
             ("GET", r"/api/products/(\d+)", lambda m, q, b, h: (200, self.s.product(int(m[1])))),
             ("POST", r"/api/products/(\d+)", lambda m, q, b, h: (200, self.s.edit_product(int(m[1]), self.json(b)))),
             ("POST", r"/api/products/(\d+)/merge", self.merge_product),
+            ("POST", r"/api/products/(\d+)/reparse", self.reparse_product),
             ("GET", r"/api/shopping-list", lambda m, q, b, h: (200, catalog.shopping_list(self.s.store))),
             ("GET", r"/api/picker/status", self.picker_status),
             ("POST", r"/api/picker/sessions", self.picker_start),
@@ -195,6 +196,10 @@ class App:
         fields, files = self.form(h, b)
         pid = self.s.create_product(photos_from(files), name=fields.get("name") or None)
         return 201, {"id": pid, "status": "pending" if not fields.get("name") else "ready"}
+
+    def reparse_product(self, m, q, b, h):
+        self.s.reparse_product(int(m[1]))
+        return 200, {"status": "pending"}
 
     def merge_product(self, m, q, b, h):
         into = self.json(b).get("into")

@@ -68,12 +68,19 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     created_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS products (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT,
-    brand      TEXT,
-    size       TEXT,
-    status     TEXT NOT NULL DEFAULT 'ready',       -- pending (being read from its photo), ready
-    created_at TEXT NOT NULL
+    id            INTEGER PRIMARY KEY,
+    name          TEXT,
+    brand         TEXT,
+    size          TEXT,
+    status        TEXT NOT NULL DEFAULT 'ready',    -- pending, review (needs a person), ready, failed
+    bucket        TEXT,                             -- auto, review, retake (NULL for products made by hand)
+    engine        TEXT,                             -- the engine whose reading the fields come from
+    checks        TEXT,                             -- JSON [{name, ok, detail}]
+    confidence    TEXT,                             -- JSON {field: 0..1}
+    disagreements TEXT,                             -- JSON {field: {engine: value}}
+    error         TEXT,
+    created_at    TEXT NOT NULL,
+    approved_at   TEXT
 );
 CREATE TABLE IF NOT EXISTS product_aliases (
     norm_text  TEXT PRIMARY KEY,                    -- normalized receipt text
@@ -84,6 +91,7 @@ CREATE TABLE IF NOT EXISTS product_aliases (
 CREATE TABLE IF NOT EXISTS corrections (                -- every hand edit, so the labeled set grows
     id         INTEGER PRIMARY KEY,
     receipt_id INTEGER REFERENCES receipts(id) ON DELETE CASCADE,
+    product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
     field      TEXT NOT NULL,
     before     TEXT,
     after      TEXT,

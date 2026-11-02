@@ -17,7 +17,7 @@ import checks
 import immich
 import reconcile
 from db import Store, loads, now
-from parsing import load_engines, norm_store, ocr_photos, parse_receipt
+from parsing import load_engines, norm_store, ocr_photos, parse_photos
 
 log = logging.getLogger("receipts")
 HERE = Path(__file__).resolve().parent
@@ -39,14 +39,9 @@ class Service:
         self.store = Store(self.home / "receipts.db")
         self.photos = photos if photos is not None else immich.from_env(self.home)
         self.engines = load_engines(engines_path or env.get("RECEIPTS_ENGINES") or HERE / "engines.json")
-        names = [n.strip() for n in (env.get("RECEIPTS_ENGINE") or "").split(",") if n.strip()] or [next(iter(self.engines))]
-        unknown = [n for n in names if n not in self.engines]
-        if unknown:
-            raise ValueError(f"RECEIPTS_ENGINE names {', '.join(unknown)}, not in engines.json ({', '.join(self.engines)})")
-        self.parse_engines = [self.engines[n] for n in names]  # the first is the one whose reading is used
-        vision = env.get("RECEIPTS_PRODUCT_ENGINE") or next((n for n in names if self.engines[n]["kind"] == "vlm"),
-                                                             next((n for n, e in self.engines.items() if e["kind"] == "vlm"), None))
-        self.product_engine = self.engines.get(vision) if vision else None
+        # Which engines read each kind of photo; the first one's reading is used, the others are second opinions.
+        self.parse_engines = self._engine_list(env, "RECEIPTS_ENGINE", [next(iter(self.engines))])
+        self.product_engines = self._engine_list(env, "RECEIPTS_PRODUCT_ENGINE", [e["name"] for e in self.parse_engines])
         url = env.get("RECEIPTS_LLM_URL") or env.get("LLM_URL")
         self.text_engine = {"name": "text", "kind": "text", "url": url,
                             # The vision model also does text, so receipt work never swaps the coding model in.
@@ -55,6 +50,13 @@ class Service:
         self.budget_db = env.get("BUDGET_DB") or str(Path.home() / "budget" / "budget.db")
         self.wake = threading.Event()
         self.work_lock = threading.Lock()
+
+    def _engine_list(self, env, var, default):
+        names = [n.strip() for n in (env.get(var) or "").split(",") if n.strip()] or default
+        unknown = [n for n in names if n not in self.engines]
+        if unknown:
+            raise ValueError(f"{var} names {', '.join(unknown)}, not in engines.json ({', '.join(self.engines)})")
+        return [self.engines[n] for n in names]
 
     # ------------------------------------------------------------ photos
 
@@ -87,6 +89,10 @@ class Service:
     def receipt_photos(self, receipt_id):
         return [self.image_path(i["id"]) for i in
                 self.store.q("SELECT id FROM images WHERE receipt_id = ? ORDER BY position, id", receipt_id)]
+
+    def product_photos(self, product_id):
+        return [self.image_path(i["id"]) for i in
+                self.store.q("SELECT id FROM images WHERE product_id = ? ORDER BY position, id", product_id)]
 
     # ------------------------------------------------------------ receipts in
 
@@ -140,31 +146,49 @@ class Service:
     def known_stores(self):
         return {r["norm_name"] for r in self.store.q("SELECT norm_name FROM stores")}
 
-    def parse_pending(self, limit=20):
-        """Parse pending receipts: engine by engine (OCR first), so the GPU swaps models as little as possible."""
-        pending = self.store.q("SELECT * FROM receipts WHERE status = 'pending' ORDER BY id LIMIT ?", limit)
-        if not pending:
-            return 0
-        runs = {r["id"]: {} for r in pending}
-        photo_receipts = pending
-        paths = {}
-        for r in photo_receipts:
+    def _read_batch(self, rows, photos_of, kind, engines):
+        """Read a batch of receipts or products: engine by engine (all OCR first), so the GPU swaps models as
+        little as possible. -> {id: {engine: run}} for the rows whose photos could be fetched, and
+        {id: error} for those with no photos."""
+        paths, missing = {}, {}
+        for r in rows:
             try:
-                paths[r["id"]] = self.receipt_photos(r["id"])
+                paths[r["id"]] = photos_of(r["id"])
             except Exception as e:  # noqa: BLE001 - e.g. Immich is down; try again later
-                log.warning("receipt %s: photos unavailable: %s", r["id"], e)
-        for engine in self.parse_engines:
-            ready = [r for r in photo_receipts if r["id"] in paths and paths[r["id"]]]
-            ocr = {r["id"]: ocr_photos(engine, paths[r["id"]]) for r in ready} if engine["kind"] == "ocr_llm" else {}
-            for r in ready:
-                runs[r["id"]][engine["name"]] = parse_receipt(engine, paths[r["id"]], ocr=ocr.get(r["id"]))
+                log.warning("%s %s: photos unavailable: %s", kind, r["id"], e)
+                continue
+            if not paths[r["id"]]:
+                missing[r["id"]] = f"the {kind} has no photos"
+                del paths[r["id"]]
+        runs = {i: {} for i in paths}
+        for engine in engines:
+            ocr = {i: ocr_photos(engine, p) for i, p in paths.items()} if engine["kind"] == "ocr_llm" else {}
+            for i, p in paths.items():
+                runs[i][engine["name"]] = parse_photos(engine, p, kind, ocr=ocr.get(i))
+        return runs, missing
+
+    @staticmethod
+    def _server_down(run):
+        """The model server didn't answer: not the photo's fault, so leave it pending for the next round."""
+        return run["parsed"] is None and re.match(r"(URLError|TimeoutError|ConnectionError|ConnectionRefusedError|"
+                                                  r"RemoteDisconnected)\b", run["error"] or "")
+
+    def _save_runs(self, runs, receipt_id=None, product_id=None):
+        for run in runs.values():
+            self.store.x("INSERT INTO engine_runs (receipt_id, product_id, engine, raw_output, parsed_json, ocr_json, error, "
+                         "seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", receipt_id, product_id, run["engine"],
+                         run["raw"], json.dumps(run["parsed"]) if run["parsed"] is not None else None,
+                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run["error"], run["seconds"], now())
+
+    def parse_pending(self, limit=20):
+        """Read pending receipts."""
+        pending = self.store.q("SELECT * FROM receipts WHERE status = 'pending' ORDER BY id LIMIT ?", limit)
+        runs, missing = self._read_batch(pending, self.receipt_photos, "receipt", self.parse_engines)
+        for rid, error in missing.items():
+            self._fail(rid, error)
         for r in pending:
-            if r["id"] not in paths:
-                continue
-            elif not paths[r["id"]]:
-                self._fail(r["id"], "the receipt has no photos")
-                continue
-            self._apply_runs(r, runs[r["id"]])
+            if r["id"] in runs:
+                self._apply_runs(r, runs[r["id"]])
         return len(pending)
 
     def _fail(self, rid, error):
@@ -173,15 +197,10 @@ class Service:
     def _apply_runs(self, receipt, runs):
         rid = receipt["id"]
         primary = next(iter(runs.values()))
-        if primary["parsed"] is None and re.match(r"(URLError|TimeoutError|ConnectionError|ConnectionRefusedError|"
-                                                   r"RemoteDisconnected)\b", primary["error"] or ""):
+        if self._server_down(primary):
             log.warning("receipt %s stays pending, the model server didn't answer: %s", rid, primary["error"])
-            return  # not the receipt's fault: try again on the next round
-        for run in runs.values():
-            self.store.x("INSERT INTO engine_runs (receipt_id, engine, raw_output, parsed_json, ocr_json, error, seconds, created_at) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rid, run["engine"], run["raw"],
-                         json.dumps(run["parsed"]) if run["parsed"] is not None else None,
-                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run["error"], run["seconds"], now())
+            return
+        self._save_runs(runs, receipt_id=rid)
         if primary["parsed"] is None:
             self._fail(rid, primary["error"] or "no reading")
             return
@@ -326,6 +345,8 @@ class Service:
         c = {k: v or 0 for k, v in c.items()}
         c["unmatched_items"] = self.store.one("SELECT COUNT(*) AS n FROM receipt_items WHERE match IS NULL")["n"]
         c["products"] = self.store.one("SELECT COUNT(*) AS n FROM products")["n"]
+        c["products_review"] = self.store.one("SELECT COUNT(*) AS n FROM products WHERE status = 'review'")["n"]
+        c["products_pending"] = self.store.one("SELECT COUNT(*) AS n FROM products WHERE status = 'pending'")["n"]
         c["due"] = len(catalog.shopping_list(self.store)["items"])
         receipts, bank, _ = reconcile.report(self.store)
         c["unreconciled_receipts"], c["unreconciled_bank"] = len(receipts), len(bank)
@@ -359,24 +380,39 @@ class Service:
         self.wake.set()
         return pid
 
-    def read_pending_products(self):
-        n = 0
-        for p in self.store.q("SELECT * FROM products WHERE status = 'pending'"):
-            paths = [self.image_path(i["id"]) for i in self.store.q("SELECT id FROM images WHERE product_id = ? ORDER BY position", p["id"])]
-            raw, parsed, error = None, {}, None
-            if not self.product_engine:
-                error = "no vision engine for products (RECEIPTS_PRODUCT_ENGINE)"
-            else:
-                try:
-                    parsed, raw = catalog.read_product(self.product_engine, paths)
-                except Exception as e:  # noqa: BLE001 - name it by hand on the gallery page
-                    error = f"{type(e).__name__}: {e}"
-            self.store.x("INSERT INTO engine_runs (product_id, engine, raw_output, parsed_json, error, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                         p["id"], (self.product_engine or {}).get("name", "-"), raw, json.dumps(parsed), error, now())
-            self.store.x("UPDATE products SET name = ?, brand = ?, size = ?, status = 'ready' WHERE id = ?",
-                         parsed.get("name") or "Unnamed product", parsed.get("brand"), parsed.get("size"), p["id"])
-            n += 1
-        return n
+    def parse_pending_products(self, limit=20):
+        """Read pending product photos with the product engines, then check them like receipts."""
+        pending = self.store.q("SELECT * FROM products WHERE status = 'pending' ORDER BY id LIMIT ?", limit)
+        runs, missing = self._read_batch(pending, self.product_photos, "product", self.product_engines)
+        for pid, error in missing.items():
+            self.store.x("UPDATE products SET status = 'failed', error = ? WHERE id = ?", error, pid)
+        for p in pending:
+            if p["id"] in runs:
+                self._apply_product_runs(p["id"], runs[p["id"]])
+        return len(pending)
+
+    def _apply_product_runs(self, pid, runs):
+        primary = next(iter(runs.values()))
+        if self._server_down(primary):
+            log.warning("product %s stays pending, the model server didn't answer: %s", pid, primary["error"])
+            return
+        self._save_runs(runs, product_id=pid)
+        if primary["parsed"] is None:
+            self.store.x("UPDATE products SET status = 'failed', error = ? WHERE id = ?", primary["error"] or "no reading", pid)
+            return
+        others = {name: run["parsed"] for name, run in runs.items() if run["parsed"] is not None}
+        a = checks.assess_product(primary["parsed"], others if len(others) > 1 else {})
+        rec, auto = a["record"], a["bucket"] == "auto"
+        self.store.x("UPDATE products SET name = ?, brand = ?, size = ?, status = ?, bucket = ?, engine = ?, checks = ?, "
+                     "confidence = ?, disagreements = ?, error = NULL, approved_at = ? WHERE id = ?",
+                     rec["name"], rec["brand"], rec["size"], "ready" if auto else "review", a["bucket"], primary["engine"],
+                     json.dumps(a["checks"]), json.dumps(a["confidence"]), json.dumps(a["disagreements"]),
+                     now() if auto else None, pid)
+
+    def reparse_product(self, pid):
+        self.product(pid)
+        self.store.x("UPDATE products SET status = 'pending', bucket = NULL, error = NULL, approved_at = NULL WHERE id = ?", pid)
+        self.wake.set()
 
     def product(self, pid):
         p = self.store.one("SELECT * FROM products WHERE id = ?", pid)
@@ -387,20 +423,39 @@ class Service:
         out["images"] = [{"id": i["id"], "url": f"/api/images/{i['id']}"} for i in
                          self.store.q("SELECT id FROM images WHERE product_id = ? ORDER BY position, id", pid)]
         out["history"] = catalog.history(self.store, pid)
+        out.update({"checks": loads(p["checks"], []), "confidence": loads(p["confidence"], {}),
+                    "disagreements": loads(p["disagreements"], {}), "error": p["error"],
+                    "runs": self.store.q("SELECT engine, seconds, error FROM engine_runs WHERE product_id = ? "
+                                         "ORDER BY id DESC LIMIT 4", pid)})
         return out
 
-    def products(self, q=None):
+    def products(self, q=None, status=None):
         rows = self.store.q("SELECT * FROM products ORDER BY name COLLATE NOCASE")
+        if status:
+            rows = [p for p in rows if p["status"] == status]
         if q:
             words = q.lower().split()
             rows = [p for p in rows if all(w in catalog.product_label(p).lower() for w in words)]
         return [catalog.product_summary(self.store, p) for p in rows]
 
     def edit_product(self, pid, data):
-        self.product(pid)
-        for f in ("name", "brand", "size"):
-            if f in data:
-                self.store.x(f"UPDATE products SET {f} = ?, status = 'ready' WHERE id = ?", (data[f] or "").strip() or None, pid)
+        """Hand edits; every change is kept as a correction. approve: accept the product (it needs a name)."""
+        p = self.store.one("SELECT * FROM products WHERE id = ?", pid)
+        if not p:
+            raise NotFound(f"no product {pid}")
+        with self.store.tx():
+            for f in ("name", "brand", "size"):
+                if f not in data:
+                    continue
+                v = str(data[f] or "").strip() or None
+                if v != p[f]:
+                    self.store.x("INSERT INTO corrections (product_id, field, before, after, at) VALUES (?, ?, ?, ?, ?)",
+                                 pid, f, p[f], v, now())
+                    self.store.x(f"UPDATE products SET {f} = ? WHERE id = ?", v, pid)
+            if data.get("approve"):
+                if not self.store.one("SELECT name FROM products WHERE id = ?", pid)["name"]:
+                    raise ValueError("a product needs a name before it can be approved")
+                self.store.x("UPDATE products SET status = 'ready', approved_at = ? WHERE id = ?", now(), pid)
         return self.product(pid)
 
     def merge_products(self, pid, into):
@@ -458,7 +513,7 @@ class Service:
         done = {}
         with self.work_lock:
             for name, fn in (("library", self.sync_library), ("albums", self.poll_albums),
-                             ("receipts", self.parse_pending), ("products", self.read_pending_products)):
+                             ("receipts", self.parse_pending), ("products", self.parse_pending_products)):
                 try:
                     done[name] = fn()
                 except Exception as e:  # noqa: BLE001 - keep the worker alive; log and go on
@@ -478,23 +533,32 @@ class Service:
     # ------------------------------------------------------------ labeled set for the bake-off
 
     def export_labels(self, set_dir):
-        """Approved photo receipts -> bake-off test-set folders (photos + label.json), so corrections grow it."""
+        """Approved receipts and products -> bake-off test-set folders (photos + label.json), so corrections grow
+        it. Receipts go to sNNNN folders, products to psNNNN (the bake-off reads a p... folder as a product)."""
         set_dir = Path(set_dir)
+        cents = lambda v: None if v is None else f"{v / 100:.2f}"  # noqa: E731
         n = 0
         for r in self.store.q("SELECT * FROM receipts WHERE status = 'approved'"):
-            dest = set_dir / f"s{r['id']:04d}"
-            if dest.exists():
-                continue
             items = self.store.q("SELECT raw_text, quantity, line_total FROM receipt_items WHERE receipt_id = ? ORDER BY position", r["id"])
-            dest.mkdir(parents=True)
-            for n_photo, path in enumerate(self.receipt_photos(r["id"]), 1):
-                shutil.copy2(path, dest / f"{n_photo}{path.suffix}")
-            cents = lambda v: None if v is None else f"{v / 100:.2f}"  # noqa: E731
             label = {"store": [r["merchant"]] + ([r["merchant_raw"]] if r["merchant_raw"] and r["merchant_raw"] != r["merchant"] else []),
                      "date": r["purchase_date"], "tax": cents(r["tax"]), "total": cents(r["total"]),
                      "items": [{"name": i["raw_text"], "quantity": i["quantity"], "price": cents(i["line_total"])} for i in items]}
-            (dest / "label.json").write_text(json.dumps(label, indent=2) + "\n")
-            if r["bucket"] != "auto":
-                (dest / "tags.txt").write_text("reviewed\n")
-            n += 1
+            n += self._export(set_dir / f"s{r['id']:04d}", self.receipt_photos(r["id"]), label, r["bucket"] != "auto")
+        for p in self.store.q("SELECT * FROM products WHERE status = 'ready' AND approved_at IS NOT NULL"):
+            photos = self.product_photos(p["id"])
+            if photos:
+                n += self._export(set_dir / f"ps{p['id']:04d}", photos,
+                                  {"name": p["name"], "brand": p["brand"], "size": p["size"]}, p["bucket"] != "auto")
         return n
+
+    @staticmethod
+    def _export(dest, photos, label, reviewed):
+        if dest.exists():
+            return 0
+        dest.mkdir(parents=True)
+        for n_photo, path in enumerate(photos, 1):
+            shutil.copy2(path, dest / f"{n_photo}{path.suffix}")
+        (dest / "label.json").write_text(json.dumps(label, indent=2) + "\n")
+        if reviewed:
+            (dest / "tags.txt").write_text("reviewed\n")
+        return 1

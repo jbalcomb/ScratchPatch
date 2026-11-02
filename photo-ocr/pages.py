@@ -80,11 +80,12 @@ BODIES = {}
 BODIES[""] = ("Receipts", """
 <h1>Receipts</h1>
 <div class="counts" id="counts"></div>
-<p class="muted">Photos land in Immich; the service reads them with the local model. Receipts that need a look are under Review.</p>
+<p class="muted">Photos of receipts and products land in Immich; the service reads them with the local models. Readings that need a look are under Review.</p>
 <script>
 api('/api/summary').then(c => {
   const tiles = [['Pending', c.pending, '/review'], ['To review', c.review, '/review'], ['Retake', c.retake, '/review'],
-    ['Unmatched items', c.unmatched_items, '/items'], ['Products', c.products, '/products'], ['Due to buy', c.due, '/shopping'],
+    ['Products to check', c.products_review, '/review?products'], ['Unmatched items', c.unmatched_items, '/items'],
+    ['Products', c.products, '/products'], ['Due to buy', c.due, '/shopping'],
     ['Receipts without bank match', c.unreconciled_receipts, '/reconcile'], ['Charges without receipt', c.unreconciled_bank, '/reconcile']];
   $('#counts').innerHTML = tiles.map(([t, n, u]) => `<a class="card" href="${u}"><b>${n}</b>${t}</a>`).join('');
 }).catch(e => $('#counts').textContent = e.message);
@@ -136,12 +137,23 @@ $('#done').onclick = async () => {
 BODIES["review"] = ("Review", """
 <h1>Review</h1>
 <div class="row"><select id="filter" style="width:auto">
-  <option value="status=parsed">Needs a look</option><option value="status=pending">Pending</option>
-  <option value="status=failed">Failed</option><option value="status=approved">Approved</option><option value="">All</option>
+  <option value="status=parsed">Receipts that need a look</option><option value="products">Products to check</option>
+  <option value="status=pending">Receipts pending</option><option value="status=failed">Receipts failed</option>
+  <option value="status=approved">Receipts approved</option><option value="">All receipts</option>
 </select></div>
 <div id="list" style="margin-top:12px"></div>
 <script>
+if (location.search === '?products') $('#filter').value = 'products';
 async function load() {
+  if ($('#filter').value === 'products') {
+    const r = await api('/api/products?status=review');
+    $('#list').innerHTML = r.products.map(p => `<a class="card" href="${p.url}"><div class="row">
+      <span class="grow"><b>${esc(p.name || 'Product ' + p.id)}</b> · ${esc([p.brand, p.size].filter(Boolean).join(' · '))}<br>
+      <span class="muted">${p.suspect.length ? 'check ' + p.suspect.join(', ') : ''}</span></span>
+      <span class="tag ${p.bucket}">${p.bucket === 'retake' ? 'retake photo' : p.bucket}</span></div></a>`).join('')
+      || '<p class="muted">No products to check.</p>';
+    return;
+  }
   const r = await api('/api/receipts?limit=100&' + $('#filter').value);
   $('#list').innerHTML = r.receipts.map(x => `<a class="card" href="/review/${x.id}"><div class="row">
     <span class="grow"><b>${esc(x.merchant || 'Receipt ' + x.id)}</b> · ${esc(x.purchase_date || '')}<br>
@@ -278,7 +290,7 @@ async function load() {
   const r = await api('/api/products?q=' + encodeURIComponent($('#q').value));
   $('#grid').innerHTML = r.products.map(p => `<a href="/products/${p.id}" style="color:inherit;text-decoration:none">
     ${p.image_url ? `<img src="${p.image_url}" alt="" loading="lazy">` : '<img alt="">'}
-    <b>${esc(p.name || (p.status === 'pending' ? 'Reading…' : 'Unnamed'))}</b><br><span class="muted">${esc([p.brand, p.size].filter(Boolean).join(' · '))}
+    <b>${esc(p.name || (p.status === 'pending' ? 'Reading…' : 'Unnamed'))}</b>${p.status === 'review' ? ' <span class="tag review">check</span>' : ''}<br><span class="muted">${esc([p.brand, p.size].filter(Boolean).join(' · '))}
     ${p.purchases ? `<br>${p.purchases}× · ${money(p.last_price)} at ${esc(p.last_store || '?')}` : ''}</span></a>`).join('') || '<p class="muted">No products yet.</p>';
 }
 $('#q').oninput = () => { clearTimeout(t); t = setTimeout(load, 250); };
@@ -287,25 +299,51 @@ load().catch(e => $('#grid').textContent = e.message);
 
 BODIES["products/"] = ("Product", """
 <div class="split"><div class="photos" id="photos"></div><div>
-<h1 id="title">Product</h1><div id="msg" class="msg"></div>
-<label>Name</label><input id="name"><label>Brand</label><input id="brand"><label>Size</label><input id="size">
-<div class="row" style="margin-top:10px"><button class="primary" id="save">Save</button>
-<input id="into" placeholder="product #" inputmode="numeric" style="width:110px"><button id="merge">Merge into</button></div>
+<div class="row"><h1 class="grow" id="title">Product</h1><span id="bucket"></span></div><div id="msg" class="msg"></div>
+<div id="err"></div>
+<div id="f_wrap"></div>
+<div class="row" style="margin-top:10px"><button class="primary" id="approve">Approve</button><button id="save">Save</button>
+<button id="reparse">Read again</button></div>
+<h2>Checks</h2><ul class="checks" id="checks"></ul>
+<h2>More</h2>
+<div class="row"><input id="into" placeholder="product #" inputmode="numeric" style="width:110px"><button id="merge">Merge into</button></div>
 <h2>Receipt text that means this product</h2><ul id="aliases"></ul>
 <h2>Purchases</h2><table><thead><tr><th>Date</th><th>Store</th><th class="num">Price</th></tr></thead><tbody id="hist"></tbody></table>
+<p class="muted" id="runs"></p>
 </div></div>
 <script>
 const id = Number(location.pathname.split('/').pop());
+const FIELDS = [['name', 'Name'], ['brand', 'Brand'], ['size', 'Size (amount and unit)']];
 async function load() {
   const p = await api('/api/products/' + id);
   $('#title').textContent = p.name || 'Product ' + id;
-  ['name', 'brand', 'size'].forEach(f => $('#' + f).value = p[f] || '');
+  $('#bucket').innerHTML = p.status === 'ready' ? '<span class="tag approved">ready</span>'
+    : `<span class="tag ${p.bucket || p.status}">${p.bucket === 'retake' ? 'retake photo' : (p.bucket || p.status)}</span>`;
+  $('#err').innerHTML = p.error ? `<p class="msg bad">${esc(p.error)}</p>` : '';
+  const sus = new Set(p.suspect), dis = p.disagreements || {};
+  $('#f_wrap').innerHTML = FIELDS.map(([f, l]) => `<div class="${sus.has(f) ? 'suspect' : ''}"><label for="f_${f}">${l}${dis[f]
+    ? ' · engines read: ' + esc(Object.entries(dis[f]).map(([e, v]) => e + ' ' + (v ?? '?')).join(', ')) : ''}</label>
+    <input id="f_${f}" value="${esc(p[f] || '')}"></div>`).join('');
+  $('#checks').innerHTML = (p.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')
+    || '<li class="muted">Named by hand, not read from a photo.</li>';
   $('#photos').innerHTML = p.images.map(i => `<img src="${i.url}" alt="">`).join('');
   $('#aliases').innerHTML = p.aliases.map(a => `<li>${esc(a)}</li>`).join('') || '<li class="muted">none yet</li>';
   $('#hist').innerHTML = p.history.map(h => `<tr><td><a href="/review/${h.receipt_id}">${esc(h.date)}</a></td><td>${esc(h.merchant || '')}${h.location ? ' · ' + esc(h.location) : ''}</td>
     <td class="num">${money(h.line_total)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No purchases yet.</td></tr>';
+  $('#runs').textContent = (p.runs || []).map(x => x.engine + ' ' + (x.seconds ?? '?') + ' s' + (x.error ? ' (' + x.error + ')' : '')).join(' · ');
 }
-$('#save').onclick = async () => { try { await api('/api/products/' + id, {json: {name: $('#name').value, brand: $('#brand').value, size: $('#size').value}}); say('Saved.'); load(); } catch (e) { say(e.message, true); } };
+async function send(approve) {
+  const body = {approve}; FIELDS.forEach(([f]) => body[f] = $('#f_' + f).value);
+  try {
+    await api('/api/products/' + id, {json: body});
+    if (approve) { const next = (await api('/api/products?status=review')).products.find(p => p.id !== id);
+      location.href = next ? next.url : '/review?products'; }
+    else { await load(); say('Saved.'); }
+  } catch (e) { say(e.message, true); }
+}
+$('#save').onclick = () => send(false);
+$('#approve').onclick = () => send(true);
+$('#reparse').onclick = async () => { await api(`/api/products/${id}/reparse`, {json: {}}); say('Reading again… reload in a minute.'); };
 $('#merge').onclick = async () => { const into = Number($('#into').value); if (!into) return;
   try { await api(`/api/products/${id}/merge`, {json: {into}}); location.href = '/products/' + into; } catch (e) { say(e.message, true); } };
 load().catch(e => say(e.message, true));

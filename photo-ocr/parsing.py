@@ -146,6 +146,34 @@ SCHEMA = {
     "required": ["store", "date", "items", "tax", "total"],
 }
 
+PRODUCT_PROMPT = """These photos show one grocery or household product (front, back or sides of the packaging).
+Read the packaging.
+
+Reply with JSON only, in this shape:
+{"name": "what the product is, e.g. Whole milk", "brand": "brand as printed, or null", "size": "net size with unit as printed, e.g. 1 gal or 12 x 12 fl oz, or null"}
+
+- name is what the product is, without the brand or size.
+- Use null for anything you can't read; don't guess."""
+
+PRODUCT_TEXT_PROMPT = """Below is OCR text from photos of one grocery or household product's packaging (photos are
+separated by "--- photo N ---").
+
+""" + PRODUCT_PROMPT.split("\n\n", 1)[1] + "\n\nOCR text:\n{text}"
+
+PRODUCT_SCHEMA = {
+    "type": "object",
+    "properties": {"name": {"type": ["string", "null"]}, "brand": {"type": ["string", "null"]},
+                   "size": {"type": ["string", "null"]}},
+    "required": ["name", "brand", "size"],
+}
+
+# What can be read from photos: each kind has its prompt for a vision model, its prompt for OCR text, and the
+# JSON shape the model must answer in.
+KINDS = {
+    "receipt": {"prompt": PROMPT, "text_prompt": TEXT_PROMPT, "schema": SCHEMA},
+    "product": {"prompt": PRODUCT_PROMPT, "text_prompt": PRODUCT_TEXT_PROMPT, "schema": PRODUCT_SCHEMA},
+}
+
 
 def chat(engine, content, schema=None):
     """One request to an OpenAI-compatible chat endpoint (llama.cpp's llama-server, in router mode on the workstation)."""
@@ -157,7 +185,7 @@ def chat(engine, content, schema=None):
         "chat_template_kwargs": {"enable_thinking": False},
     }
     if schema is not None and engine.get("json_schema", True):
-        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "receipt", "schema": schema}}
+        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "reading", "schema": schema}}
     if engine.get("logprobs"):
         body["logprobs"] = True
     headers = {"Content-Type": "application/json"}
@@ -304,7 +332,7 @@ def load_engines(path):
 
 
 
-# ---------------------------------------------------------------- one receipt through one engine
+# ---------------------------------------------------------------- one set of photos through one engine
 
 def ocr_photos(engine, paths):
     """Step 1 of an ocr_llm engine: {"lines": [...], "seconds"} or {"error", "seconds"}."""
@@ -316,27 +344,28 @@ def ocr_photos(engine, paths):
         return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.monotonic() - t0, 2)}
 
 
-def parse_receipt(engine, paths, ocr=None):
-    """One receipt (its photos in order) through one engine; never raises.
+def parse_photos(engine, paths, kind="receipt", ocr=None):
+    """The photos of one receipt or one product (kind, see KINDS), in order, through one engine; never raises.
 
-    -> {"engine", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
+    -> {"engine", "kind", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
     ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model)."""
-    run = {"engine": engine["name"], "raw": None, "parsed": None, "error": None, "seconds": None,
+    spec = KINDS[kind]
+    run = {"engine": engine["name"], "kind": kind, "raw": None, "parsed": None, "error": None, "seconds": None,
            "at": datetime.now().isoformat(timespec="seconds")}
     t0, extra = time.monotonic(), 0.0
     try:
         if engine["kind"] == "vlm":
-            content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": PROMPT}]
+            content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": spec["prompt"]}]
         elif engine["kind"] == "ocr_llm":
             ocr = ocr or ocr_photos(engine, paths)
             extra = ocr.get("seconds") or 0
             if ocr.get("error"):
                 raise RuntimeError(f"OCR failed: {ocr['error']}")
             run["ocr"] = ocr["lines"]
-            content = TEXT_PROMPT.replace("{text}", ocr_text(ocr["lines"]))
+            content = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
         else:
             raise ValueError(f"unknown engine kind {engine['kind']!r} (vlm or ocr_llm)")
-        run["raw"], reply = chat(engine, content, SCHEMA)
+        run["raw"], reply = chat(engine, content, spec["schema"])
         if engine.get("logprobs"):
             run["logprobs"] = reply["choices"][0].get("logprobs")
         run["parsed"] = extract_json(run["raw"])
@@ -344,3 +373,37 @@ def parse_receipt(engine, paths, ocr=None):
         run["error"] = f"{type(e).__name__}: {e}"
     run["seconds"] = round(time.monotonic() - t0 + extra, 2)
     return run
+
+
+def parse_receipt(engine, paths, ocr=None):
+    return parse_photos(engine, paths, "receipt", ocr)
+
+
+# ---------------------------------------------------------------- products: normalizing
+
+SIZE_UNITS = {"floz": "fl oz", "fluidounce": "fl oz", "fluidounces": "fl oz", "oz": "oz", "ounce": "oz", "ounces": "oz",
+              "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb", "g": "g", "gram": "g", "grams": "g", "kg": "kg",
+              "ml": "ml", "l": "l", "liter": "l", "litre": "l", "liters": "l", "gal": "gal", "gallon": "gal",
+              "qt": "qt", "quart": "qt", "pt": "pt", "pint": "pt", "ct": "ct", "count": "ct", "pk": "pk", "pack": "pk",
+              "sheets": "sheets", "rolls": "rolls", "each": "ea", "ea": "ea"}
+SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(fl\.?\s*oz|fluid\s*ounces?|[a-z]+)\b")
+
+
+def norm_size(size):
+    """The size a label or model gives, comparable: "12 FL. OZ" / "12floz" -> "12 fl oz", "12 x 12 fl oz" kept as a
+    pack, and only the first size when the package repeats it in other units ("16 oz (1 lb)" -> "16 oz")."""
+    text = str(size or "").lower()
+    for num, unit in SIZE_RE.findall(text):
+        u = SIZE_UNITS.get(re.sub(r"[^a-z]", "", unit))
+        if u:
+            first = f"{float(num):g} {u}"
+            pack = re.search(r"(\d+)\s*[x\u00d7]\s*" + re.escape(num) + r"\s*" + re.escape(unit), text)
+            return f"{int(pack.group(1))} x {first}" if pack else first
+    return None
+
+
+def normalize_product(record):
+    """Model output or a hand label -> {name, brand, size} (stripped strings or None)."""
+    record = record if isinstance(record, dict) else {}
+    clean = lambda v: str(v).strip() if v not in (None, "") and str(v).strip().lower() not in ("null", "none") else None  # noqa: E731
+    return {"name": clean(record.get("name")), "brand": clean(record.get("brand")), "size": clean(record.get("size"))}

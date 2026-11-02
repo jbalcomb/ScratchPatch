@@ -1,21 +1,17 @@
 """Product gallery and matching (PRD.md): catalog entries, receipt text -> product aliases, purchase
 history and shopping lists."""
 import difflib
+import json
 import statistics
 from datetime import date
 
 from db import now
-from parsing import chat, extract_json, image_part, norm_item
+from parsing import chat, extract_json, norm_item
 
 SUGGEST_AT = 0.6      # text similarity at which a product is offered as a suggestion
 MODEL_BELOW = 0.85    # ask the text model when the best text match is weaker than this
 DUE_FACTOR = 0.9      # due when the days since the last purchase reach this share of the usual interval
-
-PRODUCT_PROMPT = """These photos show one grocery or household product. Read its packaging.
-Reply with JSON only: {"name": "what the product is, e.g. Whole milk", "brand": "brand or null", "size": "size with unit, e.g. 1 gal, or null"}"""
-
-PRODUCT_SCHEMA = {"type": "object", "properties": {"name": {"type": "string"}, "brand": {"type": ["string", "null"]},
-                                                   "size": {"type": ["string", "null"]}}, "required": ["name"]}
+USABLE = "('ready', 'review')"  # products that can be matched and listed (a product in review is real, its name unchecked)
 
 PICK_PROMPT = """A store receipt line reads: "{text}" (price {price}).
 Which of these catalog products is it? Receipt lines are abbreviated (GV = Great Value, WHL = whole, MLK = milk, ...).
@@ -37,7 +33,7 @@ def text_candidates(store, raw_text, limit=8):
     """[(score, product)] by similarity of the receipt text to product labels and to known aliases."""
     target = norm_item(raw_text)
     best = {}
-    for p in store.q("SELECT * FROM products WHERE status = 'ready'"):
+    for p in store.q(f"SELECT * FROM products WHERE status IN {USABLE}"):
         best[p["id"]] = (difflib.SequenceMatcher(None, target, norm_item(product_label(p))).ratio(), p)
     for a in store.q("SELECT a.norm_text, p.* FROM product_aliases a JOIN products p ON p.id = a.product_id"):
         s = difflib.SequenceMatcher(None, target, a["norm_text"]).ratio()
@@ -109,13 +105,6 @@ def confirm_match(store, item_id, product_id=None, new_product=None, skip=False)
     return {"matched": n, "product_id": pid}
 
 
-def read_product(engine, photo_paths):
-    """The vision model reads name, brand and size off the product photos. -> (dict, raw reply)."""
-    content = [image_part(p, engine.get("max_side")) for p in photo_paths] + [{"type": "text", "text": PRODUCT_PROMPT}]
-    raw, _ = chat(engine, content, PRODUCT_SCHEMA)
-    return extract_json(raw), raw
-
-
 def history(store, product_id):
     return store.q(
         "SELECT r.purchase_date AS date, r.merchant, r.location, i.line_total, i.quantity, r.id AS receipt_id "
@@ -129,7 +118,7 @@ def shopping_list(store, today=None):
     between purchases. Needs at least two purchases on different days. PRD.md leaves the real rules open."""
     today = today or date.today()
     out = []
-    for p in store.q("SELECT * FROM products WHERE status = 'ready'"):
+    for p in store.q(f"SELECT * FROM products WHERE status IN {USABLE}"):
         h = history(store, p["id"])
         days = sorted({date.fromisoformat(x["date"]) for x in h})
         if len(days) < 2:
@@ -154,8 +143,10 @@ def shopping_list(store, today=None):
 def product_summary(store, p):
     h = history(store, p["id"])
     img = store.one("SELECT id FROM images WHERE product_id = ? ORDER BY id LIMIT 1", p["id"])
+    conf = json.loads(p["confidence"]) if p.get("confidence") else {}
     return {"id": p["id"], "name": p["name"], "brand": p["brand"], "size": p["size"], "status": p["status"],
+            "bucket": p.get("bucket"), "suspect": [f for f in ("name", "brand", "size") if conf.get(f, 1) < 0.9]
+            if p["status"] == "review" else [],
             "image_url": f"/api/images/{img['id']}" if img else None, "purchases": len(h),
             "last_bought": h[0]["date"] if h else None, "last_price": h[0]["line_total"] if h else None,
-            "last_store": h[0]["merchant"] if h else None}
-
+            "last_store": h[0]["merchant"] if h else None, "url": f"/products/{p['id']}"}

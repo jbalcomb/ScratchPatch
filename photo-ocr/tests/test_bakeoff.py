@@ -108,6 +108,16 @@ class FakeLlama(BaseHTTPRequestHandler):
         FakeLlama.requests.append(body)
         content = body["messages"][0]["content"]
         images = [c for c in content if isinstance(c, dict) and c.get("type") == "image_url"] if isinstance(content, list) else []
+        text = " ".join(c.get("text", "") for c in content if isinstance(c, dict)) if isinstance(content, list) else content
+        if "one grocery or household product" in text:
+            reply = {"name": "Whole Milk", "brand": "GREAT VALUE", "size": "128 FL. OZ"}
+            data = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         reply = json.loads(json.dumps(LABEL))
         reply["store"] = "Giant Eagle"
         if len(images) == 2:
@@ -195,6 +205,44 @@ def test_ocr_llm_engine_ocrs_everything_first(tmp_path, llama, monkeypatch):
     assert "--- photo 1 ---\nBANANAS 1.29" in prompt
     run = json.loads((home / "results" / "t+llm" / "r001.json").read_text())
     assert run["ocr"][0]["conf"] == 0.9 and run["parsed"]
+
+
+def test_products_in_the_bakeoff(tmp_path, llama, capsys):
+    home = tmp_path / "bakeoff"
+    (tmp_path / "front.png").write_bytes(PNG)
+    (tmp_path / "back.png").write_bytes(PNG)
+    assert bakeoff.main(["--home", str(home), "add", "--product", str(tmp_path / "front.png"), str(tmp_path / "back.png")]) == 0
+    assert bakeoff.main(["--home", str(home), "add", str(tmp_path / "front.png")]) == 0
+    p1, r1 = home / "set" / "p001", home / "set" / "r001"
+    assert bakeoff.kind_of(p1) == "product" and bakeoff.kind_of(r1) == "receipt"
+
+    engines = tmp_path / "engines.json"
+    engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
+    bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)])
+    run = json.loads((home / "results" / "fake-vl" / "p001.json").read_text())
+    assert run["kind"] == "product" and run["parsed"]["brand"] == "GREAT VALUE"
+
+    bakeoff.main(["--home", str(home), "label", "fake-vl"])
+    assert json.loads((p1 / "label.draft.json").read_text()) == {"name": "Whole Milk", "brand": "GREAT VALUE", "size": "128 FL. OZ"}
+    (p1 / "label.json").write_text(json.dumps({"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}))
+    (r1 / "label.json").write_text(json.dumps(LABEL))
+    assert bakeoff.main(["--home", str(home), "check"]) == 0
+
+    capsys.readouterr()
+    bakeoff.main(["--home", str(home), "score"])
+    report = (home / "results" / "report.md").read_text()
+    assert "# Receipts" in report and "# Products" in report
+    products = report[report.index("# Products"):]
+    row = next(line for line in products.splitlines() if line.startswith("| fake-vl |"))
+    assert [c.strip() for c in row.strip("|").split("|")][3:7] == ["100%", "100%", "0%", "0%"]  # 128 fl oz isn't 1 gal
+    assert "N✓B✓S✗" in report
+
+
+def test_score_product():
+    assert bakeoff.score_product({"name": "Dish soap", "brand": "Dawn", "size": "24 fl oz"},
+                                 {"name": "dish soap", "brand": "DAWN", "size": "24 FL. OZ"})["all"]
+    s = bakeoff.score_product({"name": "Dish soap", "brand": None, "size": None}, {"name": "Paper towels", "brand": "x"})
+    assert (s["name"], s["brand"], s["size"]) == (False, False, True)
 
 
 def test_check_flags_bad_labels(tmp_path, capsys):

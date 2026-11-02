@@ -202,7 +202,7 @@ def test_aliases_products_and_shopping_list(tmp_path, model):
     svc = make_service(tmp_path, model)
     milk = svc.create_product([("milk.jpg", png(50))])
     assert svc.product(milk)["status"] == "pending"
-    svc.read_pending_products()
+    svc.parse_pending_products()
     p = svc.product(milk)
     assert (p["name"], p["brand"], p["size"], p["status"]) == ("Whole milk", "Great Value", "1 gal", "ready")
 
@@ -241,6 +241,55 @@ def test_aliases_products_and_shopping_list(tmp_path, model):
     rid = capture(svc, 30)
     svc.parse_pending()
     assert svc.receipt(rid)["items"][0]["match"] == "alias"
+
+
+def test_product_buckets(tmp_path, model):
+    svc = make_service(tmp_path, model)
+    good = svc.create_product([("a.jpg", png(80))])
+    svc.parse_pending_products()
+    model.product = {"name": "product", "brand": None, "size": "large"}
+    vague = svc.create_product([("b.jpg", png(81))])
+    svc.parse_pending_products()
+    model.product = {"name": None, "brand": None, "size": None}
+    blurry = svc.create_product([("c.jpg", png(82))])
+    svc.parse_pending_products()
+
+    p = svc.product(good)
+    assert (p["status"], p["bucket"], p["suspect"]) == ("ready", "auto", [])
+    p = svc.product(vague)
+    assert (p["status"], p["bucket"], p["suspect"]) == ("review", "review", ["name", "size"])
+    assert [c["ok"] for c in p["checks"]] == [False, False]
+    assert svc.product(blurry)["bucket"] == "retake"
+    assert {x["id"] for x in svc.products(status="review")} == {vague, blurry}
+    assert svc.counts()["products_review"] == 2
+
+    # Fixing and approving a product keeps the changes as corrections.
+    with pytest.raises(ValueError):
+        svc.edit_product(blurry, {"approve": True})
+    p = svc.edit_product(vague, {"name": "Dish soap", "size": "24 fl oz", "approve": True})
+    assert (p["status"], p["name"], p["size"]) == ("ready", "Dish soap", "24 fl oz")
+    assert {c["field"] for c in svc.store.q("SELECT field FROM corrections WHERE product_id = ?", vague)} == {"name", "size"}
+
+    svc.reparse_product(vague)
+    assert svc.product(vague)["status"] == "pending"
+
+
+def test_two_engines_disagree_on_a_product(tmp_path, model):
+    model.product_by_model["b"] = {"name": "2% milk", "brand": "Great Value", "size": "half gal"}
+    svc = make_service(tmp_path, model, engines=("vl-a", "vl-b"))
+    assert [e["name"] for e in svc.product_engines] == ["vl-a", "vl-b"]
+    pid = svc.create_product([("m.jpg", png(83))])
+    svc.parse_pending_products()
+    p = svc.product(pid)
+    assert p["status"] == "review" and set(p["disagreements"]) == {"name", "size"}
+    assert p["name"] == "Whole milk" and {r["engine"] for r in p["runs"]} == {"vl-a", "vl-b"}
+
+
+def test_product_engines_can_differ_from_receipt_engines(tmp_path, model):
+    svc = make_service(tmp_path, model, RECEIPTS_PRODUCT_ENGINE="vl-b")
+    assert [e["name"] for e in svc.parse_engines] == ["vl-a"] and [e["name"] for e in svc.product_engines] == ["vl-b"]
+    with pytest.raises(ValueError):
+        make_service(tmp_path, model, RECEIPTS_PRODUCT_ENGINE="nope")
 
 
 def test_text_suggestion_and_product_merge(tmp_path, model):
@@ -374,7 +423,7 @@ def test_pages_render(api):
 def test_api_products_and_items(api, model):
     body, ctype = form([("photo", "milk.png", png(5))])
     assert api("POST", "/api/products", body, ctype) == (201, {"id": 1, "status": "pending"})
-    api.svc.read_pending_products()
+    api.svc.parse_pending_products()
     api.svc.create_receipt([("r.png", png(6))])
     api.svc.parse_pending()
     items = api("GET", "/api/items/unmatched")[1]["items"]
@@ -448,8 +497,12 @@ def test_export_labels_feeds_the_bakeoff(tmp_path, model, capsys):
     rid = capture(svc, 1, 2)
     svc.parse_pending()
     svc.edit(rid, {"approve": True})
+    pid = svc.create_product([("milk.jpg", png(90))])
+    svc.parse_pending_products()  # all checks pass: approved automatically
     set_dir = tmp_path / "bakeoff" / "set"
-    assert svc.export_labels(set_dir) == 1 and svc.export_labels(set_dir) == 0
+    assert svc.export_labels(set_dir) == 2 and svc.export_labels(set_dir) == 0
+    assert json.loads((set_dir / f"ps{pid:04d}" / "label.json").read_text()) == \
+        {"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}
     folder = set_dir / f"s{rid:04d}"
     assert sorted(p.name for p in folder.iterdir()) == ["1.jpg", "2.jpg", "label.json", "tags.txt"]
     assert bakeoff.main(["--home", str(tmp_path / "bakeoff"), "check"]) == 0

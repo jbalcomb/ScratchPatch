@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Receipt parsing bake-off: run each candidate engine on hand-labeled receipts, score them, compare.
+"""Photo OCR bake-off: run each candidate engine on hand-labeled receipt and product photos, score, compare.
 
 Phase 1 of PRD.md. The model and OCR calls are in parsing.py, shared with the service.
 
     python bakeoff.py add ~/Downloads/IMG_1.jpg ~/Downloads/IMG_2.jpg --tags thermal,multi-photo
+    python bakeoff.py add --product ~/Downloads/front.jpg ~/Downloads/back.jpg
     python bakeoff.py run qwen3-vl-8b            # or: run --all
     python bakeoff.py label qwen3-vl-8b          # drafts label.draft.json from an engine's output
     python bakeoff.py check                      # sanity-check the hand labels
@@ -23,12 +24,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parsing import (OCR, PROMPT, SCHEMA, chat, extract_json, image_part, load_engines, norm_item,  # noqa: E402,F401
-                     norm_store, normalize, ocr_photos, ocr_text, parse_receipt, sum_check, to_cents, to_date)
+                     norm_size, norm_store, normalize, normalize_product, ocr_photos, ocr_text, parse_photos,
+                     sum_check, to_cents, to_date)
 
 HERE = Path(__file__).resolve().parent
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 NAME_THRESHOLD = 0.6   # line-item name similarity (0..1) needed to count as the same item
 PRICE_SLACK = 1        # cents: line-item prices this close count as equal
+PRODUCT_NAME_MATCH = 0.8  # a product name this similar to the label counts as right
 
 
 def home():
@@ -74,13 +77,32 @@ def score(label, parsed, threshold=NAME_THRESHOLD):
     return s
 
 
+def score_product(label, parsed):
+    """Name similar enough; brand and size equal once normalized (both missing counts as right)."""
+    truth, pred = normalize_product(label), normalize_product(parsed)
+    s = {
+        "name": bool(pred["name"]) and difflib.SequenceMatcher(
+            None, norm_item(truth["name"]), norm_item(pred["name"])).ratio() >= PRODUCT_NAME_MATCH,
+        "brand": (norm_store(truth["brand"]) or None) == (norm_store(pred["brand"]) or None),
+        "size": norm_size(truth["size"]) == norm_size(pred["size"]),
+    }
+    s["all"] = s["name"] and s["brand"] and s["size"]
+    return s
+
+
 # ---------------------------------------------------------------- test set
 
 def receipts(set_dir):
-    """Receipt folders in the test set, in order: each holds its photos (in name order) and label.json."""
+    """Item folders in the test set (receipts and products), in order: each holds its photos (in name order)
+    and label.json."""
     if not set_dir.is_dir():
         return []
     return sorted(d for d in set_dir.iterdir() if d.is_dir() and photos(d))
+
+
+def kind_of(item_dir):
+    """A folder whose name starts with p (p001 from add --product, ps0001 from the service) holds a product."""
+    return "product" if item_dir.name.startswith("p") else "receipt"
 
 
 def photos(receipt_dir):
@@ -93,11 +115,12 @@ def load_label(receipt_dir):
 
 
 def cmd_add(args):
-    """Copy one receipt's photos (in the order given) into a new numbered folder of the test set."""
+    """Copy one receipt's (or product's) photos, in the order given, into a new numbered folder of the test set."""
     set_dir = args.home / "set"
     set_dir.mkdir(parents=True, exist_ok=True)
-    taken = [int(m.group(1)) for d in set_dir.iterdir() if (m := re.fullmatch(r"r(\d+)", d.name))]
-    dest = set_dir / f"r{max(taken, default=0) + 1:03d}"
+    prefix = "p" if args.product else "r"
+    taken = [int(m.group(1)) for d in set_dir.iterdir() if (m := re.fullmatch(prefix + r"(\d+)", d.name))]
+    dest = set_dir / f"{prefix}{max(taken, default=0) + 1:03d}"
     dest.mkdir()
     for n, src in enumerate(args.photos, 1):
         src = Path(src)
@@ -127,6 +150,15 @@ def cmd_check(args):
             print(f"{r.name}: no label.json yet")
             problems += 1
             continue
+        if kind_of(r) == "product":
+            p = normalize_product(label)
+            issues = [] if p["name"] else ["no product name"]
+            if p["size"] and norm_size(p["size"]) is None:
+                issues.append(f"size {p['size']!r} has no amount and unit")
+            if issues:
+                problems += 1
+                print(f"{r.name}: " + "; ".join(issues))
+            continue
         rec, raw = normalize(label), label
         issues = []
         for field in ("total", "tax"):
@@ -151,7 +183,7 @@ def cmd_check(args):
         if issues:
             problems += 1
             print(f"{r.name}: " + "; ".join(issues))
-    print(f"{len(rs)} receipts, {problems} with problems")
+    print(f"{len(rs)} labeled items, {problems} with problems")
     return 1 if problems else 0
 
 
@@ -165,6 +197,11 @@ def cmd_label(args):
             continue
         parsed = json.loads(run_file.read_text()).get("parsed")
         if not parsed:
+            continue
+        if kind_of(r) == "product":
+            (r / "label.draft.json").write_text(json.dumps(normalize_product(parsed), indent=2) + "\n")
+            n += 1
+            print(f"{r / 'label.draft.json'}")
             continue
         rec = normalize(parsed)
         draft = {
@@ -199,7 +236,7 @@ def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print):
             log(f"  {engine['name']} {r.name}: OCR {ocr['seconds']:.1f}s" + (f"  ERROR {ocr['error']}" if ocr.get("error") else ""))
     for r in todo:
         ocr = json.loads((out_dir / f"{r.name}.ocr.json").read_text()) if engine["kind"] == "ocr_llm" else None
-        run = {"receipt": r.name, "photos": [p.name for p in photos(r)], **parse_receipt(engine, photos(r), ocr=ocr)}
+        run = {"item": r.name, "photos": [p.name for p in photos(r)], **parse_photos(engine, photos(r), kind_of(r), ocr=ocr)}
         (out_dir / f"{r.name}.json").write_text(json.dumps(run, indent=1) + "\n")
         log(f"  {engine['name']} {r.name}: {run['seconds']:.1f}s" + (f"  ERROR {run['error']}" if run["error"] else ""))
     return len(todo)
@@ -216,7 +253,7 @@ def cmd_run(args):
     for name in names:
         print(f"{name}:")
         n = run_engine(engines[name], args.home / "set", args.home / "results" / name, args.force, args.receipt)
-        print(f"  {n} receipts run")
+        print(f"  {n} items run")
 
 
 # ---------------------------------------------------------------- report
@@ -225,9 +262,10 @@ def pct(n, d):
     return f"{100 * n / d:.0f}%" if d else "–"
 
 
-def collect(home, threshold=NAME_THRESHOLD):
-    """{engine: {receipt: score or None (failed)}}, {engine: {receipt: seconds}}, labels, tags."""
-    labeled = {r.name: (load_label(r), tags(r)) for r in receipts(home / "set") if load_label(r) is not None}
+def collect(home, threshold=NAME_THRESHOLD, kind="receipt"):
+    """For one kind: {engine: {item: score or None (failed)}}, {engine: {item: seconds}}, {item: (label, tags)}."""
+    labeled = {r.name: (load_label(r), tags(r)) for r in receipts(home / "set")
+               if kind_of(r) == kind and load_label(r) is not None}
     scores, seconds = {}, {}
     results = home / "results"
     for engine_dir in sorted(d for d in results.iterdir() if d.is_dir()) if results.is_dir() else []:
@@ -236,9 +274,38 @@ def collect(home, threshold=NAME_THRESHOLD):
             if not f.exists():
                 continue
             run = json.loads(f.read_text())
-            scores.setdefault(engine_dir.name, {})[rid] = score(label, run["parsed"], threshold) if run.get("parsed") else None
+            if not run.get("parsed"):
+                sc = None
+            else:
+                sc = score(label, run["parsed"], threshold) if kind == "receipt" else score_product(label, run["parsed"])
+            scores.setdefault(engine_dir.name, {})[rid] = sc
             seconds.setdefault(engine_dir.name, {})[rid] = run.get("seconds")
     return scores, seconds, labeled
+
+
+def product_section(home):
+    scores, seconds, labeled = collect(home, kind="product")
+    if not labeled:
+        return []
+    rows = []
+    for e, sc in scores.items():
+        ok, n = [s for s in sc.values() if s], len(sc)
+        times = [t for t in seconds[e].values() if t is not None]
+        rows.append([e, str(n), str(n - len(ok)), pct(sum(s["name"] for s in ok), n), pct(sum(s["brand"] for s in ok), n),
+                     pct(sum(s["size"] for s in ok), n), pct(sum(s["all"] for s in ok), n),
+                     f"{statistics.median(times):.1f}" if times else "–"])
+    per = []
+    for pid in labeled:
+        row = [pid]
+        for e in scores:
+            s = scores[e].get(pid, "skip")
+            row.append("–" if s == "skip" else "failed" if s is None else
+                       "".join(k + ("✓" if s[f] else "✗") for k, f in (("N", "name"), ("B", "brand"), ("S", "size"))))
+        per.append(row)
+    return ["# Products\n", f"{len(labeled)} labeled products · names match at similarity ≥ {PRODUCT_NAME_MATCH}; "
+            "brand and size must match once normalized (\"12 FL. OZ\" = \"12 fl oz\").\n",
+            table(["Engine", "Products", "Failed", "Name", "Brand", "Size", "All right", "Median s"], rows), "",
+            table(["Product"] + list(scores), per), "", "N name, B brand, S size (✓ right, ✗ wrong).\n"]
 
 
 def engine_row(name, sc, secs, labeled):
@@ -266,10 +333,13 @@ def table(header, rows):
 
 def report(home, threshold=NAME_THRESHOLD):
     scores, seconds, labeled = collect(home, threshold)
+    products = product_section(home)
+    if not labeled and not products:
+        return "Nothing labeled yet: add photos with `bakeoff.py add` (or `add --product`), then write each label.json.\n"
+    out = [f"# Bake-off results\n\n{datetime.now():%Y-%m-%d %H:%M}\n"]
     if not labeled:
-        return "No labeled receipts yet: add photos with `bakeoff.py add`, then write each label.json.\n"
-    out = [f"# Bake-off results\n\n{datetime.now():%Y-%m-%d %H:%M} · {len(labeled)} labeled receipts · "
-           f"item names match at similarity ≥ {threshold}\n"]
+        return "\n".join(out + products)
+    out += [f"# Receipts\n\n{len(labeled)} labeled receipts · item names match at similarity ≥ {threshold}\n"]
     header = ["Engine", "Receipts", "Failed", "Total", "Date", "Store", "Tax", "Items P / R / F1",
               "All right", "Sum check passes", "All right when it passes", "Median s", "Mean s"]
     out += ["## Per engine\n", table(header, [engine_row(e, scores[e], seconds[e], labeled) for e in scores]), "",
@@ -314,7 +384,7 @@ def report(home, threshold=NAME_THRESHOLD):
         rows.append(row)
     out += ["## Per receipt\n", table(["Receipt", "Tags"] + list(scores), rows), "",
             "T total, D date, S store, X tax (✓ right, ✗ wrong), then line items matched / labeled / returned.\n"]
-    return "\n".join(out)
+    return "\n".join(out + products)
 
 
 def _cell(s):
@@ -349,15 +419,16 @@ def main(argv=None):
     p.add_argument("--home", type=Path, default=home(),
                    help="test set and results (default ~/receipts/bakeoff, or RECEIPTS_BAKEOFF_HOME)")
     sub = p.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("add", help="add one receipt (one or more photos, top to bottom) to the test set")
+    a = sub.add_parser("add", help="add one receipt (photos top to bottom) or, with --product, one product")
     a.add_argument("photos", nargs="+")
     a.add_argument("--tags", help="comma-separated conditions, e.g. thermal,faded,crumpled,long")
+    a.add_argument("--product", action="store_true", help="the photos are of one product, not a receipt")
     a.set_defaults(func=cmd_add)
     r = sub.add_parser("run", help="run engines over the test set (results are kept; --force re-runs)")
     r.add_argument("engine", nargs="*")
     r.add_argument("--all", action="store_true")
     r.add_argument("--force", action="store_true")
-    r.add_argument("--receipt", action="append", help="only this receipt (repeatable), e.g. r007")
+    r.add_argument("--receipt", action="append", help="only this item (repeatable), e.g. r007 or p002")
     r.add_argument("--engines", default=os.environ.get("RECEIPTS_ENGINES") or HERE / "engines.json")
     r.set_defaults(func=cmd_run)
     lb = sub.add_parser("label", help="draft label.draft.json for unlabeled receipts from an engine's output")

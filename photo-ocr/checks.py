@@ -1,13 +1,15 @@
 """Confidence and review (PRD.md): checks that work on any engine, engine signals, and the three buckets.
+The same idea for both kinds of photo, receipts (assess) and products (assess_product):
 
     auto    all checks pass and the engines agree       -> saved without review
     review  a check failed or the engines disagree      -> the review page, suspect fields marked
-    retake  total or date unreadable                    -> ask for a new photo
+    retake  receipt total or date, or product name, unreadable -> ask for a new photo
 """
+import difflib
 import re
 from datetime import date, timedelta
 
-from parsing import SUM_SLACK, norm_store, normalize, to_cents
+from parsing import SUM_SLACK, norm_item, norm_size, norm_store, normalize, normalize_product, to_cents
 
 FIELDS = ("merchant", "purchase_date", "total", "tax", "items")
 LOW_OCR_CONF = 0.6       # an OCR line read with less confidence than this makes its field suspect
@@ -123,3 +125,69 @@ def assess(primary_parsed, others, known_stores, ocr_lines=None, today=None):
     suspect = [f for f in FIELDS if conf[f] < 0.9]
     return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail")} for c in checks],
             "disagreements": diff, "confidence": conf, "suspect": suspect, "bucket": bucket}
+
+
+# ---------------------------------------------------------------- products
+
+PRODUCT_FIELDS = ("name", "brand", "size")
+NAME_AGREE = 0.8          # two engines' product names this similar count as the same
+GENERIC_NAMES = {"product", "item", "unknown", "food", "package", "grocery", "n a", "na"}
+
+
+def names_agree(a, b):
+    return difflib.SequenceMatcher(None, norm_item(a), norm_item(b)).ratio() >= NAME_AGREE
+
+
+def run_product_checks(parsed):
+    """-> (record, [{name, ok, detail, fields}]) for one engine's reading of a product."""
+    rec = normalize_product(parsed)
+    out = []
+    name = rec["name"]
+    if not name:
+        out.append({"name": "name", "ok": False, "fields": ["name"], "detail": "no product name"})
+    elif norm_item(name) in GENERIC_NAMES or len(norm_item(name)) < 3:
+        out.append({"name": "name", "ok": False, "fields": ["name"], "detail": f"{name!r} doesn't say what it is"})
+    else:
+        out.append({"name": "name", "ok": True, "fields": [], "detail": name})
+    if not rec["size"]:
+        out.append({"name": "size", "ok": False, "fields": ["size"], "detail": "no size"})
+    elif norm_size(rec["size"]) is None:
+        out.append({"name": "size", "ok": False, "fields": ["size"], "detail": f"{rec['size']!r} has no amount and unit"})
+    else:
+        out.append({"name": "size", "ok": True, "fields": [], "detail": norm_size(rec["size"])})
+    return rec, out
+
+
+def product_disagreements(records):
+    """records {engine: normalized product} from two or more engines -> {field: {engine: value}} where they differ."""
+    if len(records) < 2:
+        return {}
+    out = {}
+    recs = list(records.values())
+    if any(not names_agree(recs[0]["name"], r["name"]) for r in recs[1:]):
+        out["name"] = {e: r["name"] for e, r in records.items()}
+    for field, view in (("brand", lambda r: norm_store(r["brand"]) or None), ("size", lambda r: norm_size(r["size"]))):
+        if len({view(r) for r in recs}) > 1:
+            out[field] = {e: r[field] for e, r in records.items()}
+    return out
+
+
+def assess_product(primary_parsed, others):
+    """Like assess, for one product: record, checks, disagreements, confidence, suspect fields, bucket."""
+    rec, checks = run_product_checks(primary_parsed)
+    diff = product_disagreements({n: normalize_product(p) for n, p in others.items() if p is not None}) if others else {}
+    conf = {f: 1.0 for f in PRODUCT_FIELDS}
+    for c in checks:
+        for f in c["fields"]:
+            conf[f] = min(conf[f], 0.3)
+    for f in diff:
+        conf[f] = min(conf[f], 0.4)
+    if not rec["name"]:
+        bucket = "retake"
+    elif all(c["ok"] for c in checks) and not diff:
+        bucket = "auto"
+    else:
+        bucket = "review"
+    return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail")} for c in checks],
+            "disagreements": diff, "confidence": conf, "suspect": [f for f in PRODUCT_FIELDS if conf[f] < 0.9],
+            "bucket": bucket}

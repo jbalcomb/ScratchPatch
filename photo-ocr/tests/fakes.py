@@ -78,6 +78,7 @@ class FakeModel:
         self.receipt = json.loads(json.dumps(RECEIPT))
         self.by_model = {}
         self.product = {"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}
+        self.product_by_model = {}
         self.pick = None
         self.fail = False
         self.server = Server(self.handle)
@@ -91,7 +92,7 @@ class FakeModel:
         content = req["messages"][0]["content"]
         text = content if isinstance(content, str) else " ".join(c.get("text", "") for c in content if c.get("type") == "text")
         if "one grocery or household product" in text:
-            reply = self.product
+            reply = self.product_by_model.get(req.get("model"), self.product)
         elif "Which of these catalog products" in text:
             reply = {"product_id": self.pick}
         else:
