@@ -28,6 +28,20 @@ log = logging.getLogger(__name__)
 
 POLL_DELAYS = (5, 10, 20, 30, 60, 120)  # seconds between checks while the workstation is busy with a note
 BREADCRUMB = "voice_rec:native_step"
+PROFILE_KEY = "voice_rec:recorder_profile"
+NATIVE_CRASH_KEY = "voice_rec:native_crash"
+# Recorder settings, safest-first for this phone's crash: if TaskDeck closes while starting with one, the next
+# start uses the next one. All mono, no Bluetooth handling, the phone's microphone.
+PROFILES = (
+    {"name": "AAC 16 kHz, legacy recorder", "encoder": "AACLC", "sample_rate": 16000, "bit_rate": 48000,
+     "legacy": True, "extension": ".m4a"},
+    {"name": "AAC 44.1 kHz, legacy recorder", "encoder": "AACLC", "sample_rate": 44100, "bit_rate": 64000,
+     "legacy": True, "extension": ".m4a"},
+    {"name": "AAC 16 kHz, advanced recorder", "encoder": "AACLC", "sample_rate": 16000, "bit_rate": 48000,
+     "legacy": False, "extension": ".m4a"},
+    {"name": "WAV 16 kHz, advanced recorder", "encoder": "WAV", "sample_rate": 16000, "bit_rate": 256000,
+     "legacy": False, "extension": ".wav"},
+)
 REOPEN_WITHIN = 300  # seconds: after an unexpected close this soon, the app opens Voice notes again
 MIC_JUST_ALLOWED = "Microphone allowed. Tap the button again to record."
 MIC_BLOCKED = ("The microphone is blocked for TaskDeck. Open TaskDeck's app info → Permissions → Microphone → "
@@ -80,24 +94,44 @@ class Recorder:
         end = self._paused_at if self._paused_at is not None else time.monotonic()
         return max(0.0, end - self._t0 - self._paused_total)
 
+    @property
+    def profile_index(self) -> int:
+        i = int((self.store.get(PROFILE_KEY) if self.store is not None else 0) or 0)
+        return max(0, min(i, len(PROFILES) - 1))
+
+    @property
+    def profile(self) -> dict:
+        return PROFILES[self.profile_index]
+
     def _ensure(self) -> Any:
         if self.service is None:
             import flet_audio_recorder as far
 
-            config = far.AudioRecorderConfiguration(
-                encoder=far.AudioEncoder.AACLC,  # .m4a, about 0.35 MB a minute at these settings
-                channels=1, sample_rate=16000, bit_rate=48000,  # speech; Whisper works at 16 kHz mono anyway
-                auto_gain=True,
-            )
-            self.service = far.AudioRecorder(configuration=config)
+            self.service = far.AudioRecorder()
         return self.service
+
+    def _configuration(self) -> Any:
+        import flet_audio_recorder as far
+
+        p = self.profile
+        return far.AudioRecorderConfiguration(
+            encoder=getattr(far.AudioEncoder, p["encoder"]), channels=1, sample_rate=p["sample_rate"],
+            bit_rate=p["bit_rate"],
+            android_configuration=far.AndroidRecorderConfiguration(
+                use_legacy=p["legacy"],  # Android's MediaRecorder: "stability oriented" (the plugin's words)
+                manage_bluetooth=False,  # the plugin's Bluetooth headset (SCO) handling has had crash fixes
+                audio_source=far.AndroidAudioSource.MIC,
+            ),
+        )
 
     # ---- breadcrumbs: which native step was running if the app closed unexpectedly ----
 
-    def mark(self, step: str) -> None:
-        """Note the step about to run ("" = finished). JsonStore writes atomically, so it survives a crash."""
+    def mark(self, step: str, profile: int | None = None) -> None:
+        """Note the step about to run ("" = finished). JsonStore writes atomically, so it survives a crash.
+        ``profile``: the recorder settings in use, so a crash there moves on to the next ones."""
         if self.store is not None:
-            self.store.set(BREADCRUMB, {"step": step, "at": time.time()} if step else {})
+            crumb = {"step": step, "at": time.time(), **({"profile": profile} if profile is not None else {})}
+            self.store.set(BREADCRUMB, crumb if step else {})
 
     def last_crash(self) -> dict | None:
         """The step that was running when TaskDeck last closed unexpectedly (and forget it)."""
@@ -106,6 +140,11 @@ class Recorder:
         crumb = self.store.get(BREADCRUMB) or {}
         if crumb.get("step") and not self.active:
             self.store.set(BREADCRUMB, {})
+            if crumb.get("profile") is not None and crumb["profile"] == self.profile_index \
+                    and self.profile_index < len(PROFILES) - 1:
+                # It closed while the recorder started with these settings: use the next, safer ones.
+                self.store.set(PROFILE_KEY, self.profile_index + 1)
+                crumb["next_profile"] = self.profile["name"]
             return crumb
         return None
 
@@ -139,11 +178,12 @@ class Recorder:
         problem = await self.mic_permission()
         if problem:
             return problem
-        self.mark("setting up the recorder")
+        profile = self.profile_index
+        self.mark(f"setting up the recorder ({self.profile['name']})", profile)
         svc = self._ensure()
-        rec_id, path = self.lib.new_path()
-        self.mark("starting the recording")
-        ok = await svc.start_recording(output_path=str(path))
+        rec_id, path = self.lib.new_path(self.profile["extension"])
+        self.mark(f"starting the recording ({self.profile['name']})", profile)
+        ok = await svc.start_recording(output_path=str(path), configuration=self._configuration())
         self.mark("")
         if not ok:
             return "The microphone didn't start (another app may be using it)."
@@ -166,7 +206,7 @@ class Recorder:
         if not self.active:
             return None
         duration = self.elapsed
-        self.mark("stopping the recording")
+        self.mark("stopping the recording", self.profile_index)
         saved = await self.service.stop_recording()
         self.mark("")
         path = self.path
@@ -363,6 +403,7 @@ class VoiceRecScreen:
         )
         self.notice = ""  # last problem or hint from the record button
         self.crash = self.recorder.last_crash()  # set when TaskDeck closed during a native step
+        self.native_crash = app.store.get(NATIVE_CRASH_KEY) or ""  # Android's stack trace, if it was caught
         self.render(update=False)
 
     # ---- lifecycle (called by the app) -------------------------------------------------------
@@ -372,8 +413,26 @@ class VoiceRecScreen:
         if self._on_sync not in self.sync.listeners:
             self.sync.listeners.append(self._on_sync)
         self.sync.kick()
+        background = getattr(self.app, "background", None)
+        if background and background.enabled:  # Android with TaskDeck's extension
+            self.app.page.run_task(self._load_native_crash)
         if self.recorder.active:
             self.app.page.run_task(self._tick)
+
+    async def _load_native_crash(self) -> None:
+        """The Android error that last closed TaskDeck, caught by taskdeck-background (APKs from 2026-11-02 on).
+        Kept in the store, since the phone forgets it once read."""
+        background = getattr(self.app, "background", None)
+        if not background or not background.enabled:
+            return
+        try:
+            trace = await background.service.last_crash()
+        except Exception:  # an APK from before the crash catcher
+            return
+        if trace:
+            self.app.store.set(NATIVE_CRASH_KEY, trace)
+            self.native_crash = trace
+            self.render()
 
     def recheck(self) -> None:
         self.render()
@@ -478,8 +537,18 @@ class VoiceRecScreen:
         out: list[ft.Control] = []
         if self.crash:
             out.append(_note(ft.Icons.WARNING_AMBER, f"TaskDeck closed unexpectedly last time, while "
-                                                     f"{self.crash['step']}. If it keeps happening, tell Claude "
-                                                     "this step's name.", error=True))
+                                                     f"{self.crash['step']}."
+                                                     + (f" Next time it records with: {self.crash['next_profile']}."
+                                                        if self.crash.get("next_profile") else ""), error=True))
+        if self.native_crash:
+            first = next((line for line in self.native_crash.splitlines() if "Exception" in line or "Error" in line),
+                         "an Android error")
+            out.append(_note(ft.Icons.BUG_REPORT_OUTLINED, f"Android's error: {first.strip()[:200]}", error=True))
+            out.append(ft.Row([
+                ft.TextButton("Copy crash report", icon=ft.Icons.COPY,
+                              on_click=lambda e: self.app.copy(self._crash_report())),
+                ft.TextButton("Dismiss", on_click=self._dismiss_crash),
+            ], wrap=True, alignment=ft.MainAxisAlignment.CENTER))
         if self.notice:
             ok = self.notice == MIC_JUST_ALLOWED
             out.append(_note(ft.Icons.CHECK_CIRCLE_OUTLINE if ok else ft.Icons.MIC_OFF, self.notice, error=not ok))
@@ -487,6 +556,17 @@ class VoiceRecScreen:
                 out.append(ft.TextButton("Open app settings", icon=ft.Icons.SETTINGS,
                                          on_click=lambda e: self.app.page.run_task(_open_app_settings)))
         return out
+
+    def _crash_report(self) -> str:
+        r = self.recorder
+        return (f"TaskDeck Voice notes crash report\nRecorder settings now: {r.profile['name']} "
+                f"(step {r.profile_index + 1} of {len(PROFILES)})\n\n{self.native_crash}")
+
+    def _dismiss_crash(self, e=None) -> None:
+        self.native_crash = ""
+        self.crash = None
+        self.app.store.set(NATIVE_CRASH_KEY, "")
+        self.render()
 
     def _render_status(self) -> None:
         pending = self.sync.lib.pending()

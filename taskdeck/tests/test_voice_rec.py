@@ -299,8 +299,9 @@ class FakeRecorderService:
     async def has_permission(self):
         raise AssertionError("the recorder plugin's own permission call must not be used")
 
-    async def start_recording(self, output_path=None):
+    async def start_recording(self, output_path=None, configuration=None):
         self.calls.append("start")
+        self.configuration = configuration
         open(output_path, "wb").write(b"audio")
         return True
 
@@ -383,3 +384,33 @@ def test_after_a_crash_voice_notes_reopens_and_says_where(tmp_path):
 
     app2 = make_app(tmp_path)  # a normal start afterwards stays on Home
     assert not app2.stack
+
+
+def test_recorder_settings_step_down_after_a_crash_while_starting(monkeypatch, tmp_path):
+    from taskdeck.core import JsonStore
+    from taskdeck.jobs.voice_rec.screen import BREADCRUMB, PROFILES, Recorder
+
+    store = JsonStore(tmp_path / "state.json")
+    rec = Recorder(Library(tmp_path / "v"), store)
+    rec.service = FakeRecorderService()
+    fake_permissions(monkeypatch, ["GRANTED"] * 10)
+
+    assert run(rec.start()) == ""
+    android = rec.service.configuration.android_configuration
+    assert android.use_legacy and not android.manage_bluetooth  # safest settings first
+    assert rec.service.configuration.channels == 1 and rec.path.suffix == ".m4a"
+    run(rec.stop({}))
+
+    for expected in range(1, len(PROFILES)):
+        # TaskDeck "closes" while starting: the breadcrumb is left behind with the settings in use...
+        store.set(BREADCRUMB, {"step": "starting the recording", "at": 0, "profile": rec.profile_index})
+        crumb = rec.last_crash()
+        assert rec.profile_index == expected and crumb["next_profile"] == PROFILES[expected]["name"]
+    store.set(BREADCRUMB, {"step": "starting the recording", "at": 0, "profile": rec.profile_index})
+    rec.last_crash()
+    assert rec.profile_index == len(PROFILES) - 1  # stays on the last one
+
+    assert run(rec.start()) == "" and rec.path.suffix == ".wav"
+    saved = run(rec.stop({}))
+    from taskdeck.jobs.voice_rec.library import mime_of
+    assert mime_of(saved.file) == "audio/wav"

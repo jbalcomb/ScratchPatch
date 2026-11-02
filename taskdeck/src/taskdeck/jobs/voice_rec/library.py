@@ -34,6 +34,11 @@ STAGE_OF = {RECORDED: TRANSCRIBE, QUEUED: TRANSCRIBE, TRANSCRIBED: ARCHIVE, ARCH
 STAGE_LABEL = {TRANSCRIBE: "Transcribe", ARCHIVE: "Archive"}
 EXTENSION = ".m4a"
 MIME = "audio/mp4"
+MIMES = {".m4a": "audio/mp4", ".wav": "audio/wav"}  # the formats the recorder writes (see screen.PROFILES)
+
+
+def mime_of(file_name: str) -> str:
+    return MIMES.get(Path(file_name).suffix.lower(), MIME)
 
 
 def now_iso() -> str:
@@ -145,10 +150,10 @@ class Library:
 
     # ---- writing -----------------------------------------------------------------------------
 
-    def new_path(self) -> tuple[str, Path]:
+    def new_path(self, extension: str = EXTENSION) -> tuple[str, Path]:
         """An id and the file to record into."""
         rec_id = str(uuid.uuid4())
-        return rec_id, self.audio_dir / f"{rec_id}{EXTENSION}"
+        return rec_id, self.audio_dir / f"{rec_id}{extension}"
 
     def add(self, rec_id: str, path: Path, recorded_at: str, duration: float,
             mobile_data: dict[str, bool] | None = None) -> Recording:
@@ -204,4 +209,4 @@ class Library:
     def orphans(self) -> list[Path]:
         """Audio files with no index entry (e.g. the app was killed while recording)."""
         known = {r.file for r in self.all()}
-        return [p for p in self.audio_dir.glob(f"*{EXTENSION}") if p.name not in known]
+        return [p for p in self.audio_dir.iterdir() if p.suffix.lower() in MIMES and p.name not in known]
