@@ -325,7 +325,6 @@ def post_json(url: str, body: Any, **kw: Any) -> Any:
 
 # Not in every Python's built-in table (Android has no system mime.types to add them).
 mimetypes.add_type("image/webp", ".webp")
-mimetypes.add_type("text/csv", ".csv")
 
 
 def multipart(fields: list[tuple[str, str]] = (), files: list[tuple[str, str, bytes]] = ()) -> tuple[bytes, str]:

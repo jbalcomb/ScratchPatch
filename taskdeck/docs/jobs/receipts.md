@@ -25,6 +25,6 @@ the reason is that the phone isn't on Tailscale. Errors from the service are sho
 | **Unmatched items** | Receipt lines not yet matched to a product, as "text (store, date, price) → suggestion". **Accept suggestions** matches every item whose suggestion scores 90% or more; the preview lists exactly those first. The service then matches the same text automatically, on other receipts too. Match the rest on the `/items` page. |
 | **Product photo** | Pick one or more photos of one product. **Send photos** adds it to the catalog; the name, brand and size are read in the background. |
 | **Shopping list** | Products that are due, with how many days overdue, the usual store, the last price and the best price and store. |
-| **Reconciliation** | Optionally imports a bank CSV (Bank of America, or any CSV with Date, Description and Amount) and copies new transactions from the budget store, then matches receipts to bank charges and lists receipts with no bank charge and charges with no receipt. Match those by hand on the `/reconcile` page. |
+| **Reconciliation** | Matches receipts to bank charges, then lists receipts with no bank charge and charges with no receipt. Bank charges come from the budget store, which the service reads on every run; bank exports are imported in the budget project, not here. No inputs. Match the leftovers by hand on the `/reconcile` page. |
 
 Amounts come from the service in cents and are shown in dollars.

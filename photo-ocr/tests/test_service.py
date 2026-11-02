@@ -408,21 +408,25 @@ def test_google_photos_picker(api):
 
 # ------------------------------------------------------------ reconciliation and orders
 
-BOA = ('Description,,Summary Amt.\r\nBeginning balance as of 10/01/2026,,"100.00"\r\n\r\n'
-       'Date,Description,Amount,Running Bal.\r\n'
-       '10/01/2026,Beginning balance as of 10/01/2026,,"100.00"\r\n'
-       '10/13/2026,"GIANT EAGLE #4 10/12 PURCHASE MENTOR OH","-7.19","92.81"\r\n'
-       '10/14/2026,"SUNOCO 0408780500 PURCHASE","-20.00","72.81"\r\n'
-       '10/16/2026,"INSTACART*ORDER SAN FRANCISCO CA","-52.10","20.71"\r\n')
+def make_budget_db(path, rows):
+    """A store laid out like budget.db's transactions table."""
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE IF NOT EXISTS transactions (account TEXT, date TEXT, description TEXT, amount INTEGER, balance INTEGER)")
+    con.executemany("INSERT INTO transactions VALUES (?, ?, ?, ?, ?)", rows)
+    con.commit()
+    con.close()
 
 
-def test_reconcile(api, model, tmp_path):
+def test_reconcile_reads_budget(api, model, tmp_path):
+    assert api("POST", "/api/reconcile/run", {})[0] == 409  # no budget store yet
+    api.svc.budget_db = str(tmp_path / "budget.db")
+    make_budget_db(api.svc.budget_db, [
+        ("checking", "2026-10-13", "GIANT EAGLE #4 10/12 PURCHASE MENTOR OH", -719, 9281),
+        ("checking", "2026-10-14", "SUNOCO 0408780500 PURCHASE", -2000, 7281),
+        ("checking", "2026-10-16", "INSTACART*ORDER SAN FRANCISCO CA", -5210, 2071)])
     api.svc.create_receipt([("r.png", png(1))])
     api.svc.parse_pending()
     api.svc.edit(1, {"approve": True})
-    status, r = api("POST", "/api/bank/import?account=checking", BOA.encode(), "text/csv")
-    assert r == {"rows": 3, "new": 3}
-    assert api("POST", "/api/bank/import", BOA.encode(), "text/csv")[1] == {"rows": 3, "new": 0}
 
     model.order = {"store": "Instacart (Aldi)", "date": "2026-10-15", "tax": 1.10,
                    "items": [{"name": "Eggs", "price": 3.00}, {"name": "Service fee", "price": 48.00}], "total": 52.10}
@@ -435,27 +439,16 @@ def test_reconcile(api, model, tmp_path):
     assert order["source"] == "instacart" and order["total"] == 5210 and "Eggs $3.00" in order["order_text"]
     api.svc.edit(o["id"], {"approve": True})
 
-    assert api("POST", "/api/reconcile/run", {})[1] == {"matched": 2}
+    assert api("POST", "/api/reconcile/run", {})[1] == {"matched": 2, "bank_rows": 3, "bank_new": 3}
     rec = api("GET", "/api/reconcile")[1]
     assert rec["receipts_unmatched"] == [] and [b["description"] for b in rec["bank_unmatched"]] == ["SUNOCO 0408780500 PURCHASE"]
     assert api("POST", "/api/reconcile/match", {"receipt_id": 1, "unmatch": True})[1] == {"ok": True}
     assert len(api("GET", "/api/reconcile")[1]["receipts_unmatched"]) == 1
 
-    budget = tmp_path / "budget.db"
-    con = sqlite3.connect(budget)
-    con.execute("CREATE TABLE transactions (account TEXT, date TEXT, description TEXT, amount INTEGER, balance INTEGER)")
-    con.execute("INSERT INTO transactions VALUES ('bills', '2026-10-20', 'FIRSTENERGY', -9000, 1000)")
-    con.commit()
-    con.close()
-    api.svc.budget_db = str(budget)
-    assert api("POST", "/api/bank/sync-budget", {})[1] == {"rows": 1, "new": 1}
-
-
-def test_bank_csv_needs_a_header():
-    with pytest.raises(ValueError):
-        reconcile.parse_csv("just,some\n1,2\n")
-    rows = reconcile.parse_csv("Date,Description,Amount\n2026-10-01,COFFEE,-3.50\n")
-    assert rows == [{"date": "2026-10-01", "description": "COFFEE", "amount": -350, "balance": None}]
+    # New charges in budget are picked up on the next run; ones already copied are not doubled.
+    make_budget_db(api.svc.budget_db, [("bills", "2026-10-20", "FIRSTENERGY", -9000, 1000)])
+    assert api("POST", "/api/reconcile/run", {})[1] == {"matched": 1, "bank_rows": 4, "bank_new": 1}
+    assert api("POST", "/api/bank/import", b"Date,Description,Amount\n", "text/csv")[0] == 404  # budget imports bank files
 
 
 # ------------------------------------------------------------ the labeled set grows

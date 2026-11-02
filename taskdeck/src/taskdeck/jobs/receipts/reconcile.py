@@ -1,27 +1,14 @@
-"""Reconciliation: match receipts to bank charges, and list what is unmatched on either side."""
+"""Reconciliation: match receipts to bank charges, and list what is unmatched on either side.
+
+Bank charges come from the budget store, which the service reads on each run; bank exports are imported in
+the budget project, not here."""
 
 from __future__ import annotations
 
-from taskdeck.core import Field, Pipeline, Result, Stage, step
+from taskdeck.core import Pipeline, Result, Stage, step
 
 from . import api
 from .lists import receipt_row
-
-
-@step(Stage.VALIDATE)
-def read_csv(ctx):
-    path = (ctx.get("bank_csv") or "").strip()
-    ctx["csv_part"] = api.read_files([path], (".csv",), field="file") if path else []
-
-
-@step(Stage.EXECUTE, name="import bank data")
-def import_bank(ctx):
-    ctx["imports"] = []
-    if ctx["csv_part"]:
-        ctx["imports"].append(("Bank CSV", api.call(ctx.settings, "POST", "/api/bank/import", files=ctx["csv_part"],
-                                                    timeout=120)))
-    if ctx.get("sync_budget"):
-        ctx["imports"].append(("Budget store", api.call(ctx.settings, "POST", "/api/bank/sync-budget", timeout=120)))
 
 
 @step(Stage.EXECUTE, name="match")
@@ -34,8 +21,8 @@ def run_match(ctx):
 def show_unmatched(ctx):
     data = ctx["reconcile"]
     receipts, bank = data.get("receipts_unmatched") or [], data.get("bank_unmatched") or []
-    rows = [(name, f"{r.get('rows', 0)} rows, {r.get('new', 0)} new") for name, r in ctx["imports"]]
-    rows += [("Matched now", str(ctx["run"].get("matched", 0))),
+    rows = [("New bank charges from budget", str(ctx["run"].get("bank_new", 0))),
+            ("Matched now", str(ctx["run"].get("matched", 0))),
              ("Receipts with no bank charge", str(len(receipts))), ("Bank charges with no receipt", str(len(bank)))]
     rows += [(key, f"{value} · no bank charge") for key, value in map(receipt_row, receipts)]
     rows += [(f"Bank {b.get('date') or ''} {b.get('description') or ''}".strip(),
@@ -52,19 +39,14 @@ def show_unmatched(ctx):
 class Reconciliation(api.ReceiptsJob):
     id = "receipts_reconcile"
     title = "Reconciliation"
-    description = "Match receipts to bank charges, then list receipts with no bank match and charges with no receipt."
+    description = ("Match receipts to the bank charges in the budget store, then list receipts with no bank match "
+                   "and charges with no receipt.")
     icon = "COMPARE_ARROWS"
-    tags = ("bank", "reconcile", "statement", "csv", "budget", "charges", "receipts", "instacart")
-    fields = (
-        Field.file("bank_csv", "Bank CSV (optional)", extensions=(".csv",),
-                   help="A Bank of America export, or any CSV with Date, Description and Amount columns. "
-                        "Rows already imported are skipped."),
-        Field.toggle("sync_budget", "Copy new transactions from the budget store"),
-    )
+    tags = ("bank", "reconcile", "statement", "budget", "charges", "receipts", "instacart")
     run_label = "Reconcile"
 
     def build_pipeline(self):
-        return Pipeline([api.service_configured, read_csv, import_bank, run_match, show_unmatched])
+        return Pipeline([api.service_configured, run_match, show_unmatched])
 
 
 PLUGIN = Reconciliation()

@@ -117,19 +117,17 @@ Photos chosen for `receipts` become **one receipt each**. Use merge for one rece
 
 ## Reconciliation (bank and online orders)
 
-`POST /api/bank/import`: a bank CSV as the request body, or multipart `file`. Bank of America exports and
-any CSV with Date, Description and Amount columns are accepted; overlapping imports add no duplicates.
-→ `{"rows": 120, "new": 31}`
-`POST /api/bank/sync-budget` copies new transactions from the budget project's store (`BUDGET_DB`).
-→ `{"rows": 640, "new": 12}`
+Bank transactions come only from the budget project's store (`BUDGET_DB`, read-only). Bank exports are
+imported in budget, and new accounts or banks are added there; this service has no bank import of its own.
 
 `POST /api/orders`: an online order (Instacart and others). The body is the order confirmation email (`.eml`,
 or text pasted in as JSON `{"text": "...", "source": "instacart"}`). The text model structures it into a
 receipt with `source` `instacart`, with no photos, which then goes through the same checks.
 → `201 {"id": 18, "status": "pending"}`
 
-`POST /api/reconcile/run` matches automatically (merchant, amount, bank date 1 day before to 5 days after
-the purchase). → `{"matched": 9}`
+`POST /api/reconcile/run` first copies new transactions from budget's store, then matches automatically
+(merchant, amount, bank date 1 day before to 5 days after the purchase).
+→ `{"matched": 9, "bank_rows": 640, "bank_new": 12}`, or `409` when there is no budget store at `BUDGET_DB`.
 `GET /api/reconcile` →
 ```json
 {"receipts_unmatched": [Receipt summary, ...],

@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS bank_txns (
     description TEXT NOT NULL,
     amount      INTEGER NOT NULL,                   -- cents; negative = money out
     balance     INTEGER,
-    origin      TEXT,                               -- csv:<file>, budget
+    origin      TEXT,                               -- budget (copied from budget.db)
     UNIQUE (account, date, description, amount, balance)
 );
 CREATE TABLE IF NOT EXISTS reconcile_matches (

@@ -98,10 +98,8 @@ class App:
             ("GET", r"/api/picker/status", self.picker_status),
             ("POST", r"/api/picker/sessions", self.picker_start),
             ("GET", r"/api/picker/sessions/([\w.-]+)", self.picker_session),
-            ("POST", r"/api/bank/import", self.bank_import),
-            ("POST", r"/api/bank/sync-budget", self.bank_sync),
             ("POST", r"/api/orders", self.post_order),
-            ("POST", r"/api/reconcile/run", lambda m, q, b, h: (200, {"matched": reconcile.run(self.s.store)})),
+            ("POST", r"/api/reconcile/run", self.reconcile_run),
             ("GET", r"/api/reconcile", self.get_reconcile),
             ("POST", r"/api/reconcile/match", self.reconcile_match),
             ("GET", r"/picker/auth", self.picker_auth),
@@ -275,25 +273,12 @@ class App:
 
     # ---- reconciliation ----
 
-    def bank_import(self, m, q, b, h):
-        ctype = h.get("Content-Type", "")
-        name, account = "upload.csv", q.get("account", "checking")
-        if ctype.startswith("multipart/form-data"):
-            fields, files = parse_multipart(ctype, b)
-            account = fields.get("account") or account
-            if not files:
-                raise HttpError(400, "no file")
-            _, name, b = files[0]
-        try:
-            rows = reconcile.parse_csv(b.decode("utf-8-sig", "replace"))
-        except ValueError as e:
-            raise HttpError(400, f"{name}: {e}") from None
-        return 200, reconcile.add_bank_rows(self.s.store, rows, account, f"csv:{name}")
-
-    def bank_sync(self, m, q, b, h):
+    def reconcile_run(self, m, q, b, h):
+        """Read the latest bank transactions from budget's store, then match."""
         if not Path(self.s.budget_db).exists():
             raise HttpError(409, f"no budget store at {self.s.budget_db} (set BUDGET_DB)")
-        return 200, reconcile.sync_budget(self.s.store, self.s.budget_db)
+        bank = reconcile.sync_budget(self.s.store, self.s.budget_db)
+        return 200, {"matched": reconcile.run(self.s.store), "bank_rows": bank["rows"], "bank_new": bank["new"]}
 
     def get_reconcile(self, m, q, b, h):
         receipts, bank, matched = reconcile.report(self.s.store, q.get("since"))

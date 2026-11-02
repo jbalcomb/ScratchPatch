@@ -1,37 +1,17 @@
 """Bank and online-order reconciliation (PRD.md, Later): match each receipt to its bank charge.
 
-Bank transactions come from a CSV export (Bank of America's layout, or any CSV with Date, Description and
-Amount columns) or from the budget project's store, which already holds the Bank of America exports.
+Bank transactions come only from the budget project's store (budget.db), read-only. Budget is where bank
+exports are imported; more accounts or banks are added there, not here.
 """
-import csv
 import difflib
-import io
 import re
 import sqlite3
 from datetime import date, timedelta
 
 from db import now
-from parsing import norm_store, to_cents, to_date
+from parsing import norm_store
 
 DAYS_BEFORE, DAYS_AFTER = 1, 5   # the bank date may be this far before / after the purchase date
-
-
-def parse_csv(text):
-    """-> [{date, description, amount, balance}] (amounts in cents). Skips a summary block above the header."""
-    lines = text.lstrip("﻿").splitlines()
-    start = next((i for i, ln in enumerate(lines) if re.match(r'\s*"?date"?\s*,', ln, re.I) and "amount" in ln.lower()), None)
-    if start is None:
-        raise ValueError("no header row with Date and Amount columns")
-    rows = []
-    for r in csv.DictReader(io.StringIO("\n".join(lines[start:]))):
-        r = {(k or "").strip().lower(): (v or "").strip() for k, v in r.items()}
-        d, amount = to_date(r.get("date") or r.get("posted date")), to_cents(r.get("amount"))
-        desc = r.get("description") or r.get("payee") or r.get("memo") or ""
-        if not d or amount is None or desc.lower().startswith("beginning balance"):
-            continue
-        rows.append({"date": d, "description": desc, "amount": amount,
-                     "balance": to_cents(r.get("running bal.") or r.get("balance"))})
-    return rows
 
 
 def add_bank_rows(store, rows, account, origin):

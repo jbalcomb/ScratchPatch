@@ -108,12 +108,8 @@ class FakeService:
             return 200, {"matched": same, "product_id": json.loads(req["body"])["product_id"]}
         if path == "/api/shopping-list":
             return 200, SHOPPING
-        if path == "/api/bank/import":
-            return 200, {"rows": 120, "new": 31}
-        if path == "/api/bank/sync-budget":
-            return 200, {"rows": 640, "new": 12}
         if path == "/api/reconcile/run":
-            return 200, {"matched": 9}
+            return 200, {"matched": 9, "bank_rows": 640, "bank_new": 12}
         if path == "/api/reconcile":
             return 200, {"receipts_unmatched": [RECEIPT], "bank_unmatched": [BANK],
                          "matched": [{"receipt_id": 16, "bank_id": 2, "method": "auto"}]}
@@ -344,28 +340,18 @@ def test_nothing_to_accept(service, settings, monkeypatch):
 
 # ---- reconciliation --------------------------------------------------------------------------------------
 
-def test_reconcile_imports_then_matches(service, settings, tmp_path):
-    csv = tmp_path / "stmt.csv"
-    csv.write_text("Date,Description,Amount\n10/13/2026,GIANT EAGLE #4,-45.19\n")
-    report = run(reconcile.PLUGIN, settings, bank_csv=str(csv), sync_budget=True)
+def test_reconcile_matches_against_budget(service, settings):
+    report = run(reconcile.PLUGIN, settings)
     assert report.ok, report.error
-    assert service.calls() == [("POST", "/api/bank/import"), ("POST", "/api/bank/sync-budget"),
-                               ("POST", "/api/reconcile/run"), ("GET", "/api/reconcile")]
-    [part] = parse_multipart(service.requests[0]["content_type"], service.requests[0]["body"])
-    assert part == ("file", "stmt.csv", csv.read_bytes())
+    assert service.calls() == [("POST", "/api/reconcile/run"), ("GET", "/api/reconcile")]
+    assert reconcile.PLUGIN.fields == ()  # bank files are imported in the budget project, not here
     assert report.result.rows == [
-        ("Bank CSV", "120 rows, 31 new"), ("Budget store", "640 rows, 12 new"), ("Matched now", "9"),
+        ("New bank charges from budget", "12"), ("Matched now", "9"),
         ("Receipts with no bank charge", "1"), ("Bank charges with no receipt", "1"),
         ("#17 Giant Eagle", "2026-10-12 · $45.19 · review · check: total, store · no bank charge"),
         ("Bank 2026-10-13 GIANT EAGLE #4", "-$45.19 · checking · no receipt"),
     ]
     assert report.result.title == "1 receipt and 1 bank charge unmatched"
-
-
-def test_reconcile_without_imports(service, settings):
-    report = run(reconcile.PLUGIN, settings)
-    assert report.ok, report.error
-    assert service.calls() == [("POST", "/api/reconcile/run"), ("GET", "/api/reconcile")]
 
 
 def test_jobs_refuse_to_run_without_url(service):

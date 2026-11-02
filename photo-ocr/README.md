@@ -16,7 +16,7 @@ the tests use stand-ins for those (see **Not yet tried for real** at the end).
 | 3 | Parsing, checks, confidence buckets, review page | `checks.py`, `/review` |
 | 4 | Syncthing (Immich external library), Google Photos Picker | `service.py`, `picker.py`, `/picker` |
 | 5 | Product gallery, catalog, line-item matching with aliases, shopping list | `catalog.py`, `/items`, `/products`, `/shopping` |
-| 6 | Bank CSV and budget import, online orders, reconciliation | `reconcile.py`, `/reconcile` |
+| 6 | Reconciliation against budget's bank transactions, online orders | `reconcile.py`, `/reconcile` |
 
 The TaskDeck plug-ins (Receipts and Reconciliation jobs) are in `taskdeck/src/taskdeck/jobs/receipts/`
 ([taskdeck/docs/jobs/receipts.md](../taskdeck/docs/jobs/receipts.md)). The heavy screens, such as the photo
@@ -105,9 +105,9 @@ python web.py export-labels        # approved receipts -> the bake-off set, so c
 - **`/shopping`:** products due again. The rule is a placeholder until the PRD's open question is settled:
   due when the days since the last purchase reach 90% of the usual days between purchases (two or more
   purchases needed).
-- **`/reconcile`:** import a bank CSV or sync from the budget store, then *Match*: each approved receipt is
-  matched to a charge with the same amount, a similar merchant, and a bank date from one day before to five
-  days after the purchase. Paste an Instacart order confirmation email to add it as a receipt (source
+- **`/reconcile`:** *Match* reads the latest bank transactions from the budget store (`~/budget/budget.db`;
+  bank exports are imported in budget, not here), then matches each approved receipt to a charge with the
+  same amount, a similar merchant, and a bank date from one day before to five days after the purchase. Paste an Instacart order confirmation email to add it as a receipt (source
   *instacart*); it goes through the same checks.
 
 ## The bake-off (phase 1)

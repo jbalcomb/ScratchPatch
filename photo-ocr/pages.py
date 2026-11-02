@@ -329,9 +329,8 @@ api('/api/shopping-list').then(r => {
 BODIES["reconcile"] = ("Reconcile", """
 <h1>Reconcile</h1>
 <div id="msg" class="msg"></div>
-<div class="row"><input type="file" id="csv" accept=".csv,text/csv" hidden><button id="import">Import bank CSV</button>
-<select id="account" style="width:auto"><option>checking</option><option>bills</option><option>savings</option><option>credit</option></select>
-<button id="sync">Sync from budget</button><button class="primary" id="run">Match</button></div>
+<p class="muted">Bank charges come from the budget store; import bank exports there.</p>
+<div class="row"><button class="primary" id="run">Match</button></div>
 <h2>Online order (Instacart)</h2>
 <textarea id="order" rows="4" placeholder="Paste the order confirmation email text"></textarea>
 <div class="row" style="margin-top:6px"><button id="addorder">Add order</button></div>
@@ -352,11 +351,8 @@ async function load() {
   document.querySelectorAll('.link').forEach(b => b.onclick = async () => { if (!sel) return say('Tap a receipt first.', true);
     await api('/api/reconcile/match', {json: {receipt_id: sel, bank_id: Number(b.dataset.b)}}); sel = null; say('Matched.'); load(); });
 }
-$('#import').onclick = () => $('#csv').click();
-$('#csv').onchange = async e => { const fd = new FormData(); fd.append('file', e.target.files[0]); fd.append('account', $('#account').value);
-  try { const r = await api('/api/bank/import', {method: 'POST', body: fd}); say(`${r.new} new of ${r.rows} rows.`); load(); } catch (x) { say(x.message, true); } e.target.value = ''; };
-$('#sync').onclick = async () => { try { const r = await api('/api/bank/sync-budget', {json: {}}); say(`${r.new} new of ${r.rows} transactions.`); load(); } catch (x) { say(x.message, true); } };
-$('#run').onclick = async () => { const r = await api('/api/reconcile/run', {json: {}}); say(`${r.matched} matched.`); load(); };
+$('#run').onclick = async () => { try { const r = await api('/api/reconcile/run', {json: {}});
+  say(`${r.bank_new} new bank charges from budget; ${r.matched} matched.`); load(); } catch (x) { say(x.message, true); } };
 $('#addorder').onclick = async () => { try { const r = await api('/api/orders', {json: {text: $('#order').value, source: 'instacart'}});
   $('#order').value = ''; say(`Order saved as receipt ${r.id}; it is being read, then appears under Review.`); } catch (x) { say(x.message, true); } };
 load().catch(e => say(e.message, true));
