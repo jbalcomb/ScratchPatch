@@ -3,6 +3,7 @@ History, Settings, the command palette and keyboard shortcuts."""
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
@@ -118,6 +119,18 @@ class TaskDeckApp:
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
+        self._start_plugins()
+
+    def _start_plugins(self) -> None:
+        """Jobs with work that runs without their screen (e.g. Voice notes sending queued recordings)
+        define ``on_app_start(app)``. A failing one is logged and skipped."""
+        for plugin in self.registry:
+            start = getattr(plugin, "on_app_start", None)
+            if start:
+                try:
+                    start(self)
+                except Exception:
+                    logging.getLogger(__name__).exception("on_app_start failed for %s", plugin.id)
 
     # ---- navigation ---------------------------------------------------------------
 
