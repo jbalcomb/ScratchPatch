@@ -5,11 +5,8 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from urllib.parse import urlsplit
 
 from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
-from taskdeck.shared import tailscale
-from taskdeck.shared.http import reachable
 
 from . import data, reconcile, sheets, timeline
 from .config import SETTINGS
@@ -82,23 +79,20 @@ class _BudgetJob(JobPlugin):
     tab = ""
 
     def check_ready(self, settings):
-        problems = super().check_ready(settings) + sheets.setup_problems(settings)
-        url = (settings.get("budget_url") or "").strip()
-        if url and not url.startswith(("http://", "https://")):
-            problems.append(Problem(f"The budget service address must start with https:// (it's “{url}”). Use the "
-                                    "address `tailscale serve status` shows on the AI Workstation.", fix="settings"))
-        return problems
+        return super().check_ready(settings) + sheets.setup_problems(settings)
 
     def check_ready_online(self, settings):
-        url = (settings.get("budget_url") or "").strip()
-        if url.startswith(("http://", "https://")) and not reachable(url, 3):
-            why = tailscale.why_unreachable(url)
-            text = f"The budget service at {url} isn't reachable{': ' + why if why else ' right now'}."
-            if not url.startswith("https://") or urlsplit(url).port not in (None, 443, 8443):
-                # The container listens on the workstation's localhost only; Tailscale Serve is the way in.
-                text += (" Use the https://….ts.net address from `tailscale serve status` on the AI Workstation: "
-                         "the service's own port only answers on the workstation itself.")
-            return [Problem(text, fix="recheck")]
+        """Find the address that answers. A different one than typed is used as is, and noted (not blocking)."""
+        typed = (settings.get("budget_url") or "").strip()
+        if not typed:
+            return []
+        try:
+            used = data.service_url(typed)
+        except StepError as exc:
+            return [Problem(str(exc), fix="recheck")]
+        if used.rstrip("/") != typed.rstrip("/"):
+            return [Problem(f"Using {used} (the address in settings, {typed}, doesn't answer from the phone). "
+                            "Putting it in settings skips this lookup.", blocking=False, fix="settings")]
         return []
 
     def commit(self, payload, settings):

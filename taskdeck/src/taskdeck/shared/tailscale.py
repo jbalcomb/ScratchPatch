@@ -97,3 +97,63 @@ def why_unreachable(url: str) -> str:
         return (f"Tailscale is on, but {host} isn't answering: the workstation may be asleep, or Tailscale or "
                 "the AI server is off there")
     return ""
+
+
+def _dns_name(msg: bytes, i: int) -> tuple[str, int]:
+    """Read a (possibly compressed) DNS name at offset i: (name, offset after it)."""
+    labels, end, jumps = [], None, 0
+    while True:
+        n = msg[i]
+        if n & 0xC0 == 0xC0:  # pointer to an earlier name
+            if end is None:
+                end = i + 2
+            i = ((n & 0x3F) << 8) | msg[i + 1]
+            jumps += 1
+            if jumps > 20:
+                raise ValueError("DNS name loop")
+            continue
+        if n == 0:
+            return ".".join(labels), (end if end is not None else i + 1)
+        labels.append(msg[i + 1:i + 1 + n].decode("ascii", "replace"))
+        i += 1 + n
+
+
+def reverse_lookup(ip: str, timeout: float = 2) -> str | None:
+    """The MagicDNS name of a tailnet address, asked of Tailscale's own DNS (100.100.100.100), or None."""
+    if not in_tailnet(ip):
+        return None
+    question = b"".join(bytes([len(p)]) + p.encode() for p in reversed(ip.split("."))) + b"\x07in-addr\x04arpa\x00"
+    query = b"\x7a\x11\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + question + b"\x00\x0c\x00\x01"  # PTR, IN
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(timeout)
+            s.sendto(query, QUAD100)
+            msg = s.recv(1500)
+        if msg[:2] != query[:2] or msg[3] & 0x0F or int.from_bytes(msg[6:8], "big") == 0:
+            return None
+        _, i = _dns_name(msg, 12)
+        i += 4  # question type and class
+        for _ in range(int.from_bytes(msg[6:8], "big")):
+            _, i = _dns_name(msg, i)
+            rtype, length = int.from_bytes(msg[i:i + 2], "big"), int.from_bytes(msg[i + 8:i + 10], "big")
+            if rtype == 12:
+                return _dns_name(msg, i + 10)[0].rstrip(".") or None
+            i += 10 + length
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def full_name(host: str, timeout: float = 2) -> str | None:
+    """The *.ts.net name for a tailnet address or a bare MagicDNS name ("ai-workstation"), or None.
+    Tailscale Serve's HTTPS certificate is only valid for that name."""
+    if host.endswith(".ts.net"):
+        return host
+    if not is_tailnet_host(host):
+        return None
+    try:
+        ip = host if in_tailnet(host) else socket.gethostbyname(host)
+    except OSError:
+        return None
+    name = reverse_lookup(ip, timeout)
+    return name if name and name.endswith(".ts.net") else None

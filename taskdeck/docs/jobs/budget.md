@@ -68,14 +68,19 @@ in the row whose first cell is "Expense").
 
    The two jobs share these settings. The phone needs Tailscale on to reach the budget service.
 
-## "The budget service isn't reachable"
+## Finding the service
 
-The upload page and these jobs use the same address; the jobs read `/api/transactions` there. On the phone:
+The upload page and these jobs use the same address; the jobs read `/api/transactions` there. The service only
+answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`), so when the address in settings doesn't
+answer, the job works out the right one by itself and says which it used:
 
-1. Tailscale must be on (the message says so when it isn't).
-2. The address must be the **Tailscale Serve** one, `https://….ts.net` (from `tailscale serve status` on the
-   AI Workstation). The container only listens on the workstation's own `localhost:8092`, so
-   `http://100.83.88.59:8092` never connects.
-3. Open `<address>/api/transactions?since=2026-10-01` in the phone's browser. JSON means the service is fine and
-   the setting differs from what you typed there; "not found" means the workstation runs an older budget
-   service: `cd ~/ScratchPatch && git checkout main && git pull && cd budget && docker compose up -d --build`.
+* no `https://`, or a pasted path (`/upload`, `/api/...`): fixed;
+* the workstation's Tailscale IP or short name, or the service's own port (`http://100.83.88.59:8092`): the
+  phone asks Tailscale's DNS for the workstation's `*.ts.net` name and tries it on 443 and 8443.
+
+What it can't fix, it says:
+
+* the phone isn't on Tailscale: open the Tailscale app;
+* the workstation runs an older budget service without the feed: run there
+  `cd ~/ScratchPatch && git checkout main && git pull && cd budget && docker compose up -d --build`;
+* nothing answers: check `tailscale serve status` on the AI Workstation.

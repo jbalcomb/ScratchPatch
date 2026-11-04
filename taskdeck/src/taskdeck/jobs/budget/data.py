@@ -50,16 +50,64 @@ def parse_feed(data: dict[str, Any]) -> Feed:
     )
 
 
-def fetch(base_url: str, since: date, timeout: float = 30) -> Feed:
-    base = (base_url or "").strip().rstrip("/")
-    if not base.startswith(("http://", "https://")):
-        raise StepError("Set the budget service address in this job's settings (it starts with https://).")
+UPDATE_SERVICE = ("cd ~/ScratchPatch && git checkout main && git pull && cd budget && "
+                  "docker compose up -d --build")
+_answered: dict[str, str] = {}  # address as typed in settings -> the address that answered
+
+
+def candidates(typed: str) -> list[str]:
+    """Addresses to try for what was typed, in order. The service only answers through Tailscale Serve
+    (https://<machine>.<tailnet>.ts.net, on 443 or 8443), so a missing https://, a pasted path, the
+    workstation's IP or short name, or the service's own port are all turned into that."""
+    text = (typed or "").strip()
+    if not text:
+        return []
+    if "://" not in text:
+        text = "https://" + text
+    parts = urllib.parse.urlsplit(text)
+    host = parts.hostname or ""
+    out = [f"{parts.scheme}://{parts.netloc}"]
+    for name in dict.fromkeys(n for n in (tailscale.full_name(host), host) if n):
+        out += [f"https://{name}", f"https://{name}:8443"]
+    return list(dict.fromkeys(out))
+
+
+def service_url(typed: str, timeout: float = 5) -> str:
+    """The first candidate address where the budget service's feed answers (remembered per typed address).
+    Raises StepError saying what was tried, or what to run when the workstation has an older service."""
+    if typed in _answered:
+        return _answered[typed]
+    tried, outdated = [], None
+    for base in candidates(typed):
+        try:
+            data = get_json(f"{base}/api/transactions?since={date.today().isoformat()}", timeout=timeout)
+        except HttpError as exc:
+            if exc.status == 404:
+                outdated = outdated or base
+            tried.append(base)
+            continue
+        if isinstance(data, dict) and "accounts" in data:
+            _answered[typed] = base
+            return base
+        tried.append(base)
+    if not tried:
+        raise StepError("Set the budget service address in this job's settings (https://….ts.net).")
+    if outdated:
+        raise StepError(f"{outdated} is an older budget service, without the transactions feed. Update it on the "
+                        f"AI Workstation: {UPDATE_SERVICE}")
+    why = tailscale.why_unreachable(tried[0])
+    raise StepError(f"The budget service didn't answer at {', '.join(tried)}"
+                    + (f": {why}." if why else ". Check `tailscale serve status` on the AI Workstation."))
+
+
+def fetch(typed_url: str, since: date, timeout: float = 30) -> Feed:
+    base = service_url(typed_url)
     url = f"{base}/api/transactions?" + urllib.parse.urlencode({"since": since.isoformat()})
     try:
         return parse_feed(get_json(url, timeout=timeout))
     except HttpError as exc:
-        why = tailscale.why_unreachable(base)
-        raise StepError(f"Couldn't get the bank transactions from the budget service: {why or exc}") from None
+        _answered.pop(typed_url, None)
+        raise StepError(f"Couldn't get the bank transactions from the budget service: {exc}") from None
 
 
 def merchant(description: str) -> str:

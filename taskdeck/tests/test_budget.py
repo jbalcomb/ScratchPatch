@@ -151,17 +151,73 @@ def test_month_input_is_checked(monkeypatch, items):
     assert not report.ok and "2026-10" in report.error
 
 
-def test_address_without_scheme_is_a_settings_problem():
-    job = budget.PLUGIN
-    settings = job.resolve_settings({"budget_url": "ai-workstation.tail1234.ts.net", "service_account_json": "{}"})
-    messages = [p.message for p in job.check_ready(settings) if "budget service address" in p.message]
-    assert messages and "https://" in messages[0]
+def test_candidates_turn_what_was_typed_into_the_serve_address(monkeypatch):
+    monkeypatch.setattr(data.tailscale, "full_name",
+                        lambda host, timeout=2: "ai-workstation.tail1234.ts.net" if host in ("100.83.88.59", "ai-workstation")
+                        else host if host.endswith(".ts.net") else None)
+    assert data.candidates("http://100.83.88.59:8092/upload") == [
+        "http://100.83.88.59:8092", "https://ai-workstation.tail1234.ts.net", "https://ai-workstation.tail1234.ts.net:8443",
+        "https://100.83.88.59", "https://100.83.88.59:8443"]
+    assert data.candidates("ai-workstation.tail1234.ts.net/")[:2] == [
+        "https://ai-workstation.tail1234.ts.net", "https://ai-workstation.tail1234.ts.net:8443"]
+    assert data.candidates("ai-workstation")[1] == "https://ai-workstation.tail1234.ts.net"
+    assert data.candidates("") == []
 
 
-def test_unreachable_direct_port_says_to_use_tailscale_serve(monkeypatch):
-    monkeypatch.setattr(budget, "reachable", lambda url, timeout: False)
-    monkeypatch.setattr(budget.tailscale, "why_unreachable", lambda url: "")
-    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "http://100.83.88.59:8092"})
-    assert "100.83.88.59:8092" in problem.message and "tailscale serve status" in problem.message
-    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "https://ai.tail1234.ts.net"})
-    assert "tailscale serve status" not in problem.message
+def answering(monkeypatch, answers):
+    """get_json that answers per base address: a dict, or an HTTP status to fail with."""
+    from taskdeck.shared.http import HttpError
+
+    def get_json(url, timeout=30):
+        base = url.split("/api/")[0]
+        answer = answers.get(base, None)
+        if isinstance(answer, dict):
+            return answer
+        raise HttpError(f"HTTP {answer}" if answer else f"Can't reach {base}", answer)
+    monkeypatch.setattr(data, "get_json", get_json)
+    monkeypatch.setattr(data, "candidates", lambda typed: ["http://ip:8092", "https://ws.ts.net", "https://ws.ts.net:8443"])
+    monkeypatch.setattr(data.tailscale, "why_unreachable", lambda url: "")
+    data._answered.clear()
+
+
+def test_service_url_uses_the_address_that_answers_and_says_so(monkeypatch):
+    answering(monkeypatch, {"https://ws.ts.net:8443": {"accounts": {}, "transactions": []}})
+    assert data.service_url("http://ip:8092") == "https://ws.ts.net:8443"
+    [note] = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    assert not note.blocking and note.message.startswith("Using https://ws.ts.net:8443")
+
+
+def test_service_url_explains_an_older_service_or_no_answer(monkeypatch):
+    answering(monkeypatch, {"https://ws.ts.net": 404})
+    with pytest.raises(StepError, match="older budget service.*docker compose up -d --build"):
+        data.service_url("http://ip:8092")
+    answering(monkeypatch, {})
+    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    assert problem.blocking and "http://ip:8092, https://ws.ts.net" in problem.message
+
+
+def test_reverse_lookup_asks_tailscale_dns(monkeypatch):
+    import socket
+    import threading
+
+    from taskdeck.shared import tailscale
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server.bind(("127.0.0.1", 0))
+
+    def answer():
+        query, client = server.recvfrom(1500)
+        name = b"".join(bytes([len(p)]) + p for p in b"ai-workstation.tail1234.ts.net.".split(b".")[:-1]) + b"\x00"
+        # Same id, response flags, 1 question, 1 answer; the answer's name points back at the question (0xC00C).
+        reply = (query[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + query[12:]
+                 + b"\xc0\x0c\x00\x0c\x00\x01\x00\x00\x02\x58" + len(name).to_bytes(2, "big") + name)
+        server.sendto(reply, client)
+
+    threading.Thread(target=answer, daemon=True).start()
+    monkeypatch.setattr(tailscale, "QUAD100", server.getsockname())
+    try:
+        assert tailscale.full_name("100.83.88.59") == "ai-workstation.tail1234.ts.net"
+    finally:
+        server.close()
+    assert tailscale.full_name("192.168.1.50") is None
+    assert tailscale.full_name("ai-workstation.tail1234.ts.net") == "ai-workstation.tail1234.ts.net"
