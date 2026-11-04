@@ -14,7 +14,7 @@ from typing import Any
 from taskdeck.core import StepError
 from taskdeck.shared import http, tailscale
 
-from .library import MIME, Recording
+from .library import Recording, mime_of
 
 
 class ServerError(StepError):
@@ -78,7 +78,7 @@ class Client:
 
     def upload(self, rec: Recording, audio: bytes) -> dict[str, Any]:
         headers = {
-            "Content-Type": MIME,
+            "Content-Type": mime_of(rec.file),
             "Content-Length": str(len(audio)),
             "X-Recorded-At": rec.recorded_at,
             "X-Duration": str(rec.duration),

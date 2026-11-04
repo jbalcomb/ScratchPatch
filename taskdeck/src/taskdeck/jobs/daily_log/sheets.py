@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from taskdeck.core import NeedsConfirmation, Problem, StepError
+from taskdeck.core import NeedsConfirmation, StepError
 from taskdeck.shared.google import (
-    GoogleError, ServiceAccountCredentials, ServiceAccountKey, SheetsClient, a1_range,
+    GoogleError, ServiceAccountCredentials, ServiceAccountKey, SheetsClient, a1_range, key_problems,
 )
 
 from .reconcile import differences, find_date, last_filled_row, parse_date
@@ -68,15 +68,7 @@ def make_backend(settings: dict[str, Any], timeout: float = 30) -> SheetBackend:
         raise StepError(str(exc)) from None
 
 
-def setup_problems(settings: dict[str, Any]) -> list[Problem]:
-    """Offline check that the service-account key can be used."""
-    key_text = (settings.get("service_account_json") or "").strip()
-    if key_text:
-        try:
-            ServiceAccountKey.from_json(key_text).check()
-        except GoogleError as exc:
-            return [Problem(str(exc))]
-    return []
+setup_problems = key_problems  # offline check that the service-account key can be used
 
 
 def read_checked(backend: SheetBackend) -> list[list[Any]]:

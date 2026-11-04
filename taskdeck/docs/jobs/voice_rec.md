@@ -46,3 +46,13 @@ live update alone isn't enough: until the new APK is installed the job says so i
 `src/taskdeck/jobs/voice_rec/`: `library.py` (files + index), `sync.py` (one pass of the queue, pure),
 `client.py` (HTTP to the workstation), `screen.py` (UI, recorder, background sync). Tests:
 `tests/test_voice_rec.py`.
+
+## If TaskDeck closes when recording starts
+
+* Before each native step (permission prompt, recorder set-up, start, stop) the step is saved. If TaskDeck
+  starts again with one left over, it opens Voice notes and says which step it was.
+* The recorder settings step down after a crash while starting: AAC 16 kHz with Android's legacy recorder
+  first, then AAC 44.1 kHz legacy, AAC 16 kHz with the advanced recorder, WAV 16 kHz. Bluetooth headset
+  handling is always off.
+* APKs from 2026-11-02 on catch the Java/Kotlin exception that closed the app (any plugin's) in
+  `taskdeck-background`; Voice notes shows its first line and **Copy crash report** copies the whole trace.

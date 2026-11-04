@@ -117,6 +117,83 @@ def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
     assert not screen.checking and screen.blocked
 
 
+def test_settings_the_online_check_fixed_are_saved(tmp_path, monkeypatch):
+    from taskdeck.core import Problem
+    from taskdeck.jobs import budget
+
+    app = fake_app(tmp_path)
+    saved = {"budget_url": "http://100.83.88.59:8092", "sheet_id": "s"}
+    app.job_settings = lambda job_id: dict(saved)
+    app.save_job_settings = lambda job_id, values: saved.update(values)
+    app.page = SimpleNamespace(run_thread=lambda fn: fn())
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen = JobScreen(app, budget.PLUGIN)
+    screen.check_ready()
+    assert saved == {"budget_url": "https://ws.ts.net", "sheet_id": "s"}
+    assert not screen.blocked
+
+
+def settings_screen(monkeypatch, check):
+    """A budget settings screen with no page, its checks replaced by ``check``; returns (screen, saved)."""
+    from taskdeck.jobs import budget
+    from taskdeck.ui import settings_view
+
+    saved = {}
+    app = SimpleNamespace(job_settings=lambda job_id: {"budget_url": "https://old.ts.net"},
+                          save_job_settings=lambda job_id, v: saved.update(v), toast=lambda m: None,
+                          back=lambda: None, page=SimpleNamespace(run_thread=lambda fn: fn()))
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: check(s))
+    screen = settings_view.JobSettingsScreen(app, budget.PLUGIN)
+    screen.view.update = lambda: None
+    return screen, saved
+
+
+def report_text(screen):
+    import flet as ft
+
+    return " ".join(c.value for c in screen.report.controls if isinstance(c, ft.Text))
+
+
+def test_save_checks_first_and_keeps_working_settings(monkeypatch):
+    from taskdeck.core import Problem
+
+    def check(s):
+        if s["budget_url"] == "https://good.ts.net":
+            return [Problem.passed("Budget service at https://good.ts.net: 3 accounts")]
+        return [Problem("The budget service didn't answer at https://bad.ts.net", fix="recheck")]
+
+    screen, saved = settings_screen(monkeypatch, check)
+    screen.fields["budget_url"].value = "bad.ts.net/upload"
+    screen.save()
+    assert saved == {}  # not saved: the old, working address stays
+    assert "don't work yet" in report_text(screen) and "didn't answer" in report_text(screen)
+    screen.save_anyway()
+    assert saved["budget_url"] == "https://bad.ts.net"  # tidied, saved on request
+
+    saved.clear()
+    screen.fields["budget_url"].value = "good.ts.net"
+    screen.test()
+    assert saved == {} and "✓ Budget service at https://good.ts.net" in report_text(screen)
+    screen.save()
+    assert saved["budget_url"] == "https://good.ts.net"
+
+
+def test_test_settings_fills_in_what_it_fixed(monkeypatch):
+    from taskdeck.core import Problem
+
+    screen, saved = settings_screen(monkeypatch, lambda s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen.fields["budget_url"].value = "http://100.83.88.59:8092"
+    screen.test()
+    assert screen.fields["budget_url"].value == "https://ws.ts.net" and saved == {}
+    assert "Tap Save to keep these settings" in report_text(screen)
+
+
 def test_job_without_inputs_and_shared_settings(tmp_path):
     from taskdeck.jobs.daily_log import reconcile_job
 

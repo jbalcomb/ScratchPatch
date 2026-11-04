@@ -4,7 +4,7 @@ from .favorites import Drafts, Favorites, History
 from .pipeline import Cancelled, Context, Pipeline, Result, RunReport, Stage, Step, StepError, step
 from .plugin import (
     GOOGLE_ACCOUNT, WIFI_ONLY, CommitOutcome, Field, FieldKind, JobPlugin, NeedsConfirmation, PluginRegistry, Problem, QuickAction,
-    SettingsAction,
+    SettingsAction, SettingsCheck, SettingsResult, check_settings,
 )
 from .secrets import SecretBackend, Vault, VaultError
 from .storage import JsonStore, default_data_dir
@@ -15,5 +15,5 @@ __all__ = [
     "JobNature",
     "Cancelled", "Command", "CommitOutcome", "CommandKind", "CommandRegistry", "Context", "Drafts", "Favorites", "Field",
     "FieldKind", "History", "JobPlugin", "JsonStore", "NeedsConfirmation", "Pipeline", "PluginRegistry", "Problem", "QuickAction",
-    "Result", "RunReport", "SecretBackend", "SettingsAction", "Stage", "Step", "StepError", "Task", "TaskManager", "Vault", "VaultError", "default_data_dir", "fuzzy_score", "step",
+    "Result", "RunReport", "SecretBackend", "SettingsAction", "SettingsCheck", "SettingsResult", "Stage", "Step", "StepError", "Task", "TaskManager", "Vault", "VaultError", "check_settings", "default_data_dir", "fuzzy_score", "step",
 ]

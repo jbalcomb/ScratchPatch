@@ -5,35 +5,49 @@
 
 # Income
 INSTACART = Income: Instacart
+# Part of the paycheck, sent over from the US Bank account (must stay above the Transfer lines)
+Transfer James William Balcomb = Income: Paycheck
 
 # Moving money between your own accounts (not spending)
 Online Banking transfer = Transfer
 Transfer = Transfer
 
-# Bills
-VERIZON = Phone
-EXETERFINA = Car loan
-PROG DIRECT INS = Car insurance
-PLANET FITNESS = Gym
+# Bills. Categories named exactly like the Expense column of the budget sheet's SnapShot tab, so the
+# TaskDeck budget jobs can match them. Rename both together.
+VERIZON = Phone Payment
+EXETERFINA = Car Payment
+PROG DIRECT INS = Car Insurance
+PLANET FITNESS = Planet Fitness
+GOOGLE *GOOGLE = Google Gemini
+# Same plan, billed under a new name from October 2026
+GOOGLE *G1AI = Google Gemini
+ANTHROPIC = Claude AI Subscription
+CLAUDE.AI = Claude AI Subscription
+NETFLIX = Netflix
+SPOTIFY = Spotify
+[savings] Monthly Maintenance Fee = BofA Fee - Save
+[bills] Monthly Maintenance Fee = BofA Fee - Bills
+[checking] Monthly Maintenance Fee = BofA Fee - Daily
 COURSERA = Education
+# Ashtabula County YMCA, $52.68 a month
+ASHTABULA COUNTY = YMCA
 
 # Bank
-Monthly Maintenance Fee = Bank fees
 OVERDRAFT = Bank fees
 Interest Earned = Interest
 Temporary Credit Adjustment = Refunds
 BKOFAMERICA ATM = Cash
 
-# Gas (Instacart work)
-SUNOCO = Gas
-GET GO = Gas
-CIRCLE K = Gas
-MAPCO = Gas
-SPEEDWAY = Gas
-MARATHON = Gas
-SHELL = Gas
-SHEETZ = Gas
-MURPHY = Gas
+# Motor Fuel (Instacart work)
+SUNOCO = Motor Fuel
+GET GO = Motor Fuel
+CIRCLE K = Motor Fuel
+MAPCO = Motor Fuel
+SPEEDWAY = Motor Fuel
+MARATHON = Motor Fuel
+SHELL = Motor Fuel
+SHEETZ = Motor Fuel
+MURPHY = Motor Fuel
 
 # Groceries and household
 GIANT EAGLE = Groceries
@@ -44,21 +58,17 @@ WAL-MART = Groceries
 WALMART = Groceries
 WM SUPERCENTER = Groceries
 
-# Eating out
-CHIPOTLE = Eating out
-SUBWAY = Eating out
-DOORDASH = Eating out
-MCDONALD = Eating out
-TST* = Eating out
+# Dining Out
+CHIPOTLE = Dining Out
+SUBWAY = Dining Out
+DOORDASH = Dining Out
+MCDONALD = Dining Out
+TST* = Dining Out
 
 # Subscriptions and tools
-NETFLIX = Subscriptions
-SPOTIFY = Subscriptions
 YOUTUB = Subscriptions
 CURSOR = AI tools
 SKYWORKAI = AI tools
-ANTHROPIC = AI tools
-CLAUDE.AI = AI tools
 OPENAI = AI tools
 GITHUB = Software
 NOTION = Software
