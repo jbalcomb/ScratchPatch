@@ -149,3 +149,19 @@ def test_jobs_register_and_share_settings():
 def test_month_input_is_checked(monkeypatch, items):
     report = budget.PLUGIN.run({"month": "October"}, settings={})
     assert not report.ok and "2026-10" in report.error
+
+
+def test_address_without_scheme_is_a_settings_problem():
+    job = budget.PLUGIN
+    settings = job.resolve_settings({"budget_url": "ai-workstation.tail1234.ts.net", "service_account_json": "{}"})
+    messages = [p.message for p in job.check_ready(settings) if "budget service address" in p.message]
+    assert messages and "https://" in messages[0]
+
+
+def test_unreachable_direct_port_says_to_use_tailscale_serve(monkeypatch):
+    monkeypatch.setattr(budget, "reachable", lambda url, timeout: False)
+    monkeypatch.setattr(budget.tailscale, "why_unreachable", lambda url: "")
+    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "http://100.83.88.59:8092"})
+    assert "100.83.88.59:8092" in problem.message and "tailscale serve status" in problem.message
+    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "https://ai.tail1234.ts.net"})
+    assert "tailscale serve status" not in problem.message

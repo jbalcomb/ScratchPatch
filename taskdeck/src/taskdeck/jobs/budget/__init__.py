@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from urllib.parse import urlsplit
 
 from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
 from taskdeck.shared import tailscale
@@ -81,14 +82,23 @@ class _BudgetJob(JobPlugin):
     tab = ""
 
     def check_ready(self, settings):
-        return super().check_ready(settings) + sheets.setup_problems(settings)
+        problems = super().check_ready(settings) + sheets.setup_problems(settings)
+        url = (settings.get("budget_url") or "").strip()
+        if url and not url.startswith(("http://", "https://")):
+            problems.append(Problem(f"The budget service address must start with https:// (it's “{url}”). Use the "
+                                    "address `tailscale serve status` shows on the AI Workstation.", fix="settings"))
+        return problems
 
     def check_ready_online(self, settings):
         url = (settings.get("budget_url") or "").strip()
-        if url and not reachable(url, 3):
+        if url.startswith(("http://", "https://")) and not reachable(url, 3):
             why = tailscale.why_unreachable(url)
-            return [Problem(f"The budget service isn't reachable{': ' + why if why else ' right now'}.",
-                            fix="recheck")]
+            text = f"The budget service at {url} isn't reachable{': ' + why if why else ' right now'}."
+            if not url.startswith("https://") or urlsplit(url).port not in (None, 443, 8443):
+                # The container listens on the workstation's localhost only; Tailscale Serve is the way in.
+                text += (" Use the https://….ts.net address from `tailscale serve status` on the AI Workstation: "
+                         "the service's own port only answers on the workstation itself.")
+            return [Problem(text, fix="recheck")]
         return []
 
     def commit(self, payload, settings):
