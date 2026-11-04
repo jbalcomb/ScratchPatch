@@ -71,12 +71,14 @@ in the row whose first cell is "Expense").
 ## Finding the service
 
 The upload page and these jobs use the same address; the jobs read `/api/transactions` there. The service only
-answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`), so when the address in settings doesn't
-answer, the job works out the right one by itself and says which it used:
+answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`). What can be fixed is fixed:
 
-* no `https://`, or a pasted path (`/upload`, `/api/...`): fixed;
-* the workstation's Tailscale IP or short name, or the service's own port (`http://100.83.88.59:8092`): the
-  phone asks Tailscale's DNS for the workstation's `*.ts.net` name and tries it on 443 and 8443.
+* **Save** in settings adds a missing `https://` and drops a pasted path (`/upload`, `/api/...`).
+* **Find budget service** (settings) looks up the address that answers and fills it in; tap Save.
+* When the job opens and the saved address doesn't answer, it finds the one that does and **saves it** in
+  place of the old one (the job says so). For the workstation's Tailscale IP, short name or the service's own
+  port (`http://100.83.88.59:8092`), the phone asks Tailscale's DNS for the workstation's `*.ts.net` name and
+  tries it on 443 and 8443.
 
 What it can't fix, it says:
 
