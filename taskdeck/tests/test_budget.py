@@ -177,18 +177,23 @@ def answering(monkeypatch, answers):
     monkeypatch.setattr(data, "get_json", get_json)
     monkeypatch.setattr(data, "candidates", lambda typed: ["http://ip:8092", "https://ws.ts.net", "https://ws.ts.net:8443"])
     monkeypatch.setattr(data.tailscale, "why_unreachable", lambda url: "")
+    monkeypatch.setattr(budget.sheets, "read_items", lambda settings: snapshot.parse(SNAPSHOT))
     data._answered.clear()
 
 
+FEED = {"accounts": {"bills": {"balance": 642, "as_of": "2026-10-19"}}, "transactions": []}
+
+
 def test_service_url_uses_the_address_that_answers_and_says_so(monkeypatch):
-    answering(monkeypatch, {"https://ws.ts.net:8443": {"accounts": {}, "transactions": []}})
+    answering(monkeypatch, {"https://ws.ts.net:8443": FEED})
     assert data.service_url("http://ip:8092") == "https://ws.ts.net:8443"
-    [note] = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    note, service, sheet = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
     assert not note.blocking and note.settings == {"budget_url": "https://ws.ts.net:8443"}
     assert note.message.startswith("Budget service address updated to https://ws.ts.net:8443")
-    found = budget.find_service({"budget_url": "http://ip:8092"})
-    assert found.values == {"budget_url": "https://ws.ts.net:8443"} and "Tap Save" in found.text
-    assert budget.PLUGIN.check_ready_online({"budget_url": "https://ws.ts.net:8443"}) == []  # already right
+    assert service.ok and service.message == ("Budget service at https://ws.ts.net:8443: 1 accounts, bank data "
+                                              "through 10/19/2026.")
+    assert sheet.ok and sheet.message == "Budget sheet: the SnapShot tab lists 7 expenses (4 monthly bills)."
+    assert all(p.ok for p in budget.PLUGIN.check_ready_online({"budget_url": "https://ws.ts.net:8443"}))  # already right
 
 
 def test_saving_tidies_the_address():
@@ -203,8 +208,24 @@ def test_service_url_explains_an_older_service_or_no_answer(monkeypatch):
     with pytest.raises(StepError, match="older budget service.*docker compose up -d --build"):
         data.service_url("http://ip:8092")
     answering(monkeypatch, {})
-    [problem] = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    problem, sheet = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
     assert problem.blocking and "http://ip:8092, https://ws.ts.net" in problem.message
+    assert sheet.ok  # the sheet is checked (and reported) even when the service isn't there
+
+
+def test_settings_test_reports_both_halves_and_applies_fixes(monkeypatch):
+    from taskdeck.core import check_settings
+
+    answering(monkeypatch, {"https://ws.ts.net": FEED})
+
+    def no_sheet(settings):
+        raise StepError("Google Sheets refused access. Share the sheet with x@y.iam.gserviceaccount.com as Editor.")
+    monkeypatch.setattr(budget.sheets, "read_items", no_sheet)
+    monkeypatch.setattr(budget.sheets, "setup_problems", lambda settings: [])
+    result = check_settings(budget.PLUGIN, {"budget_url": "100.83.88.59:8092/upload", "service_account_json": "{}"})
+    assert result.fixes == {"budget_url": "https://ws.ts.net"} and result.settings["budget_url"] == "https://ws.ts.net"
+    assert result.passed == ["Budget service at https://ws.ts.net: 1 accounts, bank data through 10/19/2026."]
+    assert not result.ok and "Share the sheet" in result.problems[-1].message
 
 
 def test_reverse_lookup_asks_tailscale_dns(monkeypatch):

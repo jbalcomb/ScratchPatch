@@ -7,7 +7,7 @@ import re
 from datetime import date
 
 from taskdeck.core import (
-    Field, JobPlugin, Pipeline, Problem, Result, SettingsAction, SettingsResult, Stage, StepError, step,
+    Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step,
 )
 
 from . import data, reconcile, sheets, timeline
@@ -73,19 +73,9 @@ def show_timeline(ctx):
     )
 
 
-def find_service(settings) -> SettingsResult:
-    """Settings button: find the budget service from what's typed, and fill in the address that answers."""
-    try:
-        used = data.service_url(settings.get("budget_url") or "")
-    except StepError as exc:
-        return SettingsResult(str(exc))
-    return SettingsResult(f"Found the budget service at {used}. Tap Save to keep it.", {"budget_url": used})
-
-
 class _BudgetJob(JobPlugin):
     category = "Money"
     settings = SETTINGS
-    settings_actions = (SettingsAction("Find budget service", find_service, icon="SEARCH"),)
     commit_label = "Write to sheet"
     committed_label = "Written"
     tab = ""
@@ -97,19 +87,36 @@ class _BudgetJob(JobPlugin):
         return {**values, "budget_url": data.tidy_url(values.get("budget_url") or "")}
 
     def check_ready_online(self, settings):
-        """Find the address that answers; a different one than saved is saved in its place."""
+        """Both halves, each reported: the budget service (the address that answers is saved in place of a
+        wrong one) and the budget sheet's SnapShot tab. Also used by Test settings."""
+        out = []
         typed = (settings.get("budget_url") or "").strip()
-        if not typed:
-            return []
+        if typed:
+            try:
+                used = data.service_url(typed)
+                feed = data.fetch(used, date.today())  # just the balances
+            except StepError as exc:
+                out.append(Problem(str(exc), fix="recheck"))
+            else:
+                if used != typed.rstrip("/"):
+                    out.append(Problem(f"Budget service address updated to {used} (it was {typed}, which doesn't "
+                                       f"answer from the phone). {data.why_address(typed, used)}", blocking=False,
+                                       fix="recheck", settings={"budget_url": used}))
+                if feed.through:
+                    out.append(Problem.passed(f"Budget service at {used}: {len(feed.balances)} accounts, bank data "
+                                              f"through {feed.through:%-m/%-d/%Y}."))
+                else:
+                    out.append(Problem(f"The budget service at {used} answers but has no transactions yet. Upload a "
+                                       "bank export first.", fix="recheck"))
         try:
-            used = data.service_url(typed)
+            items = sheets.read_items(settings)
         except StepError as exc:
-            return [Problem(str(exc), fix="recheck")]
-        if used != typed.rstrip("/"):
-            return [Problem(f"Budget service address updated to {used} (it was {typed}, which doesn't answer from "
-                            f"the phone). {data.why_address(typed, used)}", blocking=False, fix="recheck",
-                            settings={"budget_url": used})]
-        return []
+            out.append(Problem(f"Budget sheet: {exc}", fix="settings"))
+            return out
+        tab = (settings.get("snapshot_tab") or "SnapShot").strip()
+        bills = sum(1 for i in items if i.kind == "bill")
+        out.append(Problem.passed(f"Budget sheet: the {tab} tab lists {len(items)} expenses ({bills} monthly bills)."))
+        return out
 
     def commit(self, payload, settings):
         if not isinstance(payload, dict) or "rows" not in payload:

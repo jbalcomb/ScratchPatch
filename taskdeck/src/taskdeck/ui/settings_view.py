@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
-from taskdeck.core import JobPlugin, SettingsResult
+from taskdeck.core import JobPlugin, SettingsCheck, SettingsResult, check_settings
 
 from .common import icon_for, screen_view
 from .forms import FieldControl
@@ -21,6 +21,10 @@ class JobSettingsScreen:
         self.plugin = plugin
         values = plugin.resolve_settings(app.job_settings(plugin.id))
         self.fields = {f.name: FieldControl(f, values.get(f.name)) for f in plugin.settings}
+        # What Test settings / Save found: what works, what doesn't and why.
+        self.report = ft.Column(spacing=6)
+        self.test_button = ft.OutlinedButton("Test settings", icon=ft.Icons.FACT_CHECK_OUTLINED, height=48,
+                                             on_click=self.test)
         self.view = screen_view(
             route=f"/job/{plugin.id}/settings",
             # Save is also in the top bar so it is reachable without scrolling past the form.
@@ -33,6 +37,8 @@ class JobSettingsScreen:
                 ft.Text("Stored only on this device.", color=ft.Colors.ON_SURFACE_VARIANT),
                 *[fc.control for fc in self.fields.values()],
                 *self._actions(),
+                self.test_button,
+                self.report,
                 ft.Row(
                     [
                         ft.FilledButton("Save", icon=ft.Icons.SAVE_OUTLINED, on_click=self.save, height=52),
@@ -76,11 +82,63 @@ class JobSettingsScreen:
 
         self.app.page.run_thread(work)
 
+    def test(self, e=None) -> None:
+        """Check the settings as entered, without saving: what works, what doesn't and why."""
+        self._check(then_save=False)
+
     def save(self, e=None) -> None:
-        values = self.plugin.clean_settings(self.current_values())
+        """Check first. Settings that pass are saved; ones that don't are only saved after "Save anyway",
+        so working settings aren't replaced by broken ones by accident."""
+        self._check(then_save=True)
+
+    def save_anyway(self, e=None) -> None:
+        self._store(self.plugin.clean_settings(self.current_values()), "Settings saved (not working yet)")
+
+    def _store(self, values: dict, message: str) -> None:
         self.app.save_job_settings(self.plugin.id, values)
-        self.app.toast("Settings saved")
+        self.app.toast(message)
         self.app.back()
+
+    def _check(self, then_save: bool) -> None:
+        self.test_button.disabled = True
+        self.report.controls = [ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2),
+                                        ft.Text("Checking the settings…", size=13)])]
+        self.view.update()
+
+        def work():
+            try:
+                result = check_settings(self.plugin, self.current_values())
+            except Exception as exc:  # a broken check must not break the screen
+                result = None
+                self.report.controls = [ft.Text(f"Couldn't check: {type(exc).__name__}: {exc}", selectable=True)]
+            self.test_button.disabled = False
+            if result is not None:
+                for name, value in result.fixes.items():  # fixes the checks found: show them in the form
+                    if name in self.fields:
+                        self.fields[name].value = value
+                if then_save and result.ok:
+                    self._store({n: result.settings.get(n) for n in self.fields}, "Settings saved and checked")
+                    return
+                self._render_report(result, then_save)
+            self.view.update()
+
+        self.app.page.run_thread(work)
+
+    def _render_report(self, result: SettingsCheck, after_save: bool) -> None:
+        lines = [ft.Text(f"✓ {m}", color=ft.Colors.PRIMARY, selectable=True) for m in result.passed]
+        for p in result.problems:
+            lines.append(ft.Text(f"{'✗' if p.blocking else '•'} {p.message}", selectable=True,
+                                 color=ft.Colors.ERROR if p.blocking else ft.Colors.ON_SURFACE))
+        if result.ok:
+            lines.insert(0, ft.Text("Everything checked out." + (" Tap Save to keep these settings."
+                                                                 if result.fixes else ""), weight=ft.FontWeight.W_600))
+        else:
+            lines.insert(0, ft.Text("These settings don't work yet:" + (" nothing was saved, your saved settings"
+                                                                         " are unchanged." if after_save else ""),
+                                    weight=ft.FontWeight.W_600, color=ft.Colors.ERROR))
+            if after_save:
+                lines.append(ft.TextButton("Save anyway", icon=ft.Icons.SAVE_AS_OUTLINED, on_click=self.save_anyway))
+        self.report.controls = lines
 
     def reset(self, e=None) -> None:
         for fc in self.fields.values():

@@ -67,6 +67,7 @@ in the row whose first cell is "Expense").
    | Google service account key | Import the same `.json` as Daily Log |
 
    The two jobs share these settings. The phone needs Tailscale on to reach the budget service.
+   Tap **Test settings** to see that both the service and the sheet work.
 
 ## Finding the service
 
@@ -74,7 +75,11 @@ The upload page and these jobs use the same address; the jobs read `/api/transac
 answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`). What can be fixed is fixed:
 
 * **Save** in settings adds a missing `https://` and drops a pasted path (`/upload`, `/api/...`).
-* **Find budget service** (settings) looks up the address that answers and fills it in; tap Save.
+* **Test settings** checks what's entered, without saving: the budget service (✓ with its accounts and how far
+  the bank data goes) and the budget sheet (✓ with the SnapShot tab's expenses), or what's wrong and why. An
+  address it can correct is filled in.
+* **Save** runs the same test first. Settings that pass are saved; ones that don't are listed with the reason
+  and only saved after **Save anyway**, so working settings aren't replaced by broken ones by accident.
 * When the job opens and the saved address doesn't answer, it finds the one that does and **saves it** in
   place of the old one (the job says so). For the workstation's Tailscale IP, short name or the service's own
   port (`http://100.83.88.59:8092`), the phone asks Tailscale's DNS for the workstation's `*.ts.net` name and

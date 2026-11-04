@@ -145,7 +145,7 @@ class JobScreen:
                 fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
                 if fixes:  # settings the check found that work: keep them, so the next run needs no lookup
                     self.app.save_job_settings(self.plugin.id, {**self.app.job_settings(self.plugin.id), **fixes})
-                self.problems = self.problems + found
+                self.problems = self.problems + [p for p in found if not p.ok]
                 self.checking = False
                 self._render_readiness()
                 self._update()

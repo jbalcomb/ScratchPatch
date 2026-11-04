@@ -135,12 +135,21 @@ class Problem:
 
     ``settings``: when the check found settings that work (a corrected address, say), the
     host saves them into the job's settings; ``message`` then says what was changed.
+
+    ``ok``: not a problem but something checked that works (see :meth:`passed`). Shown by
+    the settings screen's test; the job screen leaves them out.
     """
 
     message: str
     blocking: bool = True
     fix: str = "settings"
     settings: dict[str, Any] | None = None
+    ok: bool = False
+
+    @classmethod
+    def passed(cls, message: str) -> "Problem":
+        """Something checked that works, e.g. "Budget sheet: SnapShot tab, 15 expenses"."""
+        return cls(message, blocking=False, fix="", ok=True)
 
 
 class NeedsConfirmation(StepError):
@@ -296,6 +305,36 @@ class JobPlugin:
     @property
     def search_text(self) -> str:
         return " ".join([self.title, self.category, self.description, *self.tags])
+
+
+@dataclass
+class SettingsCheck:
+    """The outcome of testing a job's settings (see :func:`check_settings`)."""
+
+    settings: dict[str, Any]                       # as tested, with the fixes applied
+    passed: list[str] = field(default_factory=list)
+    problems: list[Problem] = field(default_factory=list)
+    fixes: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not any(p.blocking for p in self.problems)
+
+
+def check_settings(plugin: "JobPlugin", values: dict[str, Any]) -> SettingsCheck:
+    """Test settings as entered: tidy them (clean_settings), run the job's offline checks and, if
+    those pass, its online ones. Fixes the checks found are applied to ``settings``. May use the
+    network: call it off the UI thread."""
+    settings = plugin.resolve_settings(plugin.clean_settings(dict(values)))
+    found = list(plugin.check_ready(settings))
+    if not any(p.blocking for p in found):
+        try:
+            found += plugin.check_ready_online(settings)
+        except Exception as exc:  # a broken check must not hide the others
+            found.append(Problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}", fix="recheck"))
+    fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
+    return SettingsCheck({**settings, **fixes}, [p.message for p in found if p.ok],
+                         [p for p in found if not p.ok], fixes)
 
 
 class PluginRegistry:
