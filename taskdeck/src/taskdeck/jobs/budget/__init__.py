@@ -107,7 +107,8 @@ class _BudgetJob(JobPlugin):
             return [Problem(str(exc), fix="recheck")]
         if used != typed.rstrip("/"):
             return [Problem(f"Budget service address updated to {used} (it was {typed}, which doesn't answer from "
-                            "the phone).", blocking=False, fix="recheck", settings={"budget_url": used})]
+                            f"the phone). {data.why_address(typed, used)}", blocking=False, fix="recheck",
+                            settings={"budget_url": used})]
         return []
 
     def commit(self, payload, settings):

@@ -232,3 +232,10 @@ def test_reverse_lookup_asks_tailscale_dns(monkeypatch):
         server.close()
     assert tailscale.full_name("192.168.1.50") is None
     assert tailscale.full_name("ai-workstation.tail1234.ts.net") == "ai-workstation.tail1234.ts.net"
+
+
+def test_why_the_address_changed():
+    assert "443, which addresses leave out" in data.why_address("http://100.83.88.59:8092", "https://ws.ts.net")
+    assert "port 8092 doesn't answer" in data.why_address("https://ws.ts.net:8092", "https://ws.ts.net")
+    assert data.why_address("https://ws.ts.net", "https://ws.ts.net:8443").endswith("port 8443; port 443 doesn't answer.")
+    assert "certificate" in data.why_address("https://ai-workstation", "https://ai-workstation.tail1.ts.net")

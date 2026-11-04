@@ -78,6 +78,18 @@ def candidates(typed: str) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def why_address(typed: str, used: str) -> str:
+    """One sentence on why the address that answers differs from the one typed (port, name)."""
+    before, after = urllib.parse.urlsplit(tidy_url(typed)), urllib.parse.urlsplit(used)
+    if after.scheme == "https" and before.port != after.port and after.port in (None, 8443):
+        door = "the standard HTTPS port, 443, which addresses leave out" if after.port is None else "port 8443"
+        old = before.port or (443 if before.scheme == "https" else 80)
+        return f"The phone reaches the budget service through Tailscale Serve, on {door}; port {old} doesn't answer."
+    if before.hostname != after.hostname:
+        return "Tailscale Serve's HTTPS certificate is only valid for the workstation's full .ts.net name."
+    return ""
+
+
 def service_url(typed: str, timeout: float = 5) -> str:
     """The first candidate address where the budget service's feed answers (remembered per typed address).
     Raises StepError saying what was tried, or what to run when the workstation has an older service."""
