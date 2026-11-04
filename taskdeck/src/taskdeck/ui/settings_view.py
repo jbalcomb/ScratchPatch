@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import flet as ft
 
-from taskdeck.core import JobPlugin
+from taskdeck.core import JobPlugin, SettingsResult
 
 from .common import icon_for, screen_view
 from .forms import FieldControl
@@ -62,7 +62,13 @@ class JobSettingsScreen:
 
         def work():
             try:
-                result.value = action.run(values)
+                found = action.run(values)
+                if isinstance(found, SettingsResult):
+                    for name, value in found.values.items():
+                        if name in self.fields:
+                            self.fields[name].value = value
+                    found = found.text
+                result.value = found
             except Exception as exc:  # a broken check must not break the screen
                 result.value = f"{type(exc).__name__}: {exc}"
             button.disabled = False
@@ -71,7 +77,7 @@ class JobSettingsScreen:
         self.app.page.run_thread(work)
 
     def save(self, e=None) -> None:
-        values = self.current_values()
+        values = self.plugin.clean_settings(self.current_values())
         self.app.save_job_settings(self.plugin.id, values)
         self.app.toast("Settings saved")
         self.app.back()

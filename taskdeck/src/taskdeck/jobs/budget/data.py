@@ -55,18 +55,24 @@ UPDATE_SERVICE = ("cd ~/ScratchPatch && git checkout main && git pull && cd budg
 _answered: dict[str, str] = {}  # address as typed in settings -> the address that answered
 
 
+def tidy_url(typed: str) -> str:
+    """What was typed, as a base address: https:// added when missing, any pasted path dropped."""
+    text = (typed or "").strip()
+    if not text:
+        return ""
+    parts = urllib.parse.urlsplit(text if "://" in text else "https://" + text)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 def candidates(typed: str) -> list[str]:
     """Addresses to try for what was typed, in order. The service only answers through Tailscale Serve
     (https://<machine>.<tailnet>.ts.net, on 443 or 8443), so a missing https://, a pasted path, the
     workstation's IP or short name, or the service's own port are all turned into that."""
-    text = (typed or "").strip()
-    if not text:
+    base = tidy_url(typed)
+    if not base:
         return []
-    if "://" not in text:
-        text = "https://" + text
-    parts = urllib.parse.urlsplit(text)
-    host = parts.hostname or ""
-    out = [f"{parts.scheme}://{parts.netloc}"]
+    host = urllib.parse.urlsplit(base).hostname or ""
+    out = [base]
     for name in dict.fromkeys(n for n in (tailscale.full_name(host), host) if n):
         out += [f"https://{name}", f"https://{name}:8443"]
     return list(dict.fromkeys(out))

@@ -184,7 +184,18 @@ def test_service_url_uses_the_address_that_answers_and_says_so(monkeypatch):
     answering(monkeypatch, {"https://ws.ts.net:8443": {"accounts": {}, "transactions": []}})
     assert data.service_url("http://ip:8092") == "https://ws.ts.net:8443"
     [note] = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
-    assert not note.blocking and note.message.startswith("Using https://ws.ts.net:8443")
+    assert not note.blocking and note.settings == {"budget_url": "https://ws.ts.net:8443"}
+    assert note.message.startswith("Budget service address updated to https://ws.ts.net:8443")
+    found = budget.find_service({"budget_url": "http://ip:8092"})
+    assert found.values == {"budget_url": "https://ws.ts.net:8443"} and "Tap Save" in found.text
+    assert budget.PLUGIN.check_ready_online({"budget_url": "https://ws.ts.net:8443"}) == []  # already right
+
+
+def test_saving_tidies_the_address():
+    tidy = budget.PLUGIN.clean_settings
+    assert tidy({"budget_url": " ai.tail1.ts.net/api/transactions?since=x "})["budget_url"] == "https://ai.tail1.ts.net"
+    assert tidy({"budget_url": "https://ai.tail1.ts.net:8443/"})["budget_url"] == "https://ai.tail1.ts.net:8443"
+    assert tidy({"budget_url": ""})["budget_url"] == ""
 
 
 def test_service_url_explains_an_older_service_or_no_answer(monkeypatch):

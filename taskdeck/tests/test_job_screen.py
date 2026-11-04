@@ -117,6 +117,45 @@ def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
     assert not screen.checking and screen.blocked
 
 
+def test_settings_the_online_check_fixed_are_saved(tmp_path, monkeypatch):
+    from taskdeck.core import Problem
+    from taskdeck.jobs import budget
+
+    app = fake_app(tmp_path)
+    saved = {"budget_url": "http://100.83.88.59:8092", "sheet_id": "s"}
+    app.job_settings = lambda job_id: dict(saved)
+    app.save_job_settings = lambda job_id, values: saved.update(values)
+    app.page = SimpleNamespace(run_thread=lambda fn: fn())
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen = JobScreen(app, budget.PLUGIN)
+    screen.check_ready()
+    assert saved == {"budget_url": "https://ws.ts.net", "sheet_id": "s"}
+    assert not screen.blocked
+
+
+def test_settings_screen_tidies_on_save_and_actions_fill_fields(tmp_path):
+    from taskdeck.core import SettingsAction, SettingsResult
+    from taskdeck.jobs import budget
+    from taskdeck.ui.settings_view import JobSettingsScreen
+
+    saved = {}
+    app = SimpleNamespace(job_settings=lambda job_id: {}, save_job_settings=lambda job_id, v: saved.update(v),
+                          toast=lambda m: None, back=lambda: None, page=SimpleNamespace(run_thread=lambda fn: fn()))
+    screen = JobSettingsScreen(app, budget.PLUGIN)
+    screen.view.update = lambda: None
+    screen.fields["budget_url"].value = "ai-workstation.tail1234.ts.net/upload"
+    screen.save()
+    assert saved["budget_url"] == "https://ai-workstation.tail1234.ts.net"
+
+    action = SettingsAction("Find", lambda values: SettingsResult("Found it", {"budget_url": "https://ws.ts.net"}))
+    result, button = __import__("flet").Text(""), __import__("flet").OutlinedButton("Find")
+    screen._run_action(action, result, button)
+    assert screen.fields["budget_url"].value == "https://ws.ts.net" and result.value == "Found it"
+
+
 def test_job_without_inputs_and_shared_settings(tmp_path):
     from taskdeck.jobs.daily_log import reconcile_job
 

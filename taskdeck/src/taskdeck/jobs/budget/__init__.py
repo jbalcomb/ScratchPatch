@@ -6,7 +6,9 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
+from taskdeck.core import (
+    Field, JobPlugin, Pipeline, Problem, Result, SettingsAction, SettingsResult, Stage, StepError, step,
+)
 
 from . import data, reconcile, sheets, timeline
 from .config import SETTINGS
@@ -71,9 +73,19 @@ def show_timeline(ctx):
     )
 
 
+def find_service(settings) -> SettingsResult:
+    """Settings button: find the budget service from what's typed, and fill in the address that answers."""
+    try:
+        used = data.service_url(settings.get("budget_url") or "")
+    except StepError as exc:
+        return SettingsResult(str(exc))
+    return SettingsResult(f"Found the budget service at {used}. Tap Save to keep it.", {"budget_url": used})
+
+
 class _BudgetJob(JobPlugin):
     category = "Money"
     settings = SETTINGS
+    settings_actions = (SettingsAction("Find budget service", find_service, icon="SEARCH"),)
     commit_label = "Write to sheet"
     committed_label = "Written"
     tab = ""
@@ -81,8 +93,11 @@ class _BudgetJob(JobPlugin):
     def check_ready(self, settings):
         return super().check_ready(settings) + sheets.setup_problems(settings)
 
+    def clean_settings(self, values):
+        return {**values, "budget_url": data.tidy_url(values.get("budget_url") or "")}
+
     def check_ready_online(self, settings):
-        """Find the address that answers. A different one than typed is used as is, and noted (not blocking)."""
+        """Find the address that answers; a different one than saved is saved in its place."""
         typed = (settings.get("budget_url") or "").strip()
         if not typed:
             return []
@@ -90,9 +105,9 @@ class _BudgetJob(JobPlugin):
             used = data.service_url(typed)
         except StepError as exc:
             return [Problem(str(exc), fix="recheck")]
-        if used.rstrip("/") != typed.rstrip("/"):
-            return [Problem(f"Using {used} (the address in settings, {typed}, doesn't answer from the phone). "
-                            "Putting it in settings skips this lookup.", blocking=False, fix="settings")]
+        if used != typed.rstrip("/"):
+            return [Problem(f"Budget service address updated to {used} (it was {typed}, which doesn't answer from "
+                            "the phone).", blocking=False, fix="recheck", settings={"budget_url": used})]
         return []
 
     def commit(self, payload, settings):
