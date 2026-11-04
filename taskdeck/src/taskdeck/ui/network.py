@@ -30,6 +30,7 @@ class NetworkMonitor:
         self.types: list[str] | None = None  # e.g. ["wifi"], ["mobile", "vpn"]; None = unknown
         self._changed = threading.Condition()
         self._service = None
+        self.listeners: list[Callable[[list[str]], None]] = []  # told about every change (worker thread or UI)
 
     async def start(self) -> None:
         """Ask the phone once, then follow its change events."""
@@ -53,6 +54,11 @@ class NetworkMonitor:
         if changed:
             cut = http.abort_connections() if switched else 0  # don't wait for the old network to time out
             self.app.tasks.log_running("network", types=self.types, connections_cut=cut)
+            for listener in list(self.listeners):
+                try:
+                    listener(self.types)
+                except Exception:  # a job's listener must not break network tracking
+                    pass
 
     @property
     def on_wifi(self) -> bool:

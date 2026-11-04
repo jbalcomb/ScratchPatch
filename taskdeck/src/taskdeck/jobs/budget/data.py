@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -82,7 +83,8 @@ def add_months(d: date, n: int) -> date:
 
 
 def month_end(d: date) -> date:
-    return date.fromordinal(add_months(d, 1).toordinal() - 1)
+    """The last day of d's month."""
+    return d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
 def due_date(year: int, month: int, day: int) -> date:
