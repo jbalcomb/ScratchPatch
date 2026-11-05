@@ -535,6 +535,9 @@ class TaskDeckApp:
                          spacing=2, expand=True)
 
     def settings_tab(self) -> ft.Control:
+        # The App updates section is its own column, so its status changes redraw only it: rebuilding the
+        # whole tab sent you back to the top after "Check for updates".
+        self.updates_box = ft.Column(self.updates_section(), spacing=12)
         theme = ft.SegmentedButton(
             segments=[ft.Segment(value=k, label=ft.Text(k.title())) for k in THEMES],
             selected=[self.store.get("theme", "system")],
@@ -559,7 +562,7 @@ class TaskDeckApp:
                 *([section_title("Background work"), *self.background.settings_rows()] if self.background.enabled else []),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
-                *self.updates_section(),
+                self.updates_box,
                 section_title("About"),
                 ft.Text(f"{len(self.registry)} jobs installed · {len(self.commands)} palette commands"),
             ],
@@ -638,33 +641,37 @@ class TaskDeckApp:
         except Exception:  # an older updater without these internals: leave it
             pass
 
-    def check_updates(self) -> None:
-        self.update_status = "Checking…"
-        self.render()
+    def _show_update_status(self, status: str) -> None:
+        """Redraw just the App updates section (the Settings tab keeps its scroll position)."""
+        self.update_status = status
+        box = getattr(self, "updates_box", None)
+        if box is not None and self.tab == "settings" and not self.stack:
+            box.controls = self.updates_section()
+        else:
+            self.render()
         self.page.update()
+
+    def check_updates(self) -> None:
+        self._show_update_status("Checking…")
 
         done = threading.Event()
 
         def work():
             result = boot.check_for_update()
             done.set()
-            self.update_status = result["message"]
-            self.render()
-            self.page.update()
+            self._show_update_status(result["message"])
 
         def watchdog():
             if not done.wait(CHECK_LIMIT):  # e.g. the phone's DNS not answering: urllib's timeout doesn't cover that
-                self.update_status = f"No answer from GitHub within {CHECK_LIMIT} s. Check the connection and try again."
-                self.render()
-                self.page.update()
+                self._show_update_status(f"No answer from GitHub within {CHECK_LIMIT} s. "
+                                         "Check the connection and try again.")
 
         threading.Thread(target=work, daemon=True).start()  # not page.run_thread: see self.tasks
         threading.Thread(target=watchdog, daemon=True).start()
 
     def on_update_ready(self, result: dict) -> None:
         """Called from the updater's background thread when a new version is downloaded."""
-        self.update_status = result["message"]
-        self.render()
+        self._show_update_status(result["message"])
         self.page.show_dialog(ft.SnackBar(
             ft.Text(f"Update {result['version']} downloaded"),
             action="Reload",

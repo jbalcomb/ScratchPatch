@@ -532,3 +532,33 @@ def test_settings_offer_only_a_newer_update(tmp_path, monkeypatch):
     state["bad"] = []
     state["bundles"]["newer01"]["requires_api"] = 2
     assert "needs a new APK" in shown()[0]
+
+
+def test_check_for_updates_keeps_the_settings_tab(tmp_path, monkeypatch):
+    """Rebuilding the whole tab on each status change sent you back to the top."""
+    import threading as th
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    active = {"source": "bundled", "version": "a951190", "build_time": 2000}
+    checked = th.Event()
+
+    def check():
+        checked.set()
+        return {"status": "up_to_date", "message": "Up to date."}
+    boot = SimpleNamespace(_lock=th.Lock(), _load_state=lambda: {}, _save_state=lambda s: None,
+                           ota_dir=lambda: tmp_path, active=active, listeners=[], check_for_update=check,
+                           status=lambda: {"active": active, "staged": None, "last_error": None, "api": 1})
+    app = make_app(tmp_path)
+    monkeypatch.setattr(app_module, "boot", boot)
+    app.go("settings")
+    tab = app.body.content
+    app.check_updates()
+    assert checked.wait(2)
+    for _ in range(50):
+        if "Up to date." in app.updates_box.controls[1].value:
+            break
+        time.sleep(0.02)
+    assert "Up to date." in app.updates_box.controls[1].value
+    assert app.body.content is tab  # the same tab: only the App updates section changed
