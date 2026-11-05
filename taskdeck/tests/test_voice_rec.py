@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -342,6 +343,13 @@ def run(coro):
     return asyncio.run(coro)
 
 
+# These build the recorder's real configuration objects. flet-audio-recorder is a TaskDeck dependency
+# (pyproject.toml) and CI installs it; a test run without it skips them and says why.
+needs_recorder = pytest.mark.skipif(importlib.util.find_spec("flet_audio_recorder") is None,
+                                    reason='needs flet-audio-recorder: pip install "flet-audio-recorder==1.0.4"')
+
+
+@needs_recorder
 def test_fresh_permission_grant_doesnt_start_recording(monkeypatch, tmp_path):
     from taskdeck.core import JsonStore
     from taskdeck.jobs.voice_rec.screen import MIC_BLOCKED, MIC_JUST_ALLOWED, Recorder
@@ -386,6 +394,7 @@ def test_after_a_crash_voice_notes_reopens_and_says_where(tmp_path):
     assert not app2.stack
 
 
+@needs_recorder
 def test_recorder_settings_step_down_after_a_crash_while_starting(monkeypatch, tmp_path):
     from taskdeck.core import JsonStore
     from taskdeck.jobs.voice_rec.screen import BREADCRUMB, PROFILES, Recorder
