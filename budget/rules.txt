@@ -89,6 +89,7 @@ AUTOZONE = Car
 ADVANCE AUTO = Car
 
 # Shopping and health
+AMAZON PRIME = Amazon Prime
 AMAZON = Shopping
 CVS = Pharmacy
 WALGREENS = Pharmacy
