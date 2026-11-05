@@ -575,22 +575,48 @@ class TaskDeckApp:
             return []
         st = boot.status()
         running = st["active"]
-        ready = st["staged"] and st["staged"] != running["version"]
+        ready, note = self._staged_update(st)
         lines = [f"Running: {running['version']} ({running['source']})"]
         if ready:
             lines.append(f"Downloaded: {st['staged']}, reload to use it")
+        elif note:
+            lines.append(note)
         if st.get("last_error"):
             lines.append(f"Last rejected update: {st['last_error'].splitlines()[0][:120]}")
         if self.update_status:
             lines.append(self.update_status)
         buttons = [ft.OutlinedButton("Check for updates", icon=ft.Icons.SYSTEM_UPDATE, on_click=lambda e: self.check_updates())]
-        if ready:
+        if ready:  # only an update newer than what runs
             buttons.append(ft.FilledButton("Reload now", icon=ft.Icons.REFRESH, on_click=lambda e: self.reload_app()))
         return [
             section_title("App updates"),
             ft.Text("\n".join(lines), color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
             ft.Row(buttons, wrap=True),
         ]
+
+    def _staged_update(self, st: dict) -> tuple[bool, str]:
+        """(ready, note): is the downloaded update newer than what runs (offer Reload), and if one is
+        downloaded but won't be used, why. Different isn't enough: a newer APK makes an older download moot,
+        and offering it made Reload look broken (it reloaded the same APK code every time)."""
+        staged, running = st.get("staged"), st["active"]
+        if not staged or staged == running["version"]:
+            return False, ""
+        try:
+            state = boot._load_state()
+            meta = state.get("bundles", {}).get(staged, {})
+            folder_ok = (boot.ota_dir() / staged / "taskdeck" / "__init__.py").exists()
+        except Exception:  # an older updater without these internals: as before
+            return True, ""
+        if staged in state.get("bad", []):
+            return False, f"Downloaded update {staged} was rejected, so it isn't used."
+        if meta.get("requires_api") not in (None, st.get("api")):
+            return False, f"Downloaded update {staged} needs a new APK."
+        if not folder_ok:
+            return False, f"Downloaded update {staged} is incomplete; Check for updates fetches it again."
+        if int(meta.get("build_time", 0)) <= int(running.get("build_time", 0)):
+            return False, (f"The running code ({running['version']}) is newer than the last live update "
+                           f"({staged}), so that update isn't needed.")
+        return True, ""
 
     def _forget_old_rejection(self) -> None:
         """A rejected update is old news once something newer than it runs. Done here (before Settings
