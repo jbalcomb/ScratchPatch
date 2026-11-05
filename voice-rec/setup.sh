@@ -4,16 +4,18 @@
 #
 # From the phone (Termius), paste:
 #
-#     cd ~/ScratchPatch && git pull && bash voice-rec/setup.sh
+#     cd ~/develai/ScratchPatch && git checkout main && git pull && bash voice-rec/setup.sh
 #
 # Options (environment variables): VAULT=/path/to/vault  NO_SERVE=1 (skip Tailscale Serve)
-#                                  WHISPER_MODEL=large-v3-turbo  FORCE_CPU=1
+#                                  USE_GPU=1 (Whisper on the GPU; off by default: llama.cpp's model fills it)
+#                                  WHISPER_MODEL=small|medium|large-v3-turbo
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SECRETS="$HOME/.config/secrets.env"
 ENVFILE="$HERE/.env"
-PORT=8093
+PORT=8094        # on localhost (8090 status-api, 8092 budget, 8093 photo-ocr are taken)
+HTTPS_PORT=8445  # through Tailscale Serve (443 budget, 8444 photo-ocr)
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
@@ -70,24 +72,31 @@ mkdir -p "$VAULT_DIR" "$HOME/voice-rec/models"
 put OBSIDIAN_VAULT_DIR "$VAULT_DIR" "$ENVFILE"
 echo "Vault: $VAULT_DIR (notes go in 'Voice Notes/')"
 
-if [ -z "${FORCE_CPU:-}" ] && command -v nvidia-smi >/dev/null && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia; then
+if [ -n "${USE_GPU:-}" ] && command -v nvidia-smi >/dev/null && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia; then
   echo "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -n1) — Whisper runs on it"
   put VOICE_REC_GPU 1 "$ENVFILE"
   put COMPOSE_FILE "compose.yaml:compose.gpu.yaml" "$ENVFILE"
   put WHISPER_MODEL "${WHISPER_MODEL:-$(get WHISPER_MODEL "$ENVFILE" | grep . || echo large-v3-turbo)}" "$ENVFILE"
 else
-  if command -v nvidia-smi >/dev/null && [ -z "${FORCE_CPU:-}" ]; then
-    echo "There's an NVIDIA GPU, but Docker can't use it yet (install nvidia-container-toolkit, see README)."
+  if [ -n "${USE_GPU:-}" ]; then
+    echo "USE_GPU is set, but Docker can't use the GPU yet (install nvidia-container-toolkit, see README)."
   fi
-  echo "GPU: not used — Whisper runs on the CPU (slower; fine for short notes)"
+  echo "GPU: not used (llama.cpp's model needs it) — Whisper runs on the CPU, a minute or so per note"
   put VOICE_REC_GPU 0 "$ENVFILE"
   put COMPOSE_FILE "compose.yaml" "$ENVFILE"
   put WHISPER_MODEL "${WHISPER_MODEL:-$(get WHISPER_MODEL "$ENVFILE" | grep . || echo small)}" "$ENVFILE"
 fi
 echo "Whisper model: $(get WHISPER_MODEL "$ENVFILE")"
 
-say "Building and starting (first time: a few minutes)"
+say "Checking port $PORT"
 cd "$HERE"
+if ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q . && ! docker compose ps --status running -q voice-rec 2>/dev/null | grep -q .; then
+  ss -ltnpH "sport = :$PORT" 2>/dev/null || true
+  die "Something else already listens on port $PORT (above). Tell Claude which program it is."
+fi
+echo "Port $PORT is free (or already voice-rec's)"
+
+say "Building and starting (first time: a few minutes)"
 docker compose up -d --build
 
 say "Waiting for the server"
@@ -102,13 +111,13 @@ URL="http://127.0.0.1:$PORT"
 if [ -z "${NO_SERVE:-}" ] && command -v tailscale >/dev/null; then
   say "Tailscale Serve (HTTPS, your own devices only)"
   NAME="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' || true)"
-  if sudo tailscale serve status 2>/dev/null | grep -q ":$PORT"; then
-    echo "Already served on port $PORT"
+  if sudo tailscale serve status 2>/dev/null | grep -q ":$HTTPS_PORT"; then
+    echo "Already served on port $HTTPS_PORT"
   else
-    sudo tailscale serve --bg --https=$PORT "http://127.0.0.1:$PORT" \
+    sudo tailscale serve --bg --https=$HTTPS_PORT "http://127.0.0.1:$PORT" \
       || echo "Couldn't set up Tailscale Serve. If it says HTTPS isn't enabled: Tailscale admin console → DNS → enable MagicDNS and HTTPS, then run this again."
   fi
-  [ -n "$NAME" ] && URL="https://$NAME:$PORT"
+  [ -n "$NAME" ] && URL="https://$NAME:$HTTPS_PORT"
 fi
 
 say "Done. In TaskDeck: Voice notes → tune icon (Settings)"
@@ -119,5 +128,5 @@ cat <<EOF
 Then tap "Test connection". The first note takes longer: the Whisper model downloads once.
 Browse the notes:       $URL/?token=$TOKEN
 Watch it work:          cd $HERE && docker compose logs -f voice-rec
-Update later:           cd ~/ScratchPatch && git pull && bash voice-rec/setup.sh
+Update later:           cd $(dirname "$HERE") && git pull && bash voice-rec/setup.sh
 EOF

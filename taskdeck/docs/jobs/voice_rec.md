@@ -29,7 +29,7 @@ on (desktop), everything counts as Wi-Fi.
 
 | Setting | |
 |---|---|
-| Workstation address | printed by `voice-rec/setup.sh`, e.g. `https://ai-workstation.tail1234.ts.net:8093` |
+| Workstation address | printed by `voice-rec/setup.sh`, e.g. `https://ai-workstation.tail1234.ts.net:8445` |
 | Access token | `VOICE_REC_TOKEN`, printed by setup.sh. Kept in plain settings, not the fingerprint vault, so notes can be sent while the vault is locked; the server is only reachable over Tailscale anyway. |
 | Transcribe / Archive: Wi-Fi only | the defaults above |
 | Archive automatically | off: each note waits for its *Archive now* button |

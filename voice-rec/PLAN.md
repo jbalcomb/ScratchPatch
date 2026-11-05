@@ -20,7 +20,7 @@ knowledge graph — without thinking about networks, files or servers.
    with a *microphone* foreground service. TaskDeck's service is a *data sync* one. Test: record, lock the
    phone for 2 minutes, unlock, stop. If the audio is cut short, add the microphone type to
    `native/background` (`foregroundServiceType="dataSync|microphone"` + `FOREGROUND_SERVICE_MICROPHONE`).
-2. **Port 8093 through Tailscale Serve** next to the local listener (should work; fallback in the README).
+2. **Ports**: localhost 8094, HTTPS 8445 through Tailscale Serve (8093 and 8444 are photo-ocr).
 3. **Whisper speed** on the workstation's GPU (or CPU) for a 5-minute note, and whether `large-v3-turbo`
    fits next to the llama.cpp model in VRAM. If not: `WHISPER_DEVICE=cpu` with `small`, or `distil-large-v3`.
 4. **The LLM's categories**: after ~20 notes, look at what landed in Inbox and adjust `categories.txt`.

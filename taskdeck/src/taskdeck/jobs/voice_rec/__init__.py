@@ -17,8 +17,8 @@ from .library import ARCHIVED, Library, clock, local_time
 
 SETTINGS = (
     Field.text("server_url", "Workstation address",
-               help="The voice-rec server, e.g. https://ai-workstation.tail1234.ts.net:8093 (Tailscale Serve) "
-                    "or http://100.83.88.59:8093. The setup script prints it."),
+               help="The voice-rec server, e.g. https://ai-workstation.tail1234.ts.net:8445 (Tailscale Serve) "
+                    "or http://100.83.88.59:8094. The setup script prints it."),
     # Not in the fingerprint vault on purpose: notes are sent in the background, often while the vault is
     # locked. The server is only reachable over Tailscale; the token is a second lock on top of that.
     Field.text("token", "Access token",

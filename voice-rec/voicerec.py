@@ -308,7 +308,7 @@ def main(argv=None) -> None:
     sub = p.add_subparsers(dest="cmd")
     s = sub.add_parser("serve")
     s.add_argument("--host", default=os.environ.get("VOICE_REC_HOST", "127.0.0.1"))
-    s.add_argument("--port", type=int, default=int(os.environ.get("VOICE_REC_PORT", "8093")))
+    s.add_argument("--port", type=int, default=int(os.environ.get("VOICE_REC_PORT", "8094")))
     sub.add_parser("status")
     s = sub.add_parser("list")
     s.add_argument("-q", "--query", default="")
@@ -325,7 +325,7 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
     if args.cmd in (None, "serve"):
         if args.cmd is None:
-            args.host, args.port = os.environ.get("VOICE_REC_HOST", "127.0.0.1"), int(os.environ.get("VOICE_REC_PORT", "8093"))
+            args.host, args.port = os.environ.get("VOICE_REC_HOST", "127.0.0.1"), int(os.environ.get("VOICE_REC_PORT", "8094"))
         return serve(args)
     store = Store(args.dsn)
     store.migrate()

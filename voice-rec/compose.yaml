@@ -26,14 +26,14 @@ services:
     container_name: voice-rec
     restart: unless-stopped
     # Host networking, like budget: reaches llama.cpp (and Neo4j, if any) on localhost, and listens on the
-    # workstation's localhost:8093 only. Tailscale Serve makes it reachable from your own devices.
+    # workstation's localhost:8094 only (8093 is photo-ocr). Tailscale Serve makes it reachable from your own devices.
     network_mode: host
     user: "${UID:-1000}:${GID:-1000}"  # notes written into the vault belong to you
     env_file: ${HOME}/.config/secrets.env  # VOICE_REC_TOKEN, LLM_URL, LLM_API_KEY, LLM_MODEL, GRAPH_*
     environment:
       DATABASE_URL: postgresql://voicerec:${VOICE_REC_DB_PASSWORD}@127.0.0.1:5433/voicerec
       VOICE_REC_HOST: 127.0.0.1
-      VOICE_REC_PORT: "8093"
+      VOICE_REC_PORT: "8094"
       OBSIDIAN_VAULT: /vault
       VOICE_REC_CATEGORIES: /config/categories.txt
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
