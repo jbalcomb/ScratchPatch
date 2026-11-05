@@ -398,34 +398,32 @@ def test_after_a_crash_voice_notes_reopens_and_says_where(tmp_path):
 
 
 @needs_recorder
-def test_recorder_settings_step_down_after_a_crash_while_starting(monkeypatch, tmp_path):
+def test_recording_settings(monkeypatch, tmp_path):
     from taskdeck.core import JsonStore
-    from taskdeck.jobs.voice_rec.screen import BREADCRUMB, PROFILES, Recorder
+    from taskdeck.jobs.voice_rec.screen import Recorder
 
-    store = JsonStore(tmp_path / "state.json")
-    rec = Recorder(Library(tmp_path / "v"), store)
+    rec = Recorder(Library(tmp_path / "v"), JsonStore(tmp_path / "state.json"))
     rec.service = FakeRecorderService()
-    fake_permissions(monkeypatch, ["GRANTED"] * 10)
-
+    fake_permissions(monkeypatch, ["GRANTED"])
     assert run(rec.start()) == ""
-    android = rec.service.configuration.android_configuration
-    assert android.use_legacy and not android.manage_bluetooth  # safest settings first
-    assert rec.service.configuration.channels == 1 and rec.path.suffix == ".m4a"
-    run(rec.stop({}))
+    config = rec.service.configuration
+    assert config.channels == 1 and config.sample_rate == 16000 and rec.path.suffix == ".m4a"
+    assert config.android_configuration.use_legacy and not config.android_configuration.manage_bluetooth
 
-    for expected in range(1, len(PROFILES)):
-        # TaskDeck "closes" while starting: the breadcrumb is left behind with the settings in use...
-        store.set(BREADCRUMB, {"step": "starting the recording", "at": 0, "profile": rec.profile_index})
-        crumb = rec.last_crash()
-        assert rec.profile_index == expected and crumb["next_profile"] == PROFILES[expected]["name"]
-    store.set(BREADCRUMB, {"step": "starting the recording", "at": 0, "profile": rec.profile_index})
-    rec.last_crash()
-    assert rec.profile_index == len(PROFILES) - 1  # stays on the last one
 
-    assert run(rec.start()) == "" and rec.path.suffix == ".wav"
-    saved = run(rec.stop({}))
-    from taskdeck.jobs.voice_rec.library import mime_of
-    assert mime_of(saved.file) == "audio/wav"
+def test_crash_notice_is_plain(tmp_path):
+    from test_extract_archive import make_app
+
+    from taskdeck.core import JsonStore
+
+    # A marker left by an older version, with the recorder settings in brackets.
+    JsonStore(tmp_path / "state.json").set("voice_rec:native_step", {
+        "step": "starting the recording (AAC 16 kHz, legacy recorder)", "at": 0, "profile": 0})
+    app = make_app(tmp_path)
+    app.open_job("voice_rec")
+    texts = [c.controls[1].value for c in app.stack[-1]._notices() if hasattr(c, "controls")
+             and len(c.controls) == 2 and hasattr(c.controls[1], "value")]
+    assert texts == ["TaskDeck closed unexpectedly last time, while starting the recording."]
 
 
 @needs_recorder
@@ -445,5 +443,5 @@ def test_a_recorder_error_is_a_message_not_a_crash(monkeypatch, tmp_path):
     problem = run(rec.start())
     assert problem.startswith("The recorder didn't start:") and "ENOENT" in problem
     assert store.get(BREADCRUMB) == {}  # not mistaken for a crash, so the settings don't step down
-    assert rec.last_crash() is None and rec.profile_index == 0
+    assert rec.last_crash() is None
     assert not rec.active and list(lib.audio_dir.iterdir()) == []  # no empty file left behind

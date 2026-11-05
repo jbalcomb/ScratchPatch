@@ -28,20 +28,10 @@ log = logging.getLogger(__name__)
 
 POLL_DELAYS = (5, 10, 20, 30, 60, 120)  # seconds between checks while the workstation is busy with a note
 BREADCRUMB = "voice_rec:native_step"
-PROFILE_KEY = "voice_rec:recorder_profile_v2"  # v2: start over; v1 was stepped down by errors, not crashes
 NATIVE_CRASH_KEY = "voice_rec:native_crash"
-# Recorder settings, safest-first for this phone's crash: if TaskDeck closes while starting with one, the next
-# start uses the next one. All mono, no Bluetooth handling, the phone's microphone.
-PROFILES = (
-    {"name": "AAC 16 kHz, legacy recorder", "encoder": "AACLC", "sample_rate": 16000, "bit_rate": 48000,
-     "legacy": True, "extension": ".m4a"},
-    {"name": "AAC 44.1 kHz, legacy recorder", "encoder": "AACLC", "sample_rate": 44100, "bit_rate": 64000,
-     "legacy": True, "extension": ".m4a"},
-    {"name": "AAC 16 kHz, advanced recorder", "encoder": "AACLC", "sample_rate": 16000, "bit_rate": 48000,
-     "legacy": False, "extension": ".m4a"},
-    {"name": "WAV 16 kHz, advanced recorder", "encoder": "WAV", "sample_rate": 16000, "bit_rate": 256000,
-     "legacy": False, "extension": ".wav"},
-)
+# How notes are recorded: AAC (.m4a), 16 kHz mono (what Whisper uses), with Android's MediaRecorder (the
+# plugin's "legacy" recorder, which it calls stability oriented) and without its Bluetooth headset handling.
+RECORDING = {"encoder": "AACLC", "sample_rate": 16000, "bit_rate": 48000, "legacy": True, "extension": ".m4a"}
 REOPEN_WITHIN = 300  # seconds: after an unexpected close this soon, the app opens Voice notes again
 MIC_JUST_ALLOWED = "Microphone allowed. Tap the button again to record."
 MIC_BLOCKED = ("The microphone is blocked for TaskDeck. Open TaskDeck's app info → Permissions → Microphone → "
@@ -94,15 +84,6 @@ class Recorder:
         end = self._paused_at if self._paused_at is not None else time.monotonic()
         return max(0.0, end - self._t0 - self._paused_total)
 
-    @property
-    def profile_index(self) -> int:
-        i = int((self.store.get(PROFILE_KEY) if self.store is not None else 0) or 0)
-        return max(0, min(i, len(PROFILES) - 1))
-
-    @property
-    def profile(self) -> dict:
-        return PROFILES[self.profile_index]
-
     def _ensure(self) -> Any:
         if self.service is None:
             import flet_audio_recorder as far
@@ -113,7 +94,7 @@ class Recorder:
     def _configuration(self) -> Any:
         import flet_audio_recorder as far
 
-        p = self.profile
+        p = RECORDING
         return far.AudioRecorderConfiguration(
             encoder=getattr(far.AudioEncoder, p["encoder"]), channels=1, sample_rate=p["sample_rate"],
             bit_rate=p["bit_rate"],
@@ -126,12 +107,10 @@ class Recorder:
 
     # ---- breadcrumbs: which native step was running if the app closed unexpectedly ----
 
-    def mark(self, step: str, profile: int | None = None) -> None:
-        """Note the step about to run ("" = finished). JsonStore writes atomically, so it survives a crash.
-        ``profile``: the recorder settings in use, so a crash there moves on to the next ones."""
+    def mark(self, step: str) -> None:
+        """Note the step about to run ("" = finished). JsonStore writes atomically, so it survives a crash."""
         if self.store is not None:
-            crumb = {"step": step, "at": time.time(), **({"profile": profile} if profile is not None else {})}
-            self.store.set(BREADCRUMB, crumb if step else {})
+            self.store.set(BREADCRUMB, {"step": step, "at": time.time()} if step else {})
 
     def last_crash(self) -> dict | None:
         """The step that was running when TaskDeck last closed unexpectedly (and forget it)."""
@@ -140,11 +119,6 @@ class Recorder:
         crumb = self.store.get(BREADCRUMB) or {}
         if crumb.get("step") and not self.active:
             self.store.set(BREADCRUMB, {})
-            if crumb.get("profile") is not None and crumb["profile"] == self.profile_index \
-                    and self.profile_index < len(PROFILES) - 1:
-                # It closed while the recorder started with these settings: use the next, safer ones.
-                self.store.set(PROFILE_KEY, self.profile_index + 1)
-                crumb["next_profile"] = self.profile["name"]
             return crumb
         return None
 
@@ -178,22 +152,21 @@ class Recorder:
         problem = await self.mic_permission()
         if problem:
             return problem
-        profile = self.profile_index
-        self.mark(f"setting up the recorder ({self.profile['name']})", profile)
+        self.mark("setting up the recorder")
         svc = self._ensure()
-        rec_id, path = self.lib.new_path(self.profile["extension"])
+        rec_id, path = self.lib.new_path(RECORDING["extension"])
         # Flet resolves output_path with getAssetSrc(): a path that isn't an existing file is taken as relative
         # to the app's assets folder (files/flet/app/assets/...), which doesn't exist -> ENOENT. So the file
         # has to exist first; the recorder then writes over it.
         path.touch()
-        self.mark(f"starting the recording ({self.profile['name']})", profile)
+        self.mark("starting the recording")
         try:
             ok = await svc.start_recording(output_path=str(path), configuration=self._configuration())
         except Exception as exc:  # the recorder's error, e.g. PlatformException(record, ...)
             path.unlink(missing_ok=True)
             return f"The recorder didn't start: {exc}"
         finally:
-            self.mark("")  # an error is not a crash: don't step the settings down for it
+            self.mark("")  # an error is shown as a message; it isn't a crash
         if not ok:
             path.unlink(missing_ok=True)
             return "The microphone didn't start (another app may be using it)."
@@ -216,7 +189,7 @@ class Recorder:
         if not self.active:
             return None
         duration = self.elapsed
-        self.mark("stopping the recording", self.profile_index)
+        self.mark("stopping the recording")
         try:
             saved = await self.service.stop_recording()
         finally:
@@ -565,10 +538,9 @@ class VoiceRecScreen:
     def _notices(self) -> list[ft.Control]:
         out: list[ft.Control] = []
         if self.crash:
-            out.append(_note(ft.Icons.WARNING_AMBER, f"TaskDeck closed unexpectedly last time, while "
-                                                     f"{self.crash['step']}."
-                                                     + (f" Next time it records with: {self.crash['next_profile']}."
-                                                        if self.crash.get("next_profile") else ""), error=True))
+            step = self.crash["step"].split(" (")[0]  # older versions added the recorder settings in brackets
+            out.append(_note(ft.Icons.WARNING_AMBER, f"TaskDeck closed unexpectedly last time, while {step}.",
+                             error=True))
         if self.native_crash:
             first = next((line for line in self.native_crash.splitlines() if "Exception" in line or "Error" in line),
                          "an Android error")
@@ -587,9 +559,7 @@ class VoiceRecScreen:
         return out
 
     def _crash_report(self) -> str:
-        r = self.recorder
-        return (f"TaskDeck Voice notes crash report\nRecorder settings now: {r.profile['name']} "
-                f"(step {r.profile_index + 1} of {len(PROFILES)})\n\n{self.native_crash}")
+        return f"TaskDeck Voice notes crash report\n\n{self.native_crash}"
 
     def _dismiss_crash(self, e=None) -> None:
         self.native_crash = ""
