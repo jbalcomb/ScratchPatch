@@ -6,11 +6,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from .data import ACCOUNT_LABELS, Feed, Txn, add_months, due_date, money, month_end
+from . import exceptions
+from .data import ACCOUNT_LABELS, ATM, CASH, Feed, Txn, add_months, due_date, money, month_end, week_start
 from .snapshot import Item
 
-ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings
-CASH = "cash"                     # paid outside the bank (rent): listed, but moves no balance
+ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings (Save), cash
+BANK = tuple(a for a in ACCOUNTS if a != CASH)
+ACTUAL, PROJECTED, ASSUMED = "actual", "projected", "cash, assumed paid"
 
 
 @dataclass
@@ -21,7 +23,12 @@ class Row:
     category: str
     amount: int                  # cents
     balances: dict[str, int]     # every account's balance after this row
-    projected: bool
+    kind: str = PROJECTED        # ACTUAL (from the bank), PROJECTED, or ASSUMED (a cash bill already due)
+    bank_balance: int | None = None  # for an actual bank row: the bank's running balance after it
+
+    @property
+    def projected(self) -> bool:
+        return self.kind != ACTUAL
 
 
 @dataclass
@@ -36,7 +43,7 @@ class Timeline:
         """Per account, the first projected row that leaves it below zero."""
         out: dict[str, Row] = {}
         for row in self.rows:
-            if row.projected and row.account in ACCOUNTS and row.balances[row.account] < 0:
+            if row.projected and row.balances[row.account] < 0:
                 out.setdefault(row.account, row)
         return out
 
@@ -44,94 +51,120 @@ class Timeline:
         """Per account, the lowest projected balance and the day it happens."""
         out: dict[str, tuple[int, date]] = {}
         for row in self.rows:
-            if row.projected:
+            if row.kind == PROJECTED:
                 for a in ACCOUNTS:
                     if a not in out or row.balances[a] < out[a][0]:
                         out[a] = (row.balances[a], row.date)
         return out
 
 
-def _usual_account(txns: list[Txn], category: str) -> str:
-    """The account that last paid in this category (a bill can move to another card); cash if never seen."""
-    seen = [t.account for t in txns if t.category == category and t.amount < 0]
-    return seen[-1] if seen else CASH
+def _account(item: Item, txns: list[Txn]) -> str:
+    """SnapShot's Account column; when blank, the account that last paid in this category; else Daily."""
+    if item.account:
+        return item.account
+    seen = [t.account for t in txns if t.category == item.name]
+    return seen[-1] if seen else "checking"
 
 
-def _monthly_average(txns: list[Txn], category: str, through: date) -> int:
-    """Average spent per month in a category over the last three full months (cents, positive)."""
-    first = add_months(through, -3)
-    last = date.fromordinal(through.replace(day=1).toordinal() - 1)
-    return -sum(t.amount for t in txns if t.category == category and first <= t.date <= last) // 3
+def _months(start: date, end: date) -> list[date]:
+    out, m = [], start.replace(day=1)
+    while m <= end:
+        out.append(m)
+        m = add_months(m, 1)
+    return out
 
 
-def build(items: list[Item], feed: Feed, end: date | None = None) -> Timeline:
+def _paid_in(txns: list[Txn], item: Item, first: date, last: date) -> bool:
+    return any(t.category == item.name and first <= t.date <= last for t in txns)
+
+
+def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exceptions.Entry] = (),
+          start: date | None = None) -> Timeline:
     through = feed.through
     if through is None:
         raise ValueError("no bank data")
-    start = through.replace(day=1)
+    start = start or through.replace(day=1)
     end = end or month_end(add_months(through, 1))
     tl = Timeline(start, through, end)
+    applied = exceptions.apply(list(rows), feed.txns)
 
-    # Balances at the start of the month: before each account's first transaction this month.
-    balances = {a: feed.balances.get(a, (0, through))[0] for a in ACCOUNTS}
-    actual = [t for t in feed.txns if t.date >= start]
-    for a in ACCOUNTS:
+    # Balances at the start: before each bank account's first transaction from then on. The bank data can't
+    # show the cash on hand, so Cash starts at what covered the cash bills already due (at least $0).
+    balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK} | {CASH: 0}
+    actual = [t for t in feed.txns if start <= t.date <= through]
+    for a in BANK:
         first = next((t for t in actual if t.account == a), None)
         if first and first.balance is not None:
             balances[a] = first.balance - first.amount
+
+    events: list[Row] = []
     for t in actual:
-        if t.account in balances:
-            balances[t.account] = t.balance if t.balance is not None else balances[t.account] + t.amount
-        tl.rows.append(Row(t.date, t.account, t.description, t.category or "", t.amount, dict(balances), False))
+        status = applied.status_of(t)
+        events.append(Row(t.date, t.account, t.description + (f" ({status})" if status else ""), t.category or "",
+                          t.amount, {}, ACTUAL, t.balance))
+        if t.category == ATM:  # an ATM withdrawal moves money into Cash; a deposit moves it out
+            events.append(Row(t.date, CASH, "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), ATM,
+                              -t.amount, {}, ACTUAL))
 
-    # What's coming, from the day after the bank data ends.
-    coming: list[tuple[date, str, str, str, int]] = []
-    months = []
-    m = start
-    while m <= end:
-        months.append(m)
-        m = add_months(m, 1)
+    def add(day: date, item: Item, amount: int, description: str = "", kind: str = PROJECTED):
+        events.append(Row(day, _account(item, feed.txns), description or item.name, item.name, amount, {}, kind))
+
     for item in items:
-        if item.kind == "bill" and item.day:
-            account = _usual_account(feed.txns, item.name)
-            for m in months:
-                due = due_date(m.year, m.month, item.day)
-                paid = any(t.category == item.name and t.amount < 0 and m <= t.date <= month_end(m)
-                           for t in feed.txns)
-                if through < due <= end and not paid:
-                    coming.append((due, account, item.name, item.name, -item.amount))
-        elif item.kind == "spending":
-            monthly = item.amount or _monthly_average(feed.txns, item.name, through)
-            if monthly > 0:
-                weekly = round(monthly * 12 / 52)
-                account = _usual_account(feed.txns, item.name)
-                day = through + timedelta(days=(7 - through.weekday()) % 7 or 7)  # next Monday
-                while day <= end:
-                    coming.append((day, account, f"{item.name} (weekly share)", item.name, -weekly))
-                    day += timedelta(days=7)
-    annual = [i.name for i in items if i.kind == "annual"]
-    if annual:
-        tl.notes.append("Not projected (yearly, no date): " + ", ".join(annual) + ".")
-
-    # Income that came in at least 3 of the last 4 weeks repeats weekly, on the same weekday, at its average.
-    recent = [t for t in feed.txns if t.is_income and t.amount > 0 and t.date > through - timedelta(days=28)]
-    for category in sorted({t.category for t in recent}):
-        deposits = [t for t in recent if t.category == category]
-        if len(deposits) >= 3:
-            average = sum(t.amount for t in deposits) // len(deposits)
-            day = deposits[-1].date + timedelta(days=7)
-            while day <= through:
-                day += timedelta(days=7)
+        if item.cancelled or not item.amount:
+            if not item.cancelled and item.section == "expense" and item.kind == "spending":
+                tl.notes.append(f"{item.name}: no amount set on SnapShot, so nothing is projected for it.")
+            continue
+        sign = 1 if item.section == "income" else -1
+        if item.weekly and item.day is not None:  # weekly on a weekday (Instacart: Wednesday)
+            day = through + timedelta(days=(item.day - through.weekday()) % 7 or 7)
             while day <= end:
-                coming.append((day, deposits[-1].account, f"{category} (expected)", category, average))
+                add(day, item, sign * item.amount, f"{item.name} (baseline)" if sign > 0 else "")
                 day += timedelta(days=7)
-            tl.notes.append(f"{category}: {money(average)} expected every {deposits[-1].date:%A} "
-                            f"(average of the last {len(deposits)}).")
+        elif item.kind == "spending" and item.section == "income":
+            tl.notes.append(f"{item.name}: income with no Day of Period, so nothing is projected for it.")
+        elif item.kind == "spending":
+            # Each budget week's target on its Wednesday; this week only what's left of it.
+            weekly = item.amount if item.weekly else item.amount // 4
+            week = week_start(through)
+            spent = -sum(t.amount for t in feed.txns if t.category == item.name and week <= t.date <= through)
+            left = weekly - spent
+            if left > 0 and through + timedelta(days=1) <= week + timedelta(days=6):
+                add(through + timedelta(days=1), item, -left, f"{item.name} (rest of this week)")
+            day = week + timedelta(days=7)
+            while day <= end:
+                add(day, item, -weekly, f"{item.name} (week)")
+                day += timedelta(days=7)
+        elif item.kind == "annual":
+            if item.day:
+                for year in range(start.year, end.year + 1):
+                    due = due_date(year, *item.day)
+                    if through < due <= end and not _paid_in(feed.txns, item, due.replace(day=1), month_end(due)):
+                        add(due, item, sign * item.amount)
+        else:  # monthly, on its day
+            for m in _months(start, end):
+                due = due_date(m.year, m.month, item.day)
+                if not start <= due <= end:
+                    continue
+                if _paid_in(feed.txns, item, m, month_end(m)):
+                    continue  # paid (or disputed) this month already
+                if due > through:
+                    add(due, item, sign * item.amount)
+                elif _account(item, feed.txns) == CASH:
+                    add(due, item, sign * item.amount, kind=ASSUMED)  # rent: not in the bank, assume it was paid
 
-    for due, account, description, category, amount in sorted(coming, key=lambda c: (c[0], -c[4])):
-        if account in balances:
-            balances[account] += amount
-        tl.rows.append(Row(due, account, description, category, amount, dict(balances), True))
+    # Same day: actual before projected, money in before money out (the bank's own order kept for actual rows).
+    events.sort(key=lambda r: (r.date, r.kind != ACTUAL, 0 if r.kind == ACTUAL else -r.amount))
+    running, lowest = 0, 0
+    for row in events:
+        if row.account == CASH and row.date <= through:
+            running += row.amount
+            lowest = min(lowest, running)
+    balances[CASH] = -lowest  # never below $0 up to the end of the bank data
+    for row in events:
+        balances[row.account] = (row.bank_balance if row.bank_balance is not None
+                                 else balances[row.account] + row.amount)
+        row.balances = dict(balances)
+        tl.rows.append(row)
     return tl
 
 
@@ -142,22 +175,19 @@ def as_text(tl: Timeline) -> str:
         line = f"• {ACCOUNT_LABELS[a]}: lowest {money(low)} on {day:%-m/%-d}"
         if a in negative:
             row = negative[a]
-            line += (f". Goes negative on {row.date:%-m/%-d} ({row.description} {money(row.amount)}): move at "
-                     f"least {money(-low)} into {ACCOUNT_LABELS[a]} before then to stay above zero to {tl.end:%-m/%-d}")
+            how = (f"take out at least {money(-low)} in cash" if a == CASH
+                   else f"move at least {money(-low)} into {ACCOUNT_LABELS[a]}")
+            line += (f". Goes negative on {row.date:%-m/%-d} ({row.description} {money(row.amount)}): {how} "
+                     f"before then to stay above zero to {tl.end:%-m/%-d}")
         out.append(line)
-    cash = [r for r in tl.rows if r.projected and r.account == CASH]
-    if cash:
-        out.append(f"• Cash needed: {money(-sum(r.amount for r in cash))} ("
-                   + ", ".join(f"{r.description} {r.date:%-m/%-d}" for r in cash) + ")")
     out += [f"• {n}" for n in tl.notes]
     return "\n".join(out)
 
 
-def as_rows(tl: Timeline) -> list[list]:
+def as_rows(tl: Timeline, rows: list[Row] | None = None) -> list[list]:
     labels = [ACCOUNT_LABELS[a] for a in ACCOUNTS]
-    rows = [["Date", "Account", "Description", "Category", "Amount", *labels, "Total", "Kind"]]
-    for r in tl.rows:
-        rows.append([f"{r.date:%-m/%-d/%Y}", ACCOUNT_LABELS.get(r.account, r.account.title()), r.description,
-                     r.category, r.amount / 100, *[r.balances[a] / 100 for a in ACCOUNTS],
-                     sum(r.balances.values()) / 100, "projected" if r.projected else "actual"])
-    return rows
+    out = [["Date", "Account", "Description", "Category", "Amount", *labels, "Total", "Kind"]]
+    for r in tl.rows if rows is None else rows:
+        out.append([f"{r.date:%-m/%-d/%Y}", ACCOUNT_LABELS[r.account], r.description, r.category, r.amount / 100,
+                    *[r.balances[a] / 100 for a in ACCOUNTS], sum(r.balances.values()) / 100, r.kind])
+    return out

@@ -1,4 +1,4 @@
-"""The budget sheet: read the SnapShot tab; each job writes only its own tab, which it creates."""
+"""The budget sheet: read the SnapShot and Exceptions tabs; each job writes only its own tab, which it creates."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from taskdeck.shared.google import (
     GoogleError, ServiceAccountCredentials, ServiceAccountKey, SheetsClient, a1_range, key_problems,
 )
 
-from . import snapshot
+from . import exceptions, snapshot
 
 
 def client(settings: dict[str, Any], timeout: float = 30) -> SheetsClient:
@@ -29,12 +29,27 @@ setup_problems = key_problems
 
 
 def read_items(settings: dict[str, Any]) -> list[snapshot.Item]:
+    """The SnapShot lines; a line whose name is struck through counts as cancelled."""
     tab = (settings.get("snapshot_tab") or "SnapShot").strip()
     try:
-        values = client(settings).get_values(a1_range(tab))
+        grid = client(settings).get_grid(a1_range(tab))
     except GoogleError as exc:
         raise StepError(str(exc)) from None
-    return snapshot.parse(values, tab)
+    values = [[text for text, _ in row] for row in grid]
+    struck = {r for r, row in enumerate(grid) if row and row[0][1]}
+    return snapshot.parse(values, tab, struck)
+
+
+def read_exceptions(settings: dict[str, Any]) -> list[exceptions.Entry]:
+    """The Exceptions tab's rows; none when the sheet has no such tab."""
+    tab = (settings.get("exceptions_tab") or "Exceptions").strip()
+    try:
+        c = client(settings)
+        if not any(t.get("title") == tab for t in c.tabs()):
+            return []
+        return exceptions.parse(c.get_values(a1_range(tab)), tab)
+    except GoogleError as exc:
+        raise StepError(str(exc)) from None
 
 
 def write_tab(settings: dict[str, Any], title: str, note: str, rows: list[list]) -> str:

@@ -10,7 +10,10 @@ SETTINGS = (
                help="The budget upload page's address (the bank transactions come from there)."),
     Field.text("sheet_id", "Budget sheet ID", default=DEFAULT_SHEET_ID, required=True),
     Field.text("snapshot_tab", "Budget list tab", default="SnapShot",
-               help="The tab listing every expense: Expense, Periodicity, Day of Period, Monthly."),
+               help="The tab listing income and expenses: Income and Expense sections, each with Account, "
+                    "Periodicity, Day of Period, Monthly, Weekly, Annually."),
+    Field.text("exceptions_tab", "Exceptions tab", default="Exceptions",
+               help="Charges set aside or disputed: Match, Date, Amount, Status, Note. Optional."),
     Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True, required=True,
                help="The same key as Daily Log works: import the same .json. Share the budget sheet with the key's "
                     "client_email as Editor."),

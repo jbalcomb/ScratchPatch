@@ -183,6 +183,23 @@ class SheetsClient:
             raise self._explain(exc) from None
         return data.get("values", []) if isinstance(data, dict) else []
 
+    def get_grid(self, rng: str) -> list[list[tuple[str, bool]]]:
+        """A range as displayed, with formatting: each cell as (text, struck through)."""
+        url = (f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}?" + urllib.parse.urlencode({
+            "ranges": rng, "fields": "sheets.data.rowData.values(formattedValue,effectiveFormat.textFormat.strikethrough)"}))
+        try:
+            data = get_json(url, headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+        rows = []
+        for sheet in (data.get("sheets") or []) if isinstance(data, dict) else []:
+            for block in sheet.get("data") or []:
+                for row in block.get("rowData") or []:
+                    rows.append([(str(c.get("formattedValue", "")),
+                                  bool(c.get("effectiveFormat", {}).get("textFormat", {}).get("strikethrough")))
+                                 for c in row.get("values") or []])
+        return rows
+
     def append_row(self, rng: str, row: list[Any]) -> None:
         url = self._url(rng, ":append", valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS")
         try:

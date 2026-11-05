@@ -1,73 +1,108 @@
 # Budget jobs
 
-Two jobs, in the **Money** category, that bring together:
+Three jobs, in the **Money** category, that bring together:
 
-* the budget sheet's **SnapShot** tab: the list of every expense (you edit it in Google Sheets), and
+* the budget sheet's **SnapShot** tab (income and expense lines) and **Exceptions** tab (charges set aside or
+  disputed), which you edit in Google Sheets, and
 * the **bank transactions** of the three Bank of America accounts, which the budget service on the AI Workstation
   collects from uploaded exports ([budget/README.md](../../../budget/README.md)).
+
+The sheet's design, tab by tab, is in the **BudgetManagerGoogleSheetDesign** doc (Google Drive,
+Projects/ScratchPatch/BudgetManager). This page is how the code follows it.
 
 | Job | Run | Write to sheet |
 |---|---|---|
 | **Reconcile budget month** | A month (blank = the latest with bank data) against SnapShot | the **Reconcile (auto)** tab |
 | **Update budget timeline** | This month's transactions, then what's coming through the end of next month | the **Timeline (auto)** tab |
+| **Update ThisWeek** | This budget week (Wednesday to Tuesday) item by item, then the 3 weeks after, summed | the **ThisWeek** tab |
 
 Running only reads. **Write to sheet** replaces the job's own tab (created the first time); no other tab is
 touched, so the hand-made TimeLine and Projected tabs stay as they are.
 
+## Accounts
+
+The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
+(`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
+from Daily into it, an ATM deposit moves it back, and SnapShot lines whose Account is Cash (rent) are paid from it.
+The bank can't show the cash on hand, so the timeline starts Cash at what covered the cash bills already due.
+
 ## How a transaction is tied to a budget line
 
-By name. A SnapShot **Expense** is also a **category** in the budget service's `budget/rules.txt`:
-`EXETERFINA = Car Payment` makes the Exeter Finance loan payment the "Car Payment" line. To add a line:
-add the row to SnapShot, then a rule with exactly the same name, then `categorize` on the workstation
-(or upload anything). A rule can be limited to one account, e.g. `[bills] Monthly Maintenance Fee = BofA Fee - Bills`.
+By name. A SnapShot line's name is also a **category** in the budget service's `budget/rules.txt`:
+`EXETERFINA = Car Payment` makes the Exeter Finance loan payment the "Car Payment" line, and
+`INSTACART = Instacart` the Instacart income line. To add a line: add the row to SnapShot, then a rule with
+exactly the same name, then `categorize` on the workstation (or upload anything). A rule can be limited to one
+account, e.g. `[bills] Monthly Maintenance Fee = BofA Fee - Bills`.
 
-SnapShot columns used: **Expense**, **Periodicity**, **Day of Period**, **Monthly** (found by their header,
-in the row whose first cell is "Expense").
+SnapShot: an **Income** section, then an **Expense** section, each starting with a header row whose first cell is
+"Income" or "Expense". Columns used, found by their header: **Account**, **Periodicity**, **Day of Period**,
+**Monthly**, **Weekly**, **Annually**. A line whose name is **struck through** is cancelled.
 
-| Row looks like | Treated as |
+| Line looks like | Treated as |
 |---|---|
-| Periodicity *Monthly* with a Monthly amount | a **bill**: expected once a month, about that amount, around that day |
-| Periodicity *Annually* | **yearly**: only reported when it's charged |
-| no Periodicity (Groceries, Motor Fuel) | **spending**: the Monthly column is its target (optional) |
+| *Monthly*, a day of the month | a **bill**: expected once a month, about the Monthly amount, around that day |
+| *Weekly*, a weekday (Instacart: Wed) | every week on that weekday, the Weekly amount (income: the baseline) |
+| *Weekly*, Day "-" (Groceries, Motor Fuel) | **spending**: the Weekly amount is each week's target |
+| *Annually*, a month/day (Amazon Prime: 4/15) | once a year on that day, the Annually amount |
+| struck through | **cancelled**: not projected; reported if it still charges |
+
+Budget weeks run **Wednesday to Tuesday** (payday to the day before); a week belongs to the month its Wednesday
+is in.
+
+Exceptions: rows of Match (text in the bank description), Date and Amount (optional, to pick out one charge),
+Status (**Set aside** or **Disputed**), Note. A disputed charge is paired with the later credit for the same amount
+in the same account (the bank's Temporary Credit Adjustment).
 
 ## Reconcile budget month
 
+* **Income**: each income line, weekly ones week by week against the baseline ("so far" for a week the bank data
+  hasn't finished, "not yet" for one that hasn't started); then other income (e.g. Income: Paycheck).
 * **Bills**: each one *paid* (date, amount), *paid +$X vs the budget* (amount changed by more than 2% or $1),
-  *due 10/25* (not past its day + 3 days in the bank data yet), or **missing**. A line never seen in the bank
-  at all (rent) shows as *paid in cash?*. When a category has two charges (Claude's $106.75 and $21.35), the one
-  closest to the budget amount is the bill and the other is listed below as an extra charge.
-* **Spending**: spent against the Monthly target.
+  *due 10/25* (not past its day + 3 days in the bank data yet), **missing**, *disputed* (with the temporary credit),
+  *cancelled* or *cancelled, but still charged*, or *paid in cash* for a Cash line. When a category has two charges
+  (Claude's $106.75 and $21.35), the one closest to the budget amount is the bill and the other is listed below as
+  an extra charge.
+* **Spending**: each weekly line week by week; the month's target is Weekly × the Wednesdays in the month.
 * **Not on SnapShot**: every other expense, grouped by category (or by merchant when no rule matches). *Repeats*
-  means it was also charged in 2 of the 3 months before: a subscription that belongs on SnapShot, or should be
-  cancelled. Transfers between the three accounts and income are left out.
-* **Income**: totals per income category.
+  means it was also charged in 2 of the 3 months before. Transfers, ATM moves to Cash, income and Exceptions are
+  left out.
+* **Disputed** and **Set aside**: the Exceptions tab's charges in the month.
 
 ## Update budget timeline
 
-* **Actual** rows: this month's transactions, with each account's balance as the bank reported it.
-* **Projected** rows, from the day after the bank data ends to the end of next month:
-  * bills on their day, from the account that paid them last, unless already paid that month;
-  * spending as a weekly share (Mondays) of its Monthly target, or of the last three months' average;
-  * income that arrived in at least 3 of the last 4 weeks, weekly on the same weekday at its average;
-  * lines paid in cash (rent) are listed but move no bank balance.
+* **Actual** rows: this month's transactions, with each bank account's balance as the bank reported it (ATM
+  withdrawals also on a Cash row). A cash bill already due (rent) is listed as *cash, assumed paid*.
+* **Projected** rows, from the day after the bank data ends to the end of next month, from the account in
+  SnapShot's Account column (or the one that last paid it):
+  * bills on their day, unless already paid (or disputed) that month; yearly lines on their date;
+  * income lines on their weekday at the baseline;
+  * spending: each week's target on its Wednesday, and for the current week only what's left of it;
+  * cancelled lines and lines without an amount are left out (the result names the ones with no amount).
 * The result says each account's lowest point, and for one that goes negative, the day and how much to move
-  in before then.
+  in (or take out in cash) before then.
+
+## Update ThisWeek
+
+Run it after the Wednesday-morning update (exports uploaded). This budget week, Wednesday to Tuesday: each income,
+expense and transfer with every account's balance (actual where the bank has it, expected otherwise), then the
+three weeks after: income, expenses and the balances at the end of each week. It replaces the whole ThisWeek tab.
 
 ## One-time setup
 
 1. **Share the budget sheet** with the service account's `client_email` (inside its `.json` key: the same one
    Daily Log uses) as **Editor**.
-2. On the phone, open either job → settings (tune icon):
+2. On the phone, open any of the three jobs → settings (tune icon):
 
    | Setting | Value |
    |---|---|
    | Budget service address | pre-filled: `https://budget.tailc54221.ts.net` (the upload page's address) |
    | Budget sheet ID | pre-filled with the Budget-2026-TimeLine sheet |
    | Budget list tab | `SnapShot` |
+   | Exceptions tab | `Exceptions` |
    | Google service account key | Import the same `.json` as Daily Log |
 
-   The two jobs share these settings. The phone needs Tailscale on to reach the budget service.
-   Tap **Test settings** to see that both the service and the sheet work.
+   The three jobs share these settings. The phone needs Tailscale on to reach the budget service.
+   Tap **Test settings** to see that the service, SnapShot and Exceptions all work.
 
 ## Finding the service
 

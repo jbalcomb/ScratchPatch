@@ -4,7 +4,8 @@
 #   python budget/budget.py categorize
 
 # Income
-INSTACART = Income: Instacart
+# Named like SnapShot's Income line
+INSTACART = Instacart
 # Part of the paycheck, sent over from the US Bank account (must stay above the Transfer lines)
 Transfer James William Balcomb = Income: Paycheck
 

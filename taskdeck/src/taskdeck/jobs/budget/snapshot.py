@@ -1,7 +1,8 @@
-"""The budget list: the SnapShot tab, one row per expense.
+"""The budget list: the SnapShot tab. An Income section, then an Expense section, each starting with a
+header row whose first cell is "Income" or "Expense" (see the BudgetManagerGoogleSheetDesign doc).
 
-Expense names are also the category names in the budget service's rules.txt; that is how a bank
-transaction is tied to a budget line.
+A line's name is also its category in the budget service's rules.txt: that is how a bank transaction is
+tied to the line.
 """
 
 from __future__ import annotations
@@ -12,23 +13,32 @@ from typing import Any
 
 from taskdeck.core import StepError
 
+from .data import NICKNAMES
+
+WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
 
 @dataclass(frozen=True)
 class Item:
     name: str
-    periodicity: str      # "Monthly", "Annually", ... or "" (spending with a monthly target, e.g. Groceries)
-    day: int | None       # day of the month it's due
-    amount: int | None    # cents: the Monthly column (the monthly target, for spending items)
+    section: str               # "income" or "expense"
+    account: str | None        # the bank account it's paid from or into (checking/bills/savings/cash), if set
+    periodicity: str           # "monthly", "weekly", "annually" (or "" when blank)
+    day: Any = None            # monthly: day of the month; weekly: weekday 0-6 (Mon=0); annually: (month, day)
+    amount: int | None = None  # cents per period: Monthly, Weekly or Annually column, by periodicity
+    cancelled: bool = False    # struck through: kept one more month, not projected
 
     @property
     def kind(self) -> str:
-        """bill: a fixed charge every month. annual: once a year. spending: varies (groceries, fuel)."""
-        p = self.periodicity.lower()
-        if p.startswith("annual") or p.startswith("year"):
+        """annual: once a year (on its month/day). bill: fixed, on a known day (a day of the month, or a weekday).
+        spending: no posting day ("-"), compared against its amount as a target."""
+        if self.periodicity == "annually":
             return "annual"
-        if p.startswith("month") and self.amount:
-            return "bill"
-        return "spending"
+        return "spending" if self.day is None else "bill"
+
+    @property
+    def weekly(self) -> bool:
+        return self.periodicity == "weekly"
 
 
 def cents(value: Any) -> int | None:
@@ -44,27 +54,44 @@ def cents(value: Any) -> int | None:
         return None
 
 
-def parse(values: list[list[Any]], tab: str = "SnapShot") -> list[Item]:
-    """The items under the header row whose first cell is 'Expense'; columns are found by header name."""
-    for h, row in enumerate(values):
-        if row and str(row[0]).strip().lower() == "expense":
-            break
-    else:
-        raise StepError(f"No header row starting with “Expense” in the {tab} tab.")
-    header = [str(c).strip().lower() for c in values[h]]
+def _day(periodicity: str, text: str) -> Any:
+    text = text.strip().lower()
+    if periodicity == "weekly":
+        return WEEKDAYS.get(text[:3])
+    if periodicity.startswith("annual"):
+        m = re.fullmatch(r"(\d{1,2})/(\d{1,2})", text)
+        return (int(m[1]), int(m[2])) if m else None
+    return int(text) if re.fullmatch(r"\d{1,2}", text) else None  # "-" or blank: no posting day
 
-    def col(row: list[Any], name: str) -> Any:
-        i = header.index(name) if name in header else -1
-        return row[i] if 0 <= i < len(row) else ""
 
-    items = []
-    for row in values[h + 1:]:
-        name = str(row[0]).strip() if row else ""
-        if not name:
+def parse(values: list[list[Any]], tab: str = "SnapShot", struck: set[int] | None = None) -> list[Item]:
+    """The lines of the Income and Expense sections. ``struck``: row numbers (0-based) whose name is struck
+    through. Columns are found by header name in each section."""
+    struck = struck or set()
+    items: list[Item] = []
+    section, header = None, []
+    for r, row in enumerate(values):
+        first = str(row[0]).strip() if row else ""
+        if first.lower() in ("income", "expense"):
+            section, header = first.lower(), [str(c).strip().lower() for c in row]
             continue
-        day = str(col(row, "day of period")).strip()
-        items.append(Item(name, str(col(row, "periodicity")).strip(),
-                          int(day) if re.fullmatch(r"\d{1,2}", day) else None, cents(col(row, "monthly"))))
-    if not items:
-        raise StepError(f"The {tab} tab has no expenses under its header row.")
+        if not section or not first:
+            continue
+
+        def col(name: str) -> str:
+            i = header.index(name) if name in header else -1
+            return str(row[i]) if 0 <= i < len(row) else ""
+
+        periodicity = col("periodicity").strip().lower()
+        if periodicity.startswith("annual") or periodicity.startswith("year"):
+            periodicity, amount = "annually", cents(col("annually"))
+        elif periodicity.startswith("week"):
+            periodicity, amount = "weekly", cents(col("weekly"))
+        else:
+            periodicity, amount = ("monthly" if periodicity.startswith("month") else ""), cents(col("monthly"))
+        account = col("account").strip()
+        items.append(Item(first, section, NICKNAMES.get(account.lower()) if account else None, periodicity,
+                          _day(periodicity, col("day of period")), amount, r in struck))
+    if not any(i.section == "expense" for i in items):
+        raise StepError(f"No expense lines in the {tab} tab: it needs a header row starting with “Expense”.")
     return items

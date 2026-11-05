@@ -4,24 +4,26 @@ the AI Workstation collects (see docs/jobs/budget.md)."""
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from taskdeck.core import (
     Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step,
 )
 
-from . import data, reconcile, sheets, timeline
+from . import data, reconcile, sheets, thisweek, timeline
 from .config import SETTINGS
 
 RECONCILE_TAB = "Reconcile (auto)"
 TIMELINE_TAB = "Timeline (auto)"
+THISWEEK_TAB = "ThisWeek"
 HISTORY_MONTHS = 4  # enough to tell repeats from one-offs and to average spending
 
 
-@step(Stage.EXECUTE, name="read SnapShot tab and bank transactions")
+@step(Stage.EXECUTE, name="read SnapShot and Exceptions tabs and bank transactions")
 def load(ctx):
-    """The budget list from the sheet, and a few months of transactions from the budget service."""
+    """The budget list and exceptions from the sheet, and a few months of transactions from the budget service."""
     ctx["items"] = sheets.read_items(ctx.settings)
+    ctx["exceptions"] = sheets.read_exceptions(ctx.settings)
     since = data.add_months(ctx.get("month") or date.today(), -HISTORY_MONTHS)
     feed = data.fetch(ctx.settings.get("budget_url"), since)
     if feed.through is None:
@@ -40,7 +42,7 @@ def parse_month(ctx):
 @step(Stage.EXECUTE, name="compare")
 def compare(ctx):
     month = ctx.get("month") or ctx["feed"].through.replace(day=1)
-    ctx["report"] = reconcile.reconcile(ctx["items"], ctx["feed"], month)
+    ctx["report"] = reconcile.reconcile(ctx["items"], ctx["feed"], month, ctx["exceptions"])
 
 
 @step(Stage.PRESENT)
@@ -57,7 +59,7 @@ def show_report(ctx):
 
 @step(Stage.EXECUTE, name="project balances")
 def project(ctx):
-    ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"])
+    ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"], rows=ctx["exceptions"])
 
 
 @step(Stage.PRESENT)
@@ -70,6 +72,25 @@ def show_timeline(ctx):
         warning=("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
                                                for a, r in negative.items()) + ".") if negative else None,
         payload={"rows": timeline.as_rows(tl), "through": tl.through.isoformat()},
+    )
+
+
+@step(Stage.EXECUTE, name="lay out the week")
+def lay_out_week(ctx):
+    ctx["week"] = thisweek.build(ctx["items"], ctx["feed"], date.today(), ctx["exceptions"])
+
+
+@step(Stage.PRESENT)
+def show_week(ctx):
+    tw = ctx["week"]
+    negative = tw.timeline.first_negative()
+    soon = {a: r for a, r in negative.items() if r.date <= tw.start + timedelta(days=7 * (1 + thisweek.WEEKS_AFTER))}
+    ctx.result = Result(
+        title=thisweek.title(tw),
+        text=thisweek.as_text(tw),
+        warning=("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
+                                               for a, r in soon.items()) + ".") if soon else None,
+        payload={"rows": thisweek.as_rows(tw), "through": tw.timeline.through.isoformat()},
     )
 
 
@@ -114,8 +135,17 @@ class _BudgetJob(JobPlugin):
             out.append(Problem(f"Budget sheet: {exc}", fix="settings"))
             return out
         tab = (settings.get("snapshot_tab") or "SnapShot").strip()
-        bills = sum(1 for i in items if i.kind == "bill")
-        out.append(Problem.passed(f"Budget sheet: the {tab} tab lists {len(items)} expenses ({bills} monthly bills)."))
+        incomes = sum(1 for i in items if i.section == "income")
+        expenses = [i for i in items if i.section == "expense"]
+        cancelled = sum(1 for i in expenses if i.cancelled)
+        out.append(Problem.passed(f"Budget sheet: the {tab} tab lists {incomes} income and {len(expenses)} expense "
+                                  f"lines" + (f" ({cancelled} cancelled)" if cancelled else "") + "."))
+        try:
+            rows = sheets.read_exceptions(settings)
+        except StepError as exc:
+            out.append(Problem(f"Exceptions tab: {exc}", blocking=False, fix="recheck"))
+        else:
+            out.append(Problem.passed(f"Exceptions tab: {len(rows)} charges set aside or disputed."))
         return out
 
     def commit(self, payload, settings):
@@ -155,5 +185,20 @@ class UpdateTimeline(_BudgetJob):
         return Pipeline([load, project, show_timeline])
 
 
+class UpdateThisWeek(_BudgetJob):
+    id = "budget_thisweek"
+    title = "Update ThisWeek"
+    description = ("This budget week (Wednesday to Tuesday) item by item with every account's balance, and the three "
+                   "weeks after, summed. Run it after the Wednesday-morning budget update.")
+    icon = "VIEW_WEEK_OUTLINED"
+    tags = ("budget", "bills", "week", "wednesday", "payday", "balance", "google sheets", "money")
+    settings_from = "budget_reconcile"
+    run_label = "Lay out the week"
+    tab = THISWEEK_TAB
+
+    def build_pipeline(self):
+        return Pipeline([load, lay_out_week, show_week])
+
+
 PLUGIN = ReconcileMonth()
-PLUGINS = (PLUGIN, UpdateTimeline())
+PLUGINS = (PLUGIN, UpdateTimeline(), UpdateThisWeek())

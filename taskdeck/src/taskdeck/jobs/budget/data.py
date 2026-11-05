@@ -13,8 +13,14 @@ from taskdeck.core import StepError
 from taskdeck.shared import tailscale
 from taskdeck.shared.http import HttpError, get_json
 
-ACCOUNT_LABELS = {"checking": "Daily", "bills": "Bills", "savings": "Savings"}
-TRANSFER = "Transfer"  # money moved between the three accounts: never spending
+# The budget service files exports as checking / bills / savings; everywhere else they go by their nicknames
+# (the budget sheet's Accounts tab). Cash isn't a bank account: ATM withdrawals and deposits move money in
+# and out of it.
+ACCOUNT_LABELS = {"checking": "Daily", "bills": "Bills", "savings": "Save", "cash": "Cash"}
+NICKNAMES = {label.lower(): account for account, label in ACCOUNT_LABELS.items()}
+CASH = "cash"
+TRANSFER = "Transfer"  # money moved between the bank accounts: never spending
+ATM = "Cash"           # rules.txt category of ATM withdrawals and deposits: a move to or from Cash
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,8 @@ class Txn:
 
     @property
     def is_income(self) -> bool:
+        """Income by category name ("Income: Paycheck"); lines in SnapShot's Income section count too, see
+        :func:`income_names`."""
         return (self.category or "").startswith("Income")
 
 
@@ -158,6 +166,22 @@ def add_months(d: date, n: int) -> date:
 def month_end(d: date) -> date:
     """The last day of d's month."""
     return d.replace(day=calendar.monthrange(d.year, d.month)[1])
+
+
+def week_start(d: date) -> date:
+    """The Wednesday a budget week starts on (weeks run Wednesday to Tuesday: payday to the day before)."""
+    return date.fromordinal(d.toordinal() - (d.weekday() - 2) % 7)
+
+
+def wednesdays(month: date) -> list[date]:
+    """The Wednesdays in d's month: the budget weeks that belong to it."""
+    first = month.replace(day=1)
+    day = date.fromordinal(first.toordinal() + (2 - first.weekday()) % 7)
+    out = []
+    while day.month == first.month:
+        out.append(day)
+        day = date.fromordinal(day.toordinal() + 7)
+    return out
 
 
 def due_date(year: int, month: int, day: int) -> date:
