@@ -85,7 +85,7 @@ python web.py export-labels        # approved receipts and products -> the bake-
 2. **Start it:**
 
    ```bash
-   mkdir -p ~/photo-ocr && cd ~/ScratchPatch/photo-ocr && docker compose up -d --build photo-ocr
+   mkdir -p ~/photo-ocr && cd ~/develai/ScratchPatch/photo-ocr && docker compose up -d --build photo-ocr
    ```
 
    Logs: `docker logs -f photo-ocr`. Check: `curl -s http://127.0.0.1:8093/api/health`.
@@ -177,7 +177,7 @@ match the preset's section names; `qwen3-vl-8b` and `paddleocr-vl` are both ther
 ### 1. Build the test set
 
 ```bash
-cd ~/ScratchPatch/photo-ocr
+cd ~/develai/ScratchPatch/photo-ocr
 python bakeoff.py add ~/Downloads/IMG_0412.jpg --tags thermal,faded
 python bakeoff.py add IMG_0413.jpg IMG_0414.jpg IMG_0415.jpg --tags long   # one receipt, top to bottom
 python bakeoff.py add --product front.jpg back.jpg                          # one product
@@ -262,7 +262,7 @@ The report has a section per kind:
 ### Bake-off with Docker
 
 ```bash
-cd ~/ScratchPatch/photo-ocr
+cd ~/develai/ScratchPatch/photo-ocr
 docker compose build                                 # Tesseract built in; see Dockerfile for the others
 docker compose run --rm bakeoff run --all
 docker compose run --rm bakeoff score
