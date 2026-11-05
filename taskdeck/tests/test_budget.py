@@ -139,10 +139,14 @@ def test_merchant():
     assert data.merchant("VERIZON WIRELESS DES:PAYMENTS ID:0686") == "VERIZON WIRELESS"
 
 
+def test_default_address_is_the_budget_service():
+    assert budget.PLUGIN.resolve_settings({})["budget_url"] == "https://budget.tailc54221.ts.net"
+
+
 def test_jobs_register_and_share_settings():
     reconcile_job, timeline_job = budget.PLUGINS
     assert timeline_job.settings_id == reconcile_job.id
-    problems = reconcile_job.check_ready(reconcile_job.resolve_settings({"budget_url": "https://ai.ts.net"}))
+    problems = reconcile_job.check_ready(reconcile_job.resolve_settings({}))
     assert [p.message for p in problems] == ["Set “Google service account key (JSON)” in this job's settings."]
 
 
@@ -156,11 +160,15 @@ def test_candidates_turn_what_was_typed_into_the_serve_address(monkeypatch):
                         lambda host, timeout=2: "ai-workstation.tail1234.ts.net" if host in ("100.83.88.59", "ai-workstation")
                         else host if host.endswith(".ts.net") else None)
     assert data.candidates("http://100.83.88.59:8092/upload") == [
-        "http://100.83.88.59:8092", "https://ai-workstation.tail1234.ts.net", "https://ai-workstation.tail1234.ts.net:8443",
+        "http://100.83.88.59:8092", "https://budget.tail1234.ts.net", "https://budget.tail1234.ts.net:8443",
+        "https://ai-workstation.tail1234.ts.net", "https://ai-workstation.tail1234.ts.net:8443",
         "https://100.83.88.59", "https://100.83.88.59:8443"]
-    assert data.candidates("ai-workstation.tail1234.ts.net/")[:2] == [
-        "https://ai-workstation.tail1234.ts.net", "https://ai-workstation.tail1234.ts.net:8443"]
-    assert data.candidates("ai-workstation")[1] == "https://ai-workstation.tail1234.ts.net"
+    # An old Serve address on the workstation's own name also finds the Tailscale Service.
+    assert data.candidates("ai-workstation.tail1234.ts.net/")[:3] == [
+        "https://ai-workstation.tail1234.ts.net", "https://budget.tail1234.ts.net", "https://budget.tail1234.ts.net:8443"]
+    assert data.candidates("ai-workstation")[1] == "https://budget.tail1234.ts.net"
+    assert data.candidates("https://budget.tail1234.ts.net")[:2] == [
+        "https://budget.tail1234.ts.net", "https://budget.tail1234.ts.net:8443"]
     assert data.candidates("") == []
 
 
@@ -260,3 +268,4 @@ def test_why_the_address_changed():
     assert "port 8092 doesn't answer" in data.why_address("https://ws.ts.net:8092", "https://ws.ts.net")
     assert data.why_address("https://ws.ts.net", "https://ws.ts.net:8443").endswith("port 8443; port 443 doesn't answer.")
     assert "certificate" in data.why_address("https://ai-workstation", "https://ai-workstation.tail1.ts.net")
+    assert "Tailscale Service" in data.why_address("https://ai-workstation.tail1.ts.net", "https://budget.tail1.ts.net")

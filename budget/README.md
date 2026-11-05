@@ -111,7 +111,7 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
 1. Clone the repo, and create the data folder and the secrets file (readable only by you):
 
    ```bash
-   git clone https://github.com/jbalcomb/ScratchPatch.git ~/ScratchPatch
+   git clone https://github.com/jbalcomb/ScratchPatch.git ~/develai/ScratchPatch
    mkdir -p ~/budget ~/.config && touch ~/.config/secrets.env && chmod 600 ~/.config/secrets.env
    nano ~/.config/secrets.env
    ```
@@ -127,14 +127,20 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
 2. Start it. It restarts on its own after a crash or reboot:
 
    ```bash
-   cd ~/ScratchPatch/budget
+   cd ~/develai/ScratchPatch/budget
    docker compose up -d --build
    docker compose logs -f              # watch it work; Ctrl+C stops watching, not the service
    ```
 
    If `id -u` isn't `1000`, start it with `UID=$(id -u) GID=$(id -g) docker compose up -d --build` so the files
    it writes in `~/budget` stay yours.
-3. Give it an HTTPS address with **Tailscale Serve**, so only your own devices can reach it:
+3. Give it an HTTPS address through Tailscale, so only your own devices can reach it. It's set up as the
+   **Tailscale Service** `budget`, forwarding to `localhost:8092`:
+
+   **https://budget.tailc54221.ts.net**
+
+   The TaskDeck budget jobs use that address by default. The simpler alternative is Tailscale Serve on the
+   workstation's own name:
 
    ```bash
    sudo tailscale serve status         # see whether something already uses https:443
@@ -146,7 +152,7 @@ in one container; your data stays in `~/budget` on the workstation, outside the 
    MagicDNS and HTTPS Certificates in the Tailscale admin console (DNS page) and run it again. The setting
    survives reboots. On the phone, open that address and use Chrome's menu, "Add to Home screen".
 
-The page only listens on the workstation's own `localhost:8092`; Tailscale Serve is the way in, so there is no
+The page only listens on the workstation's own `localhost:8092`; Tailscale is the way in, so there is no
 firewall port to open.
 
 **After pulling new code:** `git pull && docker compose up -d --build`. Rules edits need no rebuild.
@@ -154,12 +160,12 @@ firewall port to open.
 ### Feed for the TaskDeck budget jobs
 
 `GET /api/transactions?since=YYYY-MM-DD` (same address as the upload page) returns each account's latest
-balance and the transactions from that day on, as JSON. Read-only; the phone reaches it through Tailscale Serve.
+balance and the transactions from that day on, as JSON. Read-only; the phone reaches it through Tailscale.
 
 ### Commands by hand
 
 ```bash
-cd ~/ScratchPatch/budget
+cd ~/develai/ScratchPatch/budget
 docker compose exec budget python budget.py summary
 docker compose exec budget python budget.py categorize     # after editing rules.txt
 docker compose exec budget python budget.py imports        # then undo / redo / rebuild, see "Mistakes"

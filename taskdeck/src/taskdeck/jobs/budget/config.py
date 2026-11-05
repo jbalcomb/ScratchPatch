@@ -3,11 +3,11 @@
 from taskdeck.core import Field
 
 DEFAULT_SHEET_ID = "1qVRjt1BA1VpbfzYN8dxxiJA8cziUkX6baMXHa0bm8fY"
+DEFAULT_URL = "https://budget.tailc54221.ts.net"  # the Tailscale Service "budget" on the AI Workstation
 
 SETTINGS = (
-    Field.text("budget_url", "Budget service address", required=True,
-               help="The budget upload page's Tailscale Serve address, e.g. https://ai-workstation.tail1234.ts.net "
-                    "(the bank transactions come from there)."),
+    Field.text("budget_url", "Budget service address", default=DEFAULT_URL, required=True,
+               help="The budget upload page's address (the bank transactions come from there)."),
     Field.text("sheet_id", "Budget sheet ID", default=DEFAULT_SHEET_ID, required=True),
     Field.text("snapshot_tab", "Budget list tab", default="SnapShot",
                help="The tab listing every expense: Expense, Periodicity, Day of Period, Monthly."),

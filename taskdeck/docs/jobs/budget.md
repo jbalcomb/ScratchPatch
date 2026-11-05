@@ -61,7 +61,7 @@ in the row whose first cell is "Expense").
 
    | Setting | Value |
    |---|---|
-   | Budget service address | the Tailscale Serve address of the budget service, e.g. `https://ai-workstation.tail1234.ts.net` |
+   | Budget service address | pre-filled: `https://budget.tailc54221.ts.net` (the upload page's address) |
    | Budget sheet ID | pre-filled with the Budget-2026-TimeLine sheet |
    | Budget list tab | `SnapShot` |
    | Google service account key | Import the same `.json` as Daily Log |
@@ -72,7 +72,8 @@ in the row whose first cell is "Expense").
 ## Finding the service
 
 The upload page and these jobs use the same address; the jobs read `/api/transactions` there. The service only
-answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`). What can be fixed is fixed:
+answers through Tailscale: the Tailscale Service `https://budget.<tailnet>.ts.net`, or Tailscale Serve on the
+workstation's own name. What can be fixed is fixed:
 
 * **Save** in settings adds a missing `https://` and drops a pasted path (`/upload`, `/api/...`).
 * **Test settings** checks what's entered, without saving: the budget service (✓ with its accounts and how far
@@ -82,12 +83,13 @@ answers through Tailscale Serve (`https://<machine>.<tailnet>.ts.net`). What can
   and only saved after **Save anyway**, so working settings aren't replaced by broken ones by accident.
 * When the job opens and the saved address doesn't answer, it finds the one that does and **saves it** in
   place of the old one (the job says so). For the workstation's Tailscale IP, short name or the service's own
-  port (`http://100.83.88.59:8092`), the phone asks Tailscale's DNS for the workstation's `*.ts.net` name and
-  tries it on 443 and 8443.
+  port (`http://100.83.88.59:8092`), the phone asks Tailscale's DNS for the workstation's `*.ts.net` name, then
+  tries `budget.<tailnet>.ts.net` and the workstation's name, on 443 and 8443. An old address on the
+  workstation's own name moves to the `budget` service the same way.
 
 What it can't fix, it says:
 
 * the phone isn't on Tailscale: open the Tailscale app;
 * the workstation runs an older budget service without the feed: run there
-  `cd ~/ScratchPatch && git checkout main && git pull && cd budget && docker compose up -d --build`;
+  `cd ~/develai/ScratchPatch && git checkout main && git pull && cd budget && docker compose up -d --build`;
 * nothing answers: check `tailscale serve status` on the AI Workstation.

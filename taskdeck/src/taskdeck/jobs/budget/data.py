@@ -50,8 +50,9 @@ def parse_feed(data: dict[str, Any]) -> Feed:
     )
 
 
-UPDATE_SERVICE = ("cd ~/ScratchPatch && git checkout main && git pull && cd budget && "
+UPDATE_SERVICE = ("cd ~/develai/ScratchPatch && git checkout main && git pull && cd budget && "
                   "docker compose up -d --build")
+SERVICE = "budget"  # its Tailscale Service name: https://budget.<tailnet>.ts.net
 _answered: dict[str, str] = {}  # address as typed in settings -> the address that answered
 
 
@@ -65,15 +66,19 @@ def tidy_url(typed: str) -> str:
 
 
 def candidates(typed: str) -> list[str]:
-    """Addresses to try for what was typed, in order. The service only answers through Tailscale Serve
-    (https://<machine>.<tailnet>.ts.net, on 443 or 8443), so a missing https://, a pasted path, the
-    workstation's IP or short name, or the service's own port are all turned into that."""
+    """Addresses to try for what was typed, in order. The service only answers through Tailscale:
+    as the Tailscale Service https://budget.<tailnet>.ts.net, or Tailscale Serve on the workstation's own
+    name (https://<machine>.<tailnet>.ts.net, 443 or 8443). So a missing https://, a pasted path, the
+    workstation's IP or short name, the service's own port, or an old address are all turned into those."""
     base = tidy_url(typed)
     if not base:
         return []
     host = urllib.parse.urlsplit(base).hostname or ""
     out = [base]
-    for name in dict.fromkeys(n for n in (tailscale.full_name(host), host) if n):
+    names = [n for n in (tailscale.full_name(host), host) if n]
+    tailnets = [n.split(".", 1)[1] for n in names if n.endswith(".ts.net") and n.count(".") >= 3]
+    names[:0] = [f"{SERVICE}.{t}" for t in tailnets]  # the Tailscale Service first
+    for name in dict.fromkeys(names):
         out += [f"https://{name}", f"https://{name}:8443"]
     return list(dict.fromkeys(out))
 
@@ -85,6 +90,8 @@ def why_address(typed: str, used: str) -> str:
         door = "the standard HTTPS port, 443, which addresses leave out" if after.port is None else "port 8443"
         old = before.port or (443 if before.scheme == "https" else 80)
         return f"The phone reaches the budget service through Tailscale Serve, on {door}; port {old} doesn't answer."
+    if before.hostname != after.hostname and (after.hostname or "").startswith(SERVICE + "."):
+        return f"The budget service is now the Tailscale Service “{SERVICE}”, with its own address."
     if before.hostname != after.hostname:
         return "Tailscale Serve's HTTPS certificate is only valid for the workstation's full .ts.net name."
     return ""
