@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 POLL_DELAYS = (5, 10, 20, 30, 60, 120)  # seconds between checks while the workstation is busy with a note
 BREADCRUMB = "voice_rec:native_step"
-PROFILE_KEY = "voice_rec:recorder_profile"
+PROFILE_KEY = "voice_rec:recorder_profile_v2"  # v2: start over; v1 was stepped down by errors, not crashes
 NATIVE_CRASH_KEY = "voice_rec:native_crash"
 # Recorder settings, safest-first for this phone's crash: if TaskDeck closes while starting with one, the next
 # start uses the next one. All mono, no Bluetooth handling, the phone's microphone.
@@ -182,10 +182,20 @@ class Recorder:
         self.mark(f"setting up the recorder ({self.profile['name']})", profile)
         svc = self._ensure()
         rec_id, path = self.lib.new_path(self.profile["extension"])
+        # Flet resolves output_path with getAssetSrc(): a path that isn't an existing file is taken as relative
+        # to the app's assets folder (files/flet/app/assets/...), which doesn't exist -> ENOENT. So the file
+        # has to exist first; the recorder then writes over it.
+        path.touch()
         self.mark(f"starting the recording ({self.profile['name']})", profile)
-        ok = await svc.start_recording(output_path=str(path), configuration=self._configuration())
-        self.mark("")
+        try:
+            ok = await svc.start_recording(output_path=str(path), configuration=self._configuration())
+        except Exception as exc:  # the recorder's error, e.g. PlatformException(record, ...)
+            path.unlink(missing_ok=True)
+            return f"The recorder didn't start: {exc}"
+        finally:
+            self.mark("")  # an error is not a crash: don't step the settings down for it
         if not ok:
+            path.unlink(missing_ok=True)
             return "The microphone didn't start (another app may be using it)."
         self.rec_id, self.path, self.started_at = rec_id, path, now_iso()
         self._t0, self._paused_total, self._paused_at = time.monotonic(), 0.0, None
@@ -207,8 +217,10 @@ class Recorder:
             return None
         duration = self.elapsed
         self.mark("stopping the recording", self.profile_index)
-        saved = await self.service.stop_recording()
-        self.mark("")
+        try:
+            saved = await self.service.stop_recording()
+        finally:
+            self.mark("")
         path = self.path
         if saved and not str(saved).startswith("blob:"):
             from pathlib import Path
@@ -468,6 +480,14 @@ class VoiceRecScreen:
         self.render()
         await self._tick()
 
+    async def _guard(self, action) -> None:
+        """Run a recorder action; its error goes on the screen (not Flet's error page)."""
+        try:
+            await action()
+        except Exception as exc:
+            self.notice = f"The recorder: {exc}"
+            self.render()
+
     async def _tick(self) -> None:
         while self.recorder.active and self.view in self.app.page.views:  # stops when the screen closes
             self.timer.value = clock(self.recorder.elapsed)
@@ -475,10 +495,16 @@ class VoiceRecScreen:
             await asyncio.sleep(0.5)
 
     async def toggle_pause(self, e=None) -> None:
+        await self._guard(self._toggle_pause)
+
+    async def _toggle_pause(self) -> None:
         await (self.recorder.resume() if self.recorder.paused else self.recorder.pause())
         self.render()
 
     async def stop(self, e=None) -> None:
+        await self._guard(self._stop)
+
+    async def _stop(self) -> None:
         mobile = self.sync.default_mobile_data()
         if self.use_mobile.value:
             mobile = {s: True for s in STAGES}
@@ -490,6 +516,9 @@ class VoiceRecScreen:
         self.sync.kick()
 
     async def discard(self, e=None) -> None:
+        await self._guard(self._discard)
+
+    async def _discard(self) -> None:
         await self.recorder.discard()
         self.render()
 

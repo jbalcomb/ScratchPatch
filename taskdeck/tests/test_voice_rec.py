@@ -301,6 +301,9 @@ class FakeRecorderService:
         raise AssertionError("the recorder plugin's own permission call must not be used")
 
     async def start_recording(self, output_path=None, configuration=None):
+        # Flet maps a path that isn't an existing file into the app's assets folder (ENOENT on the phone).
+        from pathlib import Path
+        assert Path(output_path).is_absolute() and Path(output_path).exists(), "the file must exist first"
         self.calls.append("start")
         self.configuration = configuration
         open(output_path, "wb").write(b"audio")
@@ -423,3 +426,24 @@ def test_recorder_settings_step_down_after_a_crash_while_starting(monkeypatch, t
     saved = run(rec.stop({}))
     from taskdeck.jobs.voice_rec.library import mime_of
     assert mime_of(saved.file) == "audio/wav"
+
+
+@needs_recorder
+def test_a_recorder_error_is_a_message_not_a_crash(monkeypatch, tmp_path):
+    from taskdeck.core import JsonStore
+    from taskdeck.jobs.voice_rec.screen import BREADCRUMB, Recorder
+
+    class Failing(FakeRecorderService):
+        async def start_recording(self, output_path=None, configuration=None):
+            raise RuntimeError("PlatformException(record, ... open failed: ENOENT ...)")
+
+    store = JsonStore(tmp_path / "state.json")
+    lib = Library(tmp_path / "v")
+    rec = Recorder(lib, store)
+    rec.service = Failing()
+    fake_permissions(monkeypatch, ["GRANTED"])
+    problem = run(rec.start())
+    assert problem.startswith("The recorder didn't start:") and "ENOENT" in problem
+    assert store.get(BREADCRUMB) == {}  # not mistaken for a crash, so the settings don't step down
+    assert rec.last_crash() is None and rec.profile_index == 0
+    assert not rec.active and list(lib.audio_dir.iterdir()) == []  # no empty file left behind
