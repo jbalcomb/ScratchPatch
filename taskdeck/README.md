@@ -24,11 +24,15 @@ its timing.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install "flet[all]==1.0.4" "fastapi<0.120" pytest   # fastapi pin: needed by flet-web 1.0.4
+pip install --upgrade pip        # 25.1 or newer, for --group
+pip install -e . --group dev    # everything in pyproject.toml: the app's packages, plus flet[all], pytest
 flet run src/main.py            # desktop window
 flet run --web src/main.py      # browser
 pytest                          # tests
 ```
+
+Install from `pyproject.toml` like this, not with a hand-written `pip install` list: the app's packages
+(recorder, vault, permissions…) are listed only there, and tests that need a missing one fail or skip.
 
 ## Build the Android APK
 
