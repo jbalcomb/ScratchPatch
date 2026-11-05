@@ -16,12 +16,13 @@ from taskdeck.core import StepError
 from .data import NICKNAMES
 
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+FUNDING = "bills funding"  # the row at the top: the weekly transfer from Daily to Bills, every Wednesday
 
 
 @dataclass(frozen=True)
 class Item:
     name: str
-    section: str               # "income" or "expense"
+    section: str               # "income", "expense", or "transfer" (Bills funding)
     account: str | None        # the bank account it's paid from or into (checking/bills/savings/cash), if set
     periodicity: str           # "monthly", "weekly", "annually" (or "" when blank)
     day: Any = None            # monthly: day of the month; weekly: weekday 0-6 (Mon=0); annually: (month, day)
@@ -70,10 +71,18 @@ def parse(values: list[list[Any]], tab: str = "SnapShot", struck: set[int] | Non
     struck = struck or set()
     items: list[Item] = []
     section, header = None, []
+    first_header = next(([str(c).strip().lower() for c in row] for row in values
+                         if row and str(row[0]).strip().lower() in ("income", "expense")), [])
     for r, row in enumerate(values):
         first = str(row[0]).strip() if row else ""
         if first.lower() in ("income", "expense"):
             section, header = first.lower(), [str(c).strip().lower() for c in row]
+            continue
+        if first.lower() == FUNDING:  # above the sections: its Weekly cell is in the sections' Weekly column
+            i = first_header.index("weekly") if "weekly" in first_header else -1
+            amount = cents(row[i]) if 0 <= i < len(row) else None
+            if amount:
+                items.append(Item(first, "transfer", "bills", "weekly", WEEKDAYS["wed"], amount, r in struck))
             continue
         if not section or not first:
             continue

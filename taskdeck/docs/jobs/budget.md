@@ -34,6 +34,9 @@ By name. A SnapShot line's name is also a **category** in the budget service's `
 exactly the same name, then `categorize` on the workstation (or upload anything). A rule can be limited to one
 account, e.g. `[bills] Monthly Maintenance Fee = BofA Fee - Bills`.
 
+SnapShot's top rows: **Expense totals**, **Bills total** (the lines whose Account is Bills) and **Bills funding**:
+the weekly transfer from Daily to Bills, typed in the Weekly column. The code reads only Bills funding.
+
 SnapShot: an **Income** section, then an **Expense** section, each starting with a header row whose first cell is
 "Income" or "Expense". Columns used, found by their header: **Account**, **Periodicity**, **Day of Period**,
 **Monthly**, **Weekly**, **Annually**. A line whose name is **struck through** is cancelled.
@@ -76,6 +79,8 @@ in the same account (the bank's Temporary Credit Adjustment).
   SnapShot's Account column (or the one that last paid it):
   * bills on their day, unless already paid (or disputed) that month; yearly lines on their date;
   * income lines on their weekday at the baseline;
+  * **Bills funding** every Wednesday: a row out of Daily and a row into Bills (this week's only when the bank
+    data doesn't already show a transfer from Daily to Bills since Wednesday);
   * spending: each week's target on its Wednesday, and for the current week only what's left of it;
   * cancelled lines and lines without an amount are left out (the result names the ones with no amount).
 * The result says each account's lowest point, and for one that goes negative, the day and how much to move

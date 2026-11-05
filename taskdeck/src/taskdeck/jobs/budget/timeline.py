@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from . import exceptions
-from .data import ACCOUNT_LABELS, ATM, CASH, Feed, Txn, add_months, due_date, money, month_end, week_start
+from .data import ACCOUNT_LABELS, ATM, CASH, TRANSFER, Feed, Txn, add_months, due_date, money, month_end, week_start
 from .snapshot import Item
 
 ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings (Save), cash
@@ -78,6 +78,26 @@ def _paid_in(txns: list[Txn], item: Item, first: date, last: date) -> bool:
     return any(t.category == item.name and first <= t.date <= last for t in txns)
 
 
+def _bills_funding(item: Item, feed: Feed, through: date, end: date, events: list[Row]) -> None:
+    """The weekly transfer from Daily to Bills, every Wednesday: a row out of Daily and a row into Bills. This
+    week's is left out when the bank already shows a transfer from Daily to Bills since its Wednesday; when
+    it doesn't, it's expected the day after the bank data ends."""
+    week = week_start(through)
+    sent = {(t.date, -t.amount) for t in feed.txns
+            if t.account == "checking" and t.category == TRANSFER and t.amount < 0 and t.date >= week}
+    done = any((t.date, t.amount) in sent for t in feed.txns
+               if t.account == "bills" and t.category == TRANSFER and t.amount > 0 and t.date >= week)
+    day = week + timedelta(days=7)
+    days = [] if done or through + timedelta(days=1) >= day else [through + timedelta(days=1)]
+    while day <= end:
+        days.append(day)
+        day += timedelta(days=7)
+    for day in days:
+        if day <= end:
+            events.append(Row(day, "checking", "Bills funding (to Bills)", TRANSFER, -item.amount, {}))
+            events.append(Row(day, "bills", "Bills funding (from Daily)", TRANSFER, item.amount, {}))
+
+
 def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exceptions.Entry] = (),
           start: date | None = None) -> Timeline:
     through = feed.through
@@ -110,6 +130,9 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
         events.append(Row(day, _account(item, feed.txns), description or item.name, item.name, amount, {}, kind))
 
     for item in items:
+        if item.section == "transfer" and not item.cancelled:
+            _bills_funding(item, feed, through, end, events)
+            continue
         if item.cancelled or not item.amount:
             if not item.cancelled and item.section == "expense" and item.kind == "spending":
                 tl.notes.append(f"{item.name}: no amount set on SnapShot, so nothing is projected for it.")

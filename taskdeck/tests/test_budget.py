@@ -12,7 +12,9 @@ from taskdeck.jobs.budget import data, exceptions, reconcile, snapshot, thisweek
 H = ["Account", "Periodicity", "Day of Period", "Monthly", "Weekly", "Annually", "Rounded"]
 # The budget sheet's SnapShot tab as the Sheets API returns it: a totals row, Income section, Expense section.
 SNAPSHOT = [
-    ["Expense totals", "", "", "", "$1,156.97"], [],
+    ["Expense totals", "", "", "", "$1,156.97", "$289.24"],
+    ["Bills total", "Bills", "", "", "$674.03", "$168.51"],
+    ["Bills funding", "Daily → Bills", "Weekly", "Wed", "$1,200.00", "$300.00"],
     ["Income", *H],
     ["Instacart", "Daily", "Weekly", "Wed", "$2,000.00", "$500.00"], [],
     ["Expense", *H],
@@ -25,7 +27,7 @@ SNAPSHOT = [
     ["Groceries", "Daily", "Weekly", "-", "$240.00", "$60.00"],
     ["Motor Fuel", "Daily", "Weekly", "-", "$0.00", ""],
 ]
-LINKEDIN_ROW = 10  # struck through: cancelled
+LINKEDIN_ROW = 11  # struck through: cancelled
 
 
 def txn(day, account, description, amount, balance, category):
@@ -54,6 +56,8 @@ def test_snapshot_sections_accounts_and_periods(items):
     assert by["Groceries"].kind == "spending" and by["Groceries"].amount == 6000 and by["Groceries"].weekly
     assert by["Motor Fuel"].amount is None
     assert by["LinkedIn"].cancelled and not by["Car Payment"].cancelled
+    assert by["Bills funding"] == snapshot.Item("Bills funding", "transfer", "bills", "weekly", 2, 30000)
+    assert "Bills total" not in by and "Expense totals" not in by
 
 
 def test_snapshot_needs_an_expense_section():
@@ -154,6 +158,7 @@ OCT = feed(
 
 
 def test_timeline(items):
+    items = [i for i in items if i.section != "transfer"]  # Bills funding has its own test
     tl = timeline.build(items, OCT)  # Friday 10/16 is the last day of bank data
     assert (tl.start, tl.through, tl.end) == (date(2026, 10, 1), date(2026, 10, 16), date(2026, 11, 30))
     actual = [r for r in tl.rows if r.kind == timeline.ACTUAL]
@@ -189,6 +194,29 @@ def test_income_without_a_day_is_not_projected_as_spending():
                             ["Rent", "Cash", "Monthly", "1", "$450.00"]])
     tl = timeline.build(items, OCT)
     assert not any(r.category == "Tips" for r in tl.rows) and "Tips: income with no Day of Period" in tl.notes[0]
+
+
+def test_timeline_shows_bills_funding_every_wednesday(items):
+    tl = timeline.build(items, OCT)  # bank data ends Friday 10/16; no transfer to Bills since Wednesday 10/14
+    funding = [(r.date, r.account, r.amount) for r in tl.rows if r.description.startswith("Bills funding")]
+    assert sorted(funding[:4]) == [(date(2026, 10, 17), "bills", 30000), (date(2026, 10, 17), "checking", -30000),
+                                   (date(2026, 10, 21), "bills", 30000), (date(2026, 10, 21), "checking", -30000)]
+    assert all(c == "Transfer" for c in [r.category for r in tl.rows if r.description.startswith("Bills funding")])
+    # This week's transfer already in the bank data: not projected again.
+    paid = feed(txn("2026-10-14", "checking", "Online Banking transfer to CHK 2389", -30000, 10000, "Transfer"),
+                txn("2026-10-14", "bills", "Online Banking transfer from CHK 2392", 30000, 30000, "Transfer"),
+                txn("2026-10-16", "checking", "GIANT EAGLE", -1000, 9000, "Groceries"))
+    days = [r.date for r in timeline.build(items, paid).rows if r.description == "Bills funding (to Bills)"]
+    assert days[0] == date(2026, 10, 21)
+    # Data ending on a Tuesday: the next one is Wednesday's, not an extra one.
+    tuesday = feed(txn("2026-10-20", "checking", "GIANT EAGLE", -1000, 9000, "Groceries"))
+    days = [r.date for r in timeline.build(items, tuesday).rows if r.description == "Bills funding (to Bills)"]
+    assert days[0] == date(2026, 10, 21) and days.count(date(2026, 10, 21)) == 1
+
+
+def test_thisweek_leaves_transfers_out_of_income_and_expenses(items):
+    tw = thisweek.build(items, OCT, date(2026, 10, 20))
+    assert tw.weeks[0].income == 50000 and tw.weeks[0].expenses == 6000  # the $300 to Bills moves balances only
 
 
 def test_timeline_includes_yearly_lines_on_their_day(items):
@@ -279,7 +307,7 @@ def test_service_url_uses_the_address_that_answers_and_says_so(monkeypatch):
     assert note.message.startswith("Budget service address updated to https://ws.ts.net:8443")
     assert service.ok and service.message == ("Budget service at https://ws.ts.net:8443: 1 accounts, bank data "
                                               "through 10/19/2026.")
-    assert sheet.ok and sheet.message == "Budget sheet: the SnapShot tab lists 1 income and 8 expense lines (1 cancelled)."
+    assert sheet.ok and sheet.message == "Budget sheet: the SnapShot tab lists 1 income and 8 expense lines (1 cancelled)."  # Bills funding isn't one
     assert excepted.ok and excepted.message == "Exceptions tab: 2 charges set aside or disputed."
     assert all(p.ok for p in budget.PLUGIN.check_ready_online({"budget_url": "https://ws.ts.net:8443"}))  # already right
 
