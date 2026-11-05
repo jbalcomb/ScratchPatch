@@ -31,6 +31,9 @@ SPOTIFY = Spotify
 COURSERA = Education
 # Ashtabula County YMCA, $52.68 a month
 ASHTABULA COUNTY = YMCA
+# Google Play charges ("GOOGLE *Play P", "GOOGLE*PLAY PASS"); must stay above the GOOGLE line
+*PLAY P = Google Play Pass
+*LINKED = LinkedIn
 
 # Bank
 OVERDRAFT = Bank fees
@@ -58,6 +61,11 @@ WAL-MART = Groceries
 WALMART = Groceries
 WM SUPERCENTER = Groceries
 
+# Entertainment
+SHARON SPEEDW = Entertainment
+WORLD RACING = Entertainment
+SKYWORKAI = Entertainment
+
 # Dining Out
 CHIPOTLE = Dining Out
 SUBWAY = Dining Out
@@ -68,7 +76,6 @@ TST* = Dining Out
 # Subscriptions and tools
 YOUTUB = Subscriptions
 CURSOR = AI tools
-SKYWORKAI = AI tools
 OPENAI = AI tools
 GITHUB = Software
 NOTION = Software
