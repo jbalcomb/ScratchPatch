@@ -60,6 +60,14 @@ def test_snapshot_sections_accounts_and_periods(items):
     assert "Bills total" not in by and "Expense totals" not in by
 
 
+def test_status_column_decides_cancelled():
+    rows = [["Expense", "Status", *H], ["YMCA", "Cancelled", "Daily", "Monthly", "8", "$52.68"],
+            ["Netflix", "Active", "Bills", "Monthly", "25", "$21.34"]]
+    by = {i.name: i for i in snapshot.parse(rows, struck={2})}  # strikethrough is only for people now
+    assert by["YMCA"].cancelled and not by["Netflix"].cancelled
+    assert by["YMCA"].account == "checking" and by["Netflix"].amount == 2134
+
+
 def test_snapshot_needs_an_expense_section():
     with pytest.raises(StepError, match="Expense"):
         snapshot.parse([["Rent", "Monthly"]])

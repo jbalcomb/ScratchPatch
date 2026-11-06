@@ -27,7 +27,7 @@ class Item:
     periodicity: str           # "monthly", "weekly", "annually" (or "" when blank)
     day: Any = None            # monthly: day of the month; weekly: weekday 0-6 (Mon=0); annually: (month, day)
     amount: int | None = None  # cents per period: Monthly, Weekly or Annually column, by periodicity
-    cancelled: bool = False    # struck through: kept one more month, not projected
+    cancelled: bool = False    # Status "Cancelled": kept one more month, not projected
 
     @property
     def kind(self) -> str:
@@ -66,8 +66,9 @@ def _day(periodicity: str, text: str) -> Any:
 
 
 def parse(values: list[list[Any]], tab: str = "SnapShot", struck: set[int] | None = None) -> list[Item]:
-    """The lines of the Income and Expense sections. ``struck``: row numbers (0-based) whose name is struck
-    through. Columns are found by header name in each section."""
+    """The lines of the Income and Expense sections. Columns are found by header name in each section. A line is
+    cancelled when its Status says Cancelled; without a Status column, when its name is struck through
+    (``struck``: those row numbers, 0-based)."""
     struck = struck or set()
     items: list[Item] = []
     section, header = None, []
@@ -99,8 +100,9 @@ def parse(values: list[list[Any]], tab: str = "SnapShot", struck: set[int] | Non
         else:
             periodicity, amount = ("monthly" if periodicity.startswith("month") else ""), cents(col("monthly"))
         account = col("account").strip()
+        cancelled = col("status").strip().lower() == "cancelled" if "status" in header else r in struck
         items.append(Item(first, section, NICKNAMES.get(account.lower()) if account else None, periodicity,
-                          _day(periodicity, col("day of period")), amount, r in struck))
+                          _day(periodicity, col("day of period")), amount, cancelled))
     if not any(i.section == "expense" for i in items):
         raise StepError(f"No expense lines in the {tab} tab: it needs a header row starting with “Expense”.")
     return items

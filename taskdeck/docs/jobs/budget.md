@@ -40,8 +40,9 @@ SnapShot's top rows: **Expense totals**, **Bills total** (the lines whose Accoun
 the weekly transfer from Daily to Bills, typed in the Weekly column. The code reads only Bills funding.
 
 SnapShot: an **Income** section, then an **Expense** section, each starting with a header row whose first cell is
-"Income" or "Expense". Columns used, found by their header: **Account**, **Periodicity**, **Day of Period**,
-**Monthly**, **Weekly**, **Annually**. A line whose name is **struck through** is cancelled.
+"Income" or "Expense". Columns used, found by their header: **Status**, **Account**, **Periodicity**,
+**Day of Period**, **Monthly**, **Weekly**, **Annually**. A line whose Status is **Cancelled** is cancelled (its
+strikethrough is for people; strikethrough only counts on a sheet without a Status column).
 
 | Line looks like | Treated as |
 |---|---|
@@ -49,7 +50,7 @@ SnapShot: an **Income** section, then an **Expense** section, each starting with
 | *Weekly*, a weekday (Instacart: Wed) | every week on that weekday, the Weekly amount (income: the baseline) |
 | *Weekly*, Day "-" (Groceries, Motor Fuel) | **spending**: the Weekly amount is each week's target |
 | *Annually*, a month/day (Amazon Prime: 4/15) | once a year on that day, the Annually amount |
-| struck through | **cancelled**: not projected; reported if it still charges |
+| Status *Cancelled* | **cancelled**: not projected; reported if it still charges |
 
 Budget weeks run **Wednesday to Tuesday** (payday to the day before); a week belongs to the month its Wednesday
 is in.
