@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from . import exceptions
 from .data import (
-    ACCOUNT_LABELS, ATM, BANK, CASH, CASH_FROM, TIMELINE, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
+    ACCOUNT_LABELS, ATM, BANK, CASH, CASH_FROM, CASH_KEPT_IN, TIMELINE, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
     week_start,
 )
 from .snapshot import Item
@@ -181,6 +181,9 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
                     continue  # paid (or disputed) this month already
                 if due > through:  # one already due and not paid isn't projected: it's a debt now (Debts tab)
                     if _account(item, feed.txns) == CASH and not cash_withdrawal(feed.txns, due, item.amount):
+                        # Its money is kept in Bills: moved to Daily, withdrawn at the ATM, then paid in cash.
+                        events.append(Row(due, CASH_KEPT_IN, f"{item.name} money to Daily", TRANSFER, -item.amount, {}))
+                        events.append(Row(due, CASH_FROM, f"{item.name} money from Bills", TRANSFER, item.amount, {}))
                         events.append(Row(due, CASH_FROM, f"ATM withdrawal for {item.name}", ATM, -item.amount, {}))
                         events.append(Row(due, CASH, f"ATM withdrawal for {item.name}", ATM, item.amount, {}))
                     add(due, item, sign * item.amount)

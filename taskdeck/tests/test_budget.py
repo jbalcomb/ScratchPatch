@@ -189,9 +189,9 @@ def test_timeline(items):
     assert not any(c[2].startswith(("LinkedIn", "Amazon Prime", "Motor Fuel")) for c in coming)
     assert "Motor Fuel: no amount set" in " ".join(tl.notes)
 
-    # Rent's cash is withdrawn from Daily (its ATM card) on its day.
-    assert [(c[1], c[3]) for c in coming if c[0] == date(2026, 11, 1)] == [
-        ("cash", 45000), ("checking", -45000), ("cash", -45000)]
+    # Rent's money is kept in Bills: moved to Daily, withdrawn there (its ATM card), then paid in cash.
+    assert sorted((c[1], c[3]) for c in coming if c[0] == date(2026, 11, 1)) == sorted([
+        ("bills", -45000), ("checking", 45000), ("checking", -45000), ("cash", 45000), ("cash", -45000)])
     negative = tl.first_negative()
     assert set(negative) == {"bills"} and negative["bills"].date == date(2026, 10, 18)
     assert "move at least" in timeline.as_text(tl)
@@ -475,6 +475,11 @@ def typed(day, account, description, amount, category=None):
 
 def cash_entry(day, description, amount, category=None):
     return data.Txn("cash", date.fromisoformat(day), description, amount, None, category, data.CASH_TAB)
+
+
+def test_timeline_rows_survive_a_lost_header():
+    rows = ledger.parse([["11/6/2026", "Bills", "Google Play Pass", "", "-5.51", "188.06"]], {"Google Play Pass"})
+    assert [(t.account, t.amount, t.category) for t in rows] == [("bills", -551, "Google Play Pass")]
 
 
 def test_merge_keeps_only_what_the_bank_and_cash_tab_dont_have():

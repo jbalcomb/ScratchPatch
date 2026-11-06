@@ -24,7 +24,7 @@ type there are kept until the bank or the Cash tab has them (see below).
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
 from its account into it, an ATM deposit moves it back, and the **Cash** tab records the rest by hand.
-Rent's cash comes out of **Daily** (its ATM card): the timeline expects an ATM withdrawal from Bills on each rent day, unless one
+Rent's money is kept in **Bills** and its cash comes out of **Daily** (its ATM card): the timeline expects an ATM withdrawal from Bills on each rent day, unless one
 (at least the rent) already happened in the week before.
 
 **Cash tab** (hand-entered): Date, Description, Amount (+ in, − out), Line, Note. Line is the SnapShot line it
@@ -106,7 +106,8 @@ name) and in the weekly targets. Rows older than the window drop off.
 * **Bills funding** every Wednesday: a row out of Daily and a row into Bills (this week's only when no transfer from
   Daily to Bills is in yet);
 * spending: each week's target on its Wednesday, and for the current week only what's left of it;
-* rent: an ATM withdrawal from Daily into Cash, then the payment from Cash;
+* rent: its money is kept in Bills, so it's moved from Bills to Daily, withdrawn at the ATM (Daily's card) into
+  Cash, then paid from Cash (unless an ATM withdrawal for it already happened that week);
 * cancelled lines and lines without an amount are left out.
 
 The result says each account's lowest point, and for one that goes negative, the day and how much to move in (or

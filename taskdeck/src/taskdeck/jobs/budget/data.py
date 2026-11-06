@@ -21,7 +21,8 @@ NICKNAMES = {label.lower(): account for account, label in ACCOUNT_LABELS.items()
 CASH = "cash"
 TRANSFER = "Transfer"  # money moved between the bank accounts: never spending
 ATM = "Cash"           # rules.txt category of ATM withdrawals and deposits: a move to or from Cash
-CASH_FROM = "checking"  # cash bills (rent) are withdrawn at the ATM from Daily (its card)
+CASH_FROM = "checking"  # cash bills (rent) are withdrawn at the ATM from Daily (its card)...
+CASH_KEPT_IN = "bills"  # ...but their money is kept in Bills: moved to Daily first
 BANK, CASH_TAB, TIMELINE = "bank", "cash tab", "timeline"  # where a transaction came from
 
 

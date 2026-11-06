@@ -16,6 +16,7 @@ from .data import ATM, CASH, NICKNAMES, TIMELINE, Txn, add_months, sheet_date
 from .snapshot import cents
 
 WINDOW_MONTHS = 3  # TimeLine starts on the 1st of the month three months back
+COLUMNS = ["Date", "Account", "Description", "Category", "Amount"]  # TimeLine's first columns
 
 
 def window_start(today: date) -> date:
@@ -26,8 +27,8 @@ def parse(values: list[list[Any]], line_names: set[str] = frozenset()) -> list[T
     """TimeLine's rows (under the header row whose first cell is "Date"): Date, Account, Description, Category,
     Amount. Without a Category, a Description that is a SnapShot line's name counts as that line."""
     h = next((i for i, row in enumerate(values) if row and str(row[0]).strip().lower() == "date"), None)
-    if h is None:
-        return []
+    if h is None:  # header row lost: assume the usual columns rather than lose the rows typed there
+        values, h = [COLUMNS] + list(values), 0
     header = [str(c).strip().lower() for c in values[h]]
     names = {n.lower(): n for n in line_names}
 
