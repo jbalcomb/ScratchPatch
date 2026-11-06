@@ -1,21 +1,23 @@
-"""Budget jobs: the SnapShot tab of the budget sheet against the bank transactions the budget service on
+"""The budget job: the SnapShot tab of the budget sheet against the bank transactions the budget service on
 the AI Workstation collects (see docs/jobs/budget.md)."""
 
 from __future__ import annotations
 
-import re
 from datetime import date, timedelta
 
 from taskdeck.core import (
-    Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step,
+    JobPlugin, Pipeline, Problem, Result, Stage, StepError, step,
 )
 
 from . import data, ledger, reconcile, sheets, thisweek, timeline
 from .config import SETTINGS
 
-RECONCILE_TAB = "Reconcile (auto)"
-THISWEEK_TAB = "ThisWeek"
-HISTORY_MONTHS = 4  # enough to tell repeats from one-offs and to average spending
+# The tabs the job writes (settings key -> default name). It alone writes ThisWeek and Reconcile; TimeLine is
+# shared with you (rows you type there are kept), and Projected follows TimeLine.
+TABS = {"timeline_tab": "TimeLine", "projected_tab": "Projected", "thisweek_tab": "ThisWeek",
+        "reconcile_tab": "Reconcile (auto)"}
+OWN_TABS = ("thisweek_tab", "reconcile_tab")
+HISTORY_MONTHS = 4  # the TimeLine window (3 months) plus a month, to tell repeats from one-offs
 
 
 @step(Stage.EXECUTE, name="read the sheet's SnapShot, Exceptions, Cash and TimeLine tabs and the bank transactions")
@@ -27,84 +29,68 @@ def load(ctx):
     ctx["exceptions"] = sheets.read_exceptions(ctx.settings)
     cash = sheets.read_cash(ctx.settings)
     typed = sheets.read_timeline(ctx.settings, {i.name for i in items})
-    since = data.add_months(ctx.get("month") or date.today(), -HISTORY_MONTHS)
+    since = data.add_months(date.today(), -HISTORY_MONTHS)
     feed = data.fetch(ctx.settings.get("budget_url"), since)
     if feed.through is None:
         raise StepError("The budget service has no transactions yet. Upload a bank export first.")
     ctx["feed"] = data.with_cash(feed, ledger.merge(feed.txns, cash, typed, ledger.window_start(date.today())))
 
 
-@step(Stage.VALIDATE)
-def parse_month(ctx):
-    text = (ctx.inputs.get("month") or "").strip()
-    if text and not re.fullmatch(r"\d{4}-\d{1,2}", text):
-        raise StepError("Month must look like 2026-10, or be left blank for the latest month.")
-    ctx["month"] = date(int(text[:4]), int(text[5:]), 1) if text else None
-
-
-@step(Stage.EXECUTE, name="compare")
-def compare(ctx):
-    month = ctx.get("month") or ctx["feed"].through.replace(day=1)
-    ctx["report"] = reconcile.reconcile(ctx["items"], ctx["feed"], month, ctx["exceptions"])
-
-
-@step(Stage.PRESENT)
-def show_report(ctx):
-    report = ctx["report"]
-    missing = report.missing
-    ctx.result = Result(
-        title=f"{report.month:%B %Y} against the SnapShot tab",
-        text=reconcile.as_text(report),
-        warning=f"Missing: {', '.join(l.name for l in missing)}." if missing else None,
-        payload={"rows": reconcile.as_rows(report), "through": report.through.isoformat()},
-    )
-
-
-@step(Stage.EXECUTE, name="project balances")
-def project(ctx):
-    ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"], rows=ctx["exceptions"],
-                                     start=ledger.window_start(date.today()))
+@step(Stage.EXECUTE, name="reconcile, project and lay out the week")
+def update(ctx):
+    """Everything from the one snapshot of the data: TimeLine and Projected, ThisWeek, and every month in the
+    TimeLine window reconciled against SnapShot."""
+    feed, items, rows, today = ctx["feed"], ctx["items"], ctx["exceptions"], date.today()
+    start = ledger.window_start(today)
+    ctx["timeline"] = timeline.build(items, feed, rows=rows, start=start)
+    ctx["week"] = thisweek.build(items, feed, today, rows)
+    months, m = [], min(start, feed.through.replace(day=1))
+    while m <= feed.through.replace(day=1):
+        months.append(m)
+        m = data.add_months(m, 1)
+    ctx["reports"] = [reconcile.reconcile(items, feed, m, rows) for m in months]
 
 
 @step(Stage.PRESENT)
-def show_timeline(ctx):
-    tl = ctx["timeline"]
-    negative = tl.first_negative()
+def show(ctx):
+    tl, tw, reports = ctx["timeline"], ctx["week"], ctx["reports"]
+    latest = reports[-1]
+    soon = {a: r for a, r in tl.first_negative().items()
+            if r.date <= tw.start + timedelta(days=7 * (1 + thisweek.WEEKS_AFTER))}
+    warnings = []
+    if latest.missing:
+        warnings.append(f"Missing in {latest.month:%B}: {', '.join(l.name for l in latest.missing)}.")
+    if soon:
+        warnings.append("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
+                                                      for a, r in soon.items()) + ".")
     ctx.result = Result(
-        title=f"Balances to {tl.end:%-m/%-d}",
-        text=timeline.as_text(tl),
-        warning=("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
-                                               for a, r in negative.items()) + ".") if negative else None,
-        payload={"tabs": {"timeline_tab": timeline.timeline_rows(tl), "projected_tab": timeline.projected_rows(tl)},
+        title=f"Budget updated from bank data through {tl.through:%-m/%-d}",
+        text="\n\n".join([thisweek.as_text(tw), "BALANCES\n" + timeline.as_text(tl),
+                           f"{latest.month:%B %Y} AGAINST SNAPSHOT\n" + reconcile.as_text(latest)]),
+        warning=" ".join(warnings) or None,
+        payload={"tabs": {"timeline_tab": timeline.timeline_rows(tl), "projected_tab": timeline.projected_rows(tl),
+                          "thisweek_tab": thisweek.as_rows(tw), "reconcile_tab": reconcile.as_rows_by_month(reports)},
                  "through": tl.through.isoformat()},
     )
 
 
-@step(Stage.EXECUTE, name="lay out the week")
-def lay_out_week(ctx):
-    ctx["week"] = thisweek.build(ctx["items"], ctx["feed"], date.today(), ctx["exceptions"])
-
-
-@step(Stage.PRESENT)
-def show_week(ctx):
-    tw = ctx["week"]
-    negative = tw.timeline.first_negative()
-    soon = {a: r for a, r in negative.items() if r.date <= tw.start + timedelta(days=7 * (1 + thisweek.WEEKS_AFTER))}
-    ctx.result = Result(
-        title=thisweek.title(tw),
-        text=thisweek.as_text(tw),
-        warning=("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
-                                               for a, r in soon.items()) + ".") if soon else None,
-        payload={"rows": thisweek.as_rows(tw), "through": tw.timeline.through.isoformat()},
-    )
-
-
-class _BudgetJob(JobPlugin):
+class UpdateBudget(JobPlugin):
+    # The id is the one the first budget job had, so the settings already saved on the phone stay.
+    id = "budget_reconcile"
+    title = "Update budget"
+    description = ("Reconcile the bank transactions and update the whole budget sheet: TimeLine, Projected, "
+                   "ThisWeek and Reconcile (every month, with a Month column to filter by).")
+    icon = "FACT_CHECK_OUTLINED"
+    tags = ("budget", "bills", "bank", "reconcile", "timeline", "forecast", "balance", "week", "wednesday",
+            "snapshot", "google sheets", "money")
+    run_label = "Update budget"
     category = "Money"
     settings = SETTINGS
     commit_label = "Write to sheet"
     committed_label = "Written"
-    tab = ""
+
+    def build_pipeline(self):
+        return Pipeline([load, update, show])
 
     def check_ready(self, settings):
         return super().check_ready(settings) + sheets.setup_problems(settings)
@@ -160,64 +146,17 @@ class _BudgetJob(JobPlugin):
         return out
 
     def commit(self, payload, settings):
-        if not isinstance(payload, dict) or "rows" not in payload:
-            raise StepError("Nothing to write. Run the job first.")
-        return sheets.write_tab(settings, self.tab, sheets.note(date.fromisoformat(payload["through"])),
-                                payload["rows"])
-
-
-class ReconcileMonth(_BudgetJob):
-    id = "budget_reconcile"
-    title = "Reconcile budget month"
-    description = ("Check a month of bank transactions against the SnapShot tab: bills paid, missing or changed, "
-                   "spending against its targets, and anything that isn't on the list.")
-    icon = "FACT_CHECK_OUTLINED"
-    tags = ("budget", "bills", "bank", "reconcile", "snapshot", "google sheets", "money", "subscriptions")
-    fields = (Field.text("month", "Month (YYYY-MM)", help="Leave blank for the latest month with bank data."),)
-    run_label = "Check month"
-    tab = RECONCILE_TAB
-
-    def build_pipeline(self):
-        return Pipeline([parse_month, load, compare, show_report])
-
-
-class UpdateTimeline(_BudgetJob):
-    id = "budget_timeline"
-    title = "Update budget timeline"
-    description = ("TimeLine: every transaction from the bank, the Cash tab and your own rows, with each account's "
-                   "balance. Projected: the same, then what's expected through the end of next month.")
-    icon = "TIMELINE_OUTLINED"
-    tags = ("budget", "bills", "bank", "timeline", "forecast", "balance", "overdraft", "google sheets", "money")
-    settings_from = "budget_reconcile"
-    run_label = "Project balances"
-    commit_label = "Write TimeLine and Projected"
-
-    def build_pipeline(self):
-        return Pipeline([load, project, show_timeline])
-
-    def commit(self, payload, settings):
+        """Write every tab. TimeLine and Projected get no note line: their header stays in row 1 (you add rows to
+        TimeLine); the tabs the code owns alone get one."""
         if not isinstance(payload, dict) or "tabs" not in payload:
             raise StepError("Nothing to write. Run the job first.")
-        defaults = {"timeline_tab": "TimeLine", "projected_tab": "Projected"}
-        done = [sheets.write_tab(settings, (settings.get(key) or defaults[key]).strip(), None, rows)
-                for key, rows in payload["tabs"].items()]
+        note = sheets.note(date.fromisoformat(payload["through"]))
+        done = []
+        for key, rows in payload["tabs"].items():
+            tab = (settings.get(key) or TABS[key]).strip()
+            done.append(sheets.write_tab(settings, tab, note if key in OWN_TABS else None, rows))
         return "; ".join(done)
 
 
-class UpdateThisWeek(_BudgetJob):
-    id = "budget_thisweek"
-    title = "Update ThisWeek"
-    description = ("This budget week (Wednesday to Tuesday) item by item with every account's balance, and the three "
-                   "weeks after, summed. Run it after the Wednesday-morning budget update.")
-    icon = "VIEW_WEEK_OUTLINED"
-    tags = ("budget", "bills", "week", "wednesday", "payday", "balance", "google sheets", "money")
-    settings_from = "budget_reconcile"
-    run_label = "Lay out the week"
-    tab = THISWEEK_TAB
-
-    def build_pipeline(self):
-        return Pipeline([load, lay_out_week, show_week])
-
-
-PLUGIN = ReconcileMonth()
-PLUGINS = (PLUGIN, UpdateTimeline(), UpdateThisWeek())
+PLUGIN = UpdateBudget()
+PLUGINS = (PLUGIN,)

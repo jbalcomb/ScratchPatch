@@ -1,4 +1,4 @@
-"""Settings shared by the budget jobs (stored once, under Reconcile budget month)."""
+"""Settings of the budget job."""
 
 from taskdeck.core import Field
 
@@ -19,6 +19,10 @@ SETTINGS = (
                     "tab) has them."),
     Field.text("projected_tab", "Projected tab", default="Projected",
                help="TimeLine's history, then what's expected through the end of next month."),
+    Field.text("thisweek_tab", "ThisWeek tab", default="ThisWeek",
+               help="This budget week item by item, then the three weeks after. Written by the job alone."),
+    Field.text("reconcile_tab", "Reconcile tab", default="Reconcile (auto)",
+               help="Every month against SnapShot, with a Month column to filter by. Written by the job alone."),
     Field.text("cash_tab", "Cash tab", default="Cash",
                help="Cash in and out that the bank can't see: Date, Description, Amount, Line, Note. Optional."),
     Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True, required=True,

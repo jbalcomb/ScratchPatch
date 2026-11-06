@@ -1,31 +1,37 @@
-# Budget jobs
+# Budget job
 
-Three jobs, in the **Money** category, that bring together:
+One job, **Update budget** (in the **Money** category), that brings together:
 
-* the budget sheet's **SnapShot** tab (income and expense lines) and **Exceptions** tab (charges set aside or
-  disputed), which you edit in Google Sheets, and
+* the budget sheet's tabs you edit in Google Sheets: **SnapShot** (income and expense lines), **Exceptions**
+  (charges set aside or disputed), **Cash** (cash the bank can't see) and the rows you type on **TimeLine**, and
 * the **bank transactions** of the three Bank of America accounts, which the budget service on the AI Workstation
   collects from uploaded exports ([budget/README.md](../../../budget/README.md)).
 
 The sheet's design, tab by tab, is in the **BudgetManagerGoogleSheetDesign** doc (Google Drive,
-Projects/ScratchPatch/BudgetManager). This page is how the code follows it.
+Projects/ScratchPatch/BudgetManager): Part 1 is the sheet, Part 2 this job. This page is how the code follows it.
 
-| Job | Run | Write to sheet |
-|---|---|---|
-| **Reconcile budget month** | A month (blank = the latest with bank data) against SnapShot | the **Reconcile (auto)** tab |
-| **Update budget timeline** | Every transaction since the 1st of the month 3 months back, then what's coming through the end of next month | the **TimeLine** and **Projected** tabs |
-| **Update ThisWeek** | This budget week (Wednesday to Tuesday) item by item, then the 3 weeks after, summed | the **ThisWeek** tab |
+One run reads everything once and works out all four tabs from that one snapshot of the data; the result on the
+phone shows this week, each account's balances ahead, and the latest month against SnapShot. **Write to sheet**
+then replaces:
 
-Running only reads. **Write to sheet** replaces the job's tab (created the first time). TimeLine is shared: rows you
-type there are kept until the bank or the Cash tab has them (see below).
+| Tab | What |
+|---|---|
+| **TimeLine** | every real transaction since the 1st of the month 3 months back, newest first, with each account's balance |
+| **Projected** | the same history, then what's coming through the end of next month |
+| **ThisWeek** | this budget week (Wednesday to Tuesday) item by item, then the 3 weeks after, summed |
+| **Reconcile (auto)** | every month in the TimeLine window against SnapShot, newest month first, with a **Month** column to filter or slice by |
+
+Running only reads. Each tab is created the first time. TimeLine is shared: rows you type there are kept until
+the bank or the Cash tab has them (see below).
 
 ## Accounts
 
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
 from its account into it, an ATM deposit moves it back, and the **Cash** tab records the rest by hand.
-Rent's money is kept in **Bills** and its cash comes out of **Daily** (its ATM card): the timeline expects an ATM withdrawal from Bills on each rent day, unless one
-(at least the rent) already happened in the week before.
+Rent's money is kept in **Bills** and its cash comes out of **Daily** (its ATM card): on each rent day the
+projection moves it from Bills to Daily and withdraws it, unless an ATM withdrawal for it (at least the rent)
+already happened in the week before.
 
 **Cash tab** (hand-entered): Date, Description, Amount (+ in, − out), Line, Note. Line is the SnapShot line it
 counts against (Rent, Groceries…), or blank. Its first row is the cash on hand when you start it; from that day on,
@@ -65,7 +71,10 @@ Exceptions: rows of Match (text in the bank description), Date and Amount (optio
 Status (**Set aside** or **Disputed**), Note. A disputed charge is paired with the later credit for the same amount
 in the same account (the bank's Temporary Credit Adjustment).
 
-## Reconcile budget month
+## Reconcile (auto)
+
+Each month in the window, newest first; the Month column (`2026-11`) is for a filter or slicer.
+
 
 * **Income**: each income line, weekly ones week by week against the baseline ("so far" for a week the bank data
   hasn't finished, "not yet" for one that hasn't started); then other income (e.g. Income: Paycheck).
@@ -80,7 +89,7 @@ in the same account (the bank's Temporary Credit Adjustment).
   left out.
 * **Disputed** and **Set aside**: the Exceptions tab's charges in the month.
 
-## Update budget timeline
+## TimeLine and Projected
 
 **TimeLine**: every real transaction, from the 1st of the month three months back up to now, newest first, with
 each account's balance: Date, Account, Description, Category, Amount, Daily, Bills, Save, Cash, Total. It comes
@@ -110,20 +119,20 @@ name) and in the weekly targets. Rows older than the window drop off.
   Cash, then paid from Cash (unless an ATM withdrawal for it already happened that week);
 * cancelled lines and lines without an amount are left out.
 
-The result says each account's lowest point, and for one that goes negative, the day and how much to move in (or
+The result on the phone says each account's lowest point, and for one that goes negative, the day and how much to move in (or
 take out in cash) before then.
 
-## Update ThisWeek
+## ThisWeek
 
-Run it after the Wednesday-morning update (exports uploaded). This budget week, Wednesday to Tuesday: each income,
+Run the job after the Wednesday-morning update (exports uploaded). This budget week, Wednesday to Tuesday: each income,
 expense and transfer with every account's balance (actual where the bank has it, expected otherwise), then the
-three weeks after: income, expenses and the balances at the end of each week. It replaces the whole ThisWeek tab.
+three weeks after: income, expenses and the balances at the end of each week. It is a slice of the same projection as Projected.
 
 ## One-time setup
 
 1. **Share the budget sheet** with the service account's `client_email` (inside its `.json` key: the same one
    Daily Log uses) as **Editor**.
-2. On the phone, open any of the three jobs → settings (tune icon):
+2. On the phone, open **Update budget** → settings (tune icon):
 
    | Setting | Value |
    |---|---|
@@ -133,12 +142,13 @@ three weeks after: income, expenses and the balances at the end of each week. It
    | Exceptions tab | `Exceptions` |
    | Google service account key | Import the same `.json` as Daily Log |
 
-   The three jobs share these settings. The phone needs Tailscale on to reach the budget service.
-   Tap **Test settings** to see that the service, SnapShot and Exceptions all work.
+   The tab names (TimeLine, Projected, ThisWeek, Reconcile, Cash) are settings too, pre-filled. The phone needs
+   Tailscale on to reach the budget service.
+   Tap **Test settings** to see that the service, SnapShot, Exceptions and Cash all work.
 
 ## Finding the service
 
-The upload page and these jobs use the same address; the jobs read `/api/transactions` there. The service only
+The upload page and the job use the same address; the job reads `/api/transactions` there. The service only
 answers through Tailscale: the Tailscale Service `https://budget.<tailnet>.ts.net`, or Tailscale Serve on the
 workstation's own name. What can be fixed is fixed:
 

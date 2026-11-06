@@ -316,17 +316,38 @@ def test_default_address_is_the_budget_service():
     assert budget.PLUGIN.resolve_settings({})["budget_url"] == "https://budget.tailc54221.ts.net"
 
 
-def test_jobs_register_and_share_settings():
-    reconcile_job, timeline_job, week_job = budget.PLUGINS
-    assert timeline_job.settings_id == week_job.settings_id == reconcile_job.id
-    assert week_job.tab == "ThisWeek"
-    problems = reconcile_job.check_ready(reconcile_job.resolve_settings({}))
+def test_one_job_keeps_the_saved_settings():
+    assert budget.PLUGINS == (budget.PLUGIN,) and budget.PLUGIN.id == "budget_reconcile"  # settings stay under it
+    problems = budget.PLUGIN.check_ready(budget.PLUGIN.resolve_settings({}))
     assert [p.message for p in problems] == ["Set “Google service account key (JSON)” in this job's settings."]
 
 
-def test_month_input_is_checked(monkeypatch, items):
-    report = budget.PLUGIN.run({"month": "October"}, settings={})
-    assert not report.ok and "2026-10" in report.error
+def test_one_run_updates_every_tab(monkeypatch, items):
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 10, 20)
+
+    monkeypatch.setattr(budget, "date", Today)
+    monkeypatch.setattr(budget.sheets, "read_items", lambda settings: items)
+    monkeypatch.setattr(budget.sheets, "read_exceptions", lambda settings: EXCEPTIONS)
+    monkeypatch.setattr(budget.sheets, "read_cash", lambda settings: cashbook.parse(CASH_TAB))
+    monkeypatch.setattr(budget.sheets, "read_timeline", lambda settings, names: [])
+    monkeypatch.setattr(budget.data, "fetch", lambda url, since: OCT)
+    report = budget.PLUGIN.run({}, settings={"budget_url": "https://x.ts.net"})
+    assert report.ok, report.error
+    tabs = report.result.payload["tabs"]
+    assert list(tabs) == ["timeline_tab", "projected_tab", "thisweek_tab", "reconcile_tab"]
+    rec = tabs["reconcile_tab"]
+    assert rec[0] == ["Month", "Section", "Item", "Status", "Date", "Amount", "Budget"]
+    assert [m for m in dict.fromkeys(r[0] for r in rec[1:])] == ["2026-10", "2026-09", "2026-08", "2026-07"]
+    assert "ThisWeek" not in report.result.text and "AGAINST SNAPSHOT" in report.result.text
+
+    written = []
+    monkeypatch.setattr(budget.sheets, "write_tab", lambda settings, tab, note, rows: written.append((tab, note)) or tab)
+    assert budget.PLUGIN.try_commit(report.result.payload, budget.PLUGIN.resolve_settings({}))[0]
+    assert [(tab, note is not None) for tab, note in written] == [
+        ("TimeLine", False), ("Projected", False), ("ThisWeek", True), ("Reconcile (auto)", True)]
 
 
 def test_candidates_turn_what_was_typed_into_the_serve_address(monkeypatch):

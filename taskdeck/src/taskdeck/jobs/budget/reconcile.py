@@ -234,3 +234,11 @@ def as_rows(report: Report) -> list[list]:
                      f"{l.date:%-m/%-d/%Y}" if l.date else "",
                      l.amount / 100 if l.amount is not None else "", l.expected / 100 if l.expected else ""])
     return rows
+
+
+def as_rows_by_month(reports: list[Report]) -> list[list]:
+    """The Reconcile tab: every month's lines, newest month first, with a Month column to filter by."""
+    rows = [["Month", "Section", "Item", "Status", "Date", "Amount", "Budget"]]
+    for report in reversed(reports):
+        rows += [[f"{report.month:%Y-%m}"] + row for row in as_rows(report)[1:]]
+    return rows
