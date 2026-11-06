@@ -14,8 +14,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SECRETS="$HOME/.config/secrets.env"
 ENVFILE="$HERE/.env"
-PORT=8094        # on localhost (8090 status-api, 8092 budget, 8093 photo-ocr are taken)
-HTTPS_PORT=8445  # through Tailscale Serve (443 budget, 8444 photo-ocr)
+# Ports: the first free one from these, saved in .env so later runs keep them (see pick_port / pick_https_port).
+# Taken on the workstation: 8090 status-api, 8092 budget, 8093 photo-ocr, 8094; HTTPS 443 budget, 8444 photo-ocr.
+FIRST_PORT=8095     # the server, on localhost
+FIRST_DB_PORT=5433  # its Postgres, on localhost
+FIRST_HTTPS=8445    # Tailscale Serve
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 
@@ -30,6 +33,36 @@ put() {
   else
     printf '%s=%s\n' "$1" "$2" >> "$3"
   fi
+}
+# Free = this script can open it on localhost (fails for anything listening there, Docker's published ports too).
+port_free() {
+  python3 -c 'import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)' "$1"
+}
+# The saved port if it is free or voice-rec already has it, else the first free one from there (or the default).
+pick_port() {
+  local name="$1" p saved; saved="$(get "$1" "$ENVFILE")"
+  if [ -n "$saved" ] && { [ -n "$RUNNING" ] || port_free "$saved"; }; then echo "$saved"; return; fi
+  p="${saved:-$2}"
+  while ! port_free "$p"; do p=$((p + 1)); done
+  echo "$p"
+}
+# Tailscale Serve HTTPS ports in use, except one that already points at our server.
+serve_taken() {
+  sudo tailscale serve status --json 2>/dev/null | python3 -c '
+import json, sys
+port = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+ours = {k.rsplit(":", 1)[-1] for k, w in (d.get("Web") or {}).items()
+        if any(str(h.get("Proxy", "")).endswith(":" + port) for h in (w.get("Handlers") or {}).values())}
+print(" ".join(p for p in (d.get("TCP") or {}) if p not in ours))' "$1"
 }
 random() { python3 -c 'import secrets; print(secrets.token_urlsafe(32))'; }
 
@@ -88,13 +121,15 @@ else
 fi
 echo "Whisper model: $(get WHISPER_MODEL "$ENVFILE")"
 
-say "Checking port $PORT"
+say "Ports"
 cd "$HERE"
-if ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q . && ! docker compose ps --status running -q voice-rec 2>/dev/null | grep -q .; then
-  ss -ltnpH "sport = :$PORT" 2>/dev/null || true
-  die "Something else already listens on port $PORT (above). Tell Claude which program it is."
-fi
-echo "Port $PORT is free (or already voice-rec's)"
+RUNNING="$(docker compose ps --status running -q 2>/dev/null || true)"  # voice-rec already up: its ports count as free
+PORT="$(pick_port VOICE_REC_PORT $FIRST_PORT)"
+DB_PORT="$(pick_port VOICE_REC_DB_PORT $FIRST_DB_PORT)"
+[ "$DB_PORT" = "$PORT" ] && DB_PORT="$(pick_port VOICE_REC_DB_PORT $((PORT + 1)))"
+put VOICE_REC_PORT "$PORT" "$ENVFILE"
+put VOICE_REC_DB_PORT "$DB_PORT" "$ENVFILE"
+echo "Server on localhost:$PORT, database on localhost:$DB_PORT"
 
 say "Building and starting (first time: a few minutes)"
 docker compose up -d --build
@@ -111,6 +146,10 @@ URL="http://127.0.0.1:$PORT"
 if [ -z "${NO_SERVE:-}" ] && command -v tailscale >/dev/null; then
   say "Tailscale Serve (HTTPS, your own devices only)"
   NAME="$(tailscale status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' || true)"
+  TAKEN=" $(serve_taken "$PORT") "
+  HTTPS_PORT="$(get VOICE_REC_HTTPS_PORT "$ENVFILE")"; HTTPS_PORT="${HTTPS_PORT:-$FIRST_HTTPS}"
+  while [[ "$TAKEN" == *" $HTTPS_PORT "* ]]; do HTTPS_PORT=$((HTTPS_PORT + 1)); done
+  put VOICE_REC_HTTPS_PORT "$HTTPS_PORT" "$ENVFILE"
   if sudo tailscale serve status 2>/dev/null | grep -q ":$HTTPS_PORT"; then
     echo "Already served on port $HTTPS_PORT"
   else

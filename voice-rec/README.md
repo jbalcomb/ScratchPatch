@@ -34,8 +34,8 @@ It asks one question (where your Obsidian vault is on the workstation; Enter tak
   `LLM_API_KEY`, `LLM_MODEL` are reused for categorizing),
 * writes `voice-rec/.env` (database password, vault path, GPU or CPU) — not in git,
 * runs Whisper (`small`) on the CPU: llama.cpp's model fills the GPU. `USE_GPU=1` puts it on the GPU (`large-v3-turbo`),
-* starts Postgres (`127.0.0.1:5433`) and the server (`127.0.0.1:8094`; 8093 is photo-ocr), waits until it answers,
-* sets up Tailscale Serve at `https://<workstation>.<tailnet>.ts.net:8445` (443 is budget, 8444 photo-ocr),
+* starts Postgres (`127.0.0.1:5433`) and the server, each on the first free port (from 8095 and 5433; saved in `.env`), waits until it answers,
+* sets up Tailscale Serve at `https://<workstation>.<tailnet>.ts.net:8445` (or the next free HTTPS port),
 * prints the **address** and **token** to enter in TaskDeck: *Voice notes → tune icon*, then *Test connection*.
 
 Run the same line again after any update. The first note is slow: the Whisper model downloads once
@@ -91,9 +91,10 @@ they appear in the graph view. Write your own thoughts under **Your notes** at t
 ## If something is off
 
 * **TaskDeck says the workstation isn't reachable** — Tailscale on the phone, then `curl -s
-  -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8094/health` on the workstation.
+  -H "Authorization: Bearer $TOKEN" http://127.0.0.1:$VOICE_REC_PORT/health` on the workstation (the port is in
+  `voice-rec/.env`).
 * **`tailscale serve` fails on port 8445** — use another HTTPS port:
-  `sudo tailscale serve --bg --https=8446 http://127.0.0.1:8094`, and that port in TaskDeck.
+  `sudo tailscale serve --bg --https=8446 http://127.0.0.1:<VOICE_REC_PORT from .env>`, and that port in TaskDeck.
 * **Whisper on the GPU** — only if the GPU has room (llama.cpp's coder model uses most of it): `USE_GPU=1 bash
   voice-rec/setup.sh`. Docker needs the NVIDIA runtime first: install the NVIDIA Container Toolkit
   (`sudo apt install nvidia-container-toolkit && sudo nvidia-ctk runtime configure --runtime=docker &&

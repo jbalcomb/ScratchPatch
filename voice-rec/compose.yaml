@@ -9,8 +9,8 @@ services:
       POSTGRES_USER: voicerec
       POSTGRES_DB: voicerec
       POSTGRES_PASSWORD: ${VOICE_REC_DB_PASSWORD:?run setup.sh first (it writes .env)}
-    # Only on the workstation's localhost; 5433 so it never clashes with a Postgres you already run on 5432.
-    ports: ["127.0.0.1:5433:5432"]
+    # Only on the workstation's localhost. setup.sh picks a free port (from 5433) and saves it in .env.
+    ports: ["127.0.0.1:${VOICE_REC_DB_PORT:-5433}:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -26,14 +26,14 @@ services:
     container_name: voice-rec
     restart: unless-stopped
     # Host networking, like budget: reaches llama.cpp (and Neo4j, if any) on localhost, and listens on the
-    # workstation's localhost:8094 only (8093 is photo-ocr). Tailscale Serve makes it reachable from your own devices.
+    # workstation's localhost only, on the port setup.sh picked (from 8095). Tailscale Serve makes it reachable from your own devices.
     network_mode: host
     user: "${UID:-1000}:${GID:-1000}"  # notes written into the vault belong to you
     env_file: ${HOME}/.config/secrets.env  # VOICE_REC_TOKEN, LLM_URL, LLM_API_KEY, LLM_MODEL, GRAPH_*
     environment:
-      DATABASE_URL: postgresql://voicerec:${VOICE_REC_DB_PASSWORD}@127.0.0.1:5433/voicerec
+      DATABASE_URL: postgresql://voicerec:${VOICE_REC_DB_PASSWORD}@127.0.0.1:${VOICE_REC_DB_PORT:-5433}/voicerec
       VOICE_REC_HOST: 127.0.0.1
-      VOICE_REC_PORT: "8094"
+      VOICE_REC_PORT: "${VOICE_REC_PORT:-8095}"
       OBSIDIAN_VAULT: /vault
       VOICE_REC_CATEGORIES: /config/categories.txt
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
