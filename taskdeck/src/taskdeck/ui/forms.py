@@ -106,6 +106,20 @@ class FieldControl:
         if self._on_change:
             self._on_change(None)
 
+    def picked_many(self, paths: list[str]) -> None:
+        """Several files chosen at once (the photo picker), in order: each added like ``picked``."""
+        if self.field.kind != FieldKind.FILES:
+            if paths:
+                self.picked(paths[0])
+            return
+        lines = [line for line in str(self.input.value or "").splitlines() if line.strip()]
+        lines += [p for p in paths if p not in lines]
+        self.input.value = "\n".join(lines)
+        self.input.update()
+        self.refresh_thumbnails()
+        if self._on_change:
+            self._on_change(None)
+
     async def _browse(self, e) -> None:
         if self._browse_with:
             self._browse_with(self)

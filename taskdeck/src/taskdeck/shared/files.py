@@ -44,10 +44,18 @@ def is_android() -> bool:
     return hasattr(sys, "getandroidapilevel") or "ANDROID_ARGUMENT" in os.environ or "ANDROID_ROOT" in os.environ
 
 
-def locations() -> list[Location]:
-    """Downloads, the phone's storage and any SD card (on a desktop: Downloads and home)."""
+def photos_location() -> Location:
+    """Where the camera's photos are: DCIM on a phone; Pictures (else home) on a desktop."""
     if is_android():
-        out = [Location("Downloads", ANDROID_PHONE / "Download", "DOWNLOAD"),
+        return Location("Photos", ANDROID_PHONE / "DCIM", "PHOTO_LIBRARY")
+    pictures = Path.home() / "Pictures"
+    return Location("Photos", pictures if pictures.is_dir() else Path.home(), "PHOTO_LIBRARY")
+
+
+def locations() -> list[Location]:
+    """Downloads, Photos (DCIM), the phone's storage and any SD card (on a desktop: Downloads, Photos, home)."""
+    if is_android():
+        out = [Location("Downloads", ANDROID_PHONE / "Download", "DOWNLOAD"), photos_location(),
                Location("Phone", ANDROID_PHONE, "SMARTPHONE")]
         try:
             for entry in sorted(Path("/storage").iterdir()):
@@ -58,7 +66,8 @@ def locations() -> list[Location]:
         return out
     home = Path.home()
     downloads = home / "Downloads"
-    return ([Location("Downloads", downloads, "DOWNLOAD")] if downloads.is_dir() else []) + \
+    photos = [photos_location()] if (home / "Pictures").is_dir() else []
+    return ([Location("Downloads", downloads, "DOWNLOAD")] if downloads.is_dir() else []) + photos + \
         [Location("Home", home, "HOME")]
 
 

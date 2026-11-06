@@ -39,13 +39,13 @@ def strip(value: str | list[str] | None) -> ft.Control | None:
                      error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED)),
             width=WIDTH, height=HEIGHT, border_radius=8, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
             alignment=ft.Alignment.CENTER, tooltip=f"{path.name}: tap to enlarge", ink=True,
-            on_click=lambda e, data=data, name=path.name: _enlarge(e.page, data, name)))
+            on_click=lambda e, data=data, name=path.name: enlarge(e.page, data, name)))
     if len(paths) > MOST:
         tiles.append(ft.Text(f"+{len(paths) - MOST} more"))
     return ft.Row(tiles, wrap=True, spacing=8, run_spacing=8) if tiles else None
 
 
-def _enlarge(page: ft.Page, data: bytes, name: str) -> None:
+def enlarge(page: ft.Page, data: bytes, name: str) -> None:
     """The photo full size, to pinch and zoom: small print on a receipt can be checked against the reading."""
     dialog = ft.AlertDialog(
         title=ft.Text(name, size=14),

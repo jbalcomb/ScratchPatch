@@ -61,7 +61,9 @@ A `Pipeline` is an ordered list of `Step`s that share a `Context`:
 * A step can set `ctx.result = Result(text=..., rows=[...])`, which the UI renders. Usually a shared
   `present_*` step does this. `Result(images=[paths])` adds thumbnails of local image files above the rows
   (tap one to see it full size); a FILE(S) field with `preview=True` shows the same thumbnails under the
-  field as soon as files are chosen.
+  field as soon as files are chosen, and its Add… opens the photo picker (`ui/photo_picker.py`): a Google
+  Photos style grid starting at the camera's photos (DCIM), newest first under day headings, with
+  multi-select. `shared/photos.py` finds the photos and reads the small thumbnail stored in each JPEG.
 * A step that waits on something slow calls `ctx.check_cancelled()` while it waits, so Cancel stops it.
 * `Pipeline.run` reports progress per step, supports cancellation and returns a `RunReport` with
   per-step timings. The UI shows this in the Pipeline panel.

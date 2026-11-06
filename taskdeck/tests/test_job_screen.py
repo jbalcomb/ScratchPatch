@@ -302,3 +302,25 @@ def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inpu
     assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS"
     assert screen.notes["drive"].visible and not screen.notes["exe"].visible
     assert screen.notes["output"].value == f"Saves into {tmp_path / 'MOM' / '_WIZARDS'}"
+
+
+def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
+    """Add… on a photo field (Receipt capture) opens the photo grid, which accepts only the field's types,
+    and the photos picked are added in the order picked."""
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.PhotoPicker, "pick",
+                        classmethod(lambda cls, app, on_pick, **kw: opened.update(kw, on_pick=on_pick)))
+    monkeypatch.setattr(job_view.FileBrowser, "pick_file", classmethod(lambda *a, **kw: opened.update(file_browser=True)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert "file_browser" not in opened and opened["title"] == "Choose Receipt photos"
+    assert opened["accept"]("IMG_1.JPG") and opened["accept"]("s.webp") and not opened["accept"]("clip.heic")
+    opened["on_pick"]([tmp_path / "top.jpg", tmp_path / "bottom.jpg"])
+    assert fc.value.splitlines() == [str(tmp_path / "top.jpg"), str(tmp_path / "bottom.jpg")]
