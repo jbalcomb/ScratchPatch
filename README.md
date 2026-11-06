@@ -16,3 +16,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 * GitHub Actions workflows must live in `.github/workflows/` at the root, so each is named after its
   project (`taskdeck-ci.yml`, ...), runs with `working-directory` set to the project folder, and only
   triggers on changes under that folder.
+* Services on the AI Workstation are reached from other devices as a **Tailscale Service** with its own name,
+  `https://<service>.tailc54221.ts.net` (like `budget`), forwarding to the service's `localhost` port. Don't
+  give them a port on the workstation's own Tailscale Serve name (`imustai...:8445`): a name needs no port and
+  doesn't clash. Each service listens on `localhost` only, on a port no other service uses.
