@@ -251,3 +251,17 @@ def test_graph_webhook_and_off(stub):
     assert path == "/ingest" and headers["Authorization"] == "Bearer t" and json.loads(body)["type"] == "voice-note"
     with pytest.raises(ValueError):
         graph.send(rec, {"GRAPH_KIND": "mystery", "GRAPH_URL": stub})
+
+
+def test_obsidian_writes_only_final_files(tmp_path, monkeypatch):
+    # The vault syncs to the phone: nothing but the note and its audio may ever be written into it.
+    written = []
+    real_text, real_bytes = Path.write_text, Path.write_bytes
+    monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: (written.append(self.name), real_text(self, *a, **k))[1])
+    monkeypatch.setattr(Path, "write_bytes", lambda self, *a, **k: (written.append(self.name), real_bytes(self, *a, **k))[1])
+    rec = {"id": "3f2a9c1b-0000-0000-0000-000000000000", "recorded_at": "2026-11-01T18:00:00+00:00",
+           "title": "Groceries", "category": "Todo", "transcript": "milk", "mime": "audio/mp4"}
+    obsidian.write(rec, b"aa", tmp_path)
+    assert len(written) == 2 and all(n.endswith((" Groceries.md", " 3f2a9c1b.m4a")) for n in written), written
+    files = sorted(p.name for p in tmp_path.rglob("*") if p.is_file())
+    assert len(files) == 2 and files[0].endswith(".m4a") and files[1].endswith("Groceries.md")

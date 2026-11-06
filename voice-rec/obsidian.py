@@ -7,11 +7,12 @@ Front matter holds the ids and timestamps (Dataview can query them); people, pro
 [[wikilinks]], so they show up in Obsidian's graph view too. Archiving again rewrites the same note (it moves
 if its title or category changed). Notes are rewritten by the server: edit the transcript in Postgres, or
 add your own notes below the "Your notes" line, which is kept.
+
+The vault syncs to Jim's phone: write only final files into it, never temporary ones.
 """
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -108,9 +109,9 @@ def write(rec: dict[str, Any], audio: bytes | None, vault: Path, folder: str = "
             audio_path.write_bytes(audio)
         link = audio_path.relative_to(vault).as_posix()
     note.parent.mkdir(parents=True, exist_ok=True)
-    tmp = note.with_suffix(".md.tmp")
-    tmp.write_text(render(rec, link, kept), encoding="utf-8")
-    os.replace(tmp, note)
+    # Written straight to its final name, in one call: the vault syncs to the phone (Self-hosted LiveSync),
+    # so no temporary or partial files may ever appear in it.
+    note.write_text(render(rec, link, kept), encoding="utf-8")
     if old and old != note and old.exists():
         old.unlink()
     return note.relative_to(vault)
