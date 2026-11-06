@@ -12,7 +12,7 @@ import flet as ft
 from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
 from taskdeck.shared.gdrive import DriveLocation
 
-from . import task_view
+from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
 from .file_browser import FileBrowser
 from .forms import FieldControl
@@ -436,6 +436,9 @@ class JobScreen:
         parts: list[ft.Control] = []
         if result.title:
             parts.append(ft.Text(result.title, weight=ft.FontWeight.W_600))
+        images = thumbnails.strip(result.images) if result.images else None
+        if images:
+            parts.append(images)
         if result.rows:
             parts.append(
                 ft.Column(

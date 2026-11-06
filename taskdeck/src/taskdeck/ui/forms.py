@@ -8,6 +8,8 @@ import flet as ft
 
 from taskdeck.core import Field, FieldKind
 
+from . import thumbnails
+
 Handler = Callable[..., Any] | None
 
 
@@ -20,6 +22,15 @@ class FieldControl:
         which gives real paths; Android's picker hands back a copy in the app's cache)."""
         self.field = field
         self._browse_with = browse
+        self._shown: str | None = None  # the value the thumbnails were drawn for
+        self.thumbs = ft.Container()
+        if field.preview:
+            user_change = on_change
+
+            def on_change(e=None):  # the thumbnails follow typed and pasted paths too
+                self.refresh_thumbnails()
+                if user_change:
+                    user_change(e)
         self.input = _build(field, value, on_change, on_submit)
         self.control: ft.Control = self.input
         if isinstance(self.input, ft.Dropdown):
@@ -33,10 +44,13 @@ class FieldControl:
         if field.kind in (FieldKind.FILE, FieldKind.FILES):
             button = "Add…" if field.kind == FieldKind.FILES else "Browse…"
             self.control = ft.Column(
-                [self.input, ft.Row([ft.TextButton(button, icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])],
+                [self.input, ft.Row([ft.TextButton(button, icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])]
+                + ([self.thumbs] if field.preview else []),
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )
+            if field.preview:
+                self.refresh_thumbnails()
         if field.importable:
             self.control = ft.Column(
                 [self.input, ft.Row([
@@ -48,6 +62,20 @@ class FieldControl:
             )
         self._on_change = on_change
 
+    def refresh_thumbnails(self) -> None:
+        """Redraw the thumbnails when the chosen files changed (preview fields only)."""
+        if not self.field.preview:
+            return
+        value = str(self.input.value or "") if hasattr(self, "input") else ""
+        if value == self._shown:
+            return
+        self._shown = value
+        self.thumbs.content = thumbnails.strip(value)
+        try:
+            self.thumbs.update()
+        except RuntimeError:  # not on screen yet: it is drawn with the form
+            pass
+
     @property
     def value(self) -> Any:
         return self.input.value
@@ -55,6 +83,7 @@ class FieldControl:
     @value.setter
     def value(self, v: Any) -> None:
         self.input.value = v if isinstance(self.input, ft.Switch) else display(v)
+        self.refresh_thumbnails()
 
     async def _paste(self, e) -> None:
         text = await ft.Clipboard().get()
@@ -73,6 +102,7 @@ class FieldControl:
             path = "\n".join(lines)
         self.input.value = path
         self.input.update()
+        self.refresh_thumbnails()
         if self._on_change:
             self._on_change(None)
 
@@ -84,6 +114,7 @@ class FieldControl:
         if files and files[0].path:
             self.input.value = files[0].path
             self.input.update()
+            self.refresh_thumbnails()
             if self._on_change:
                 self._on_change(None)
 

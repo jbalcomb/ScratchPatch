@@ -48,6 +48,7 @@ class Result:
     rows: list[tuple[str, str]] = field(default_factory=list)
     title: str | None = None
     warning: str | None = None  # shown under the result, e.g. "Not found: Batch count."
+    images: list[str] = field(default_factory=list)  # local image files, shown as thumbnails above the rows
     # Machine-readable data for a later commit step (see JobPlugin.commit); not displayed.
     payload: Any = None
 

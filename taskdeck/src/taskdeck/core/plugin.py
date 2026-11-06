@@ -47,6 +47,7 @@ class Field:
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
     extensions: tuple[str, ...] = ()  # FILE(S) fields: the files Browse offers (".exe", ...); empty = any file
+    preview: bool = False  # FILE(S) fields: show thumbnails of the chosen image files under the field
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
