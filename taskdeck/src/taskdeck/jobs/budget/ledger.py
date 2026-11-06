@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from taskdeck.core import StepError
+
 from .data import ATM, CASH, NICKNAMES, TIMELINE, Txn, add_months, sheet_date
 from .snapshot import cents
 
@@ -25,11 +27,19 @@ def window_start(today: date) -> date:
 
 def parse(values: list[list[Any]], line_names: set[str] = frozenset()) -> list[Txn]:
     """TimeLine's rows (under the header row whose first cell is "Date"): Date, Account, Description, Category,
-    Amount. Without a Category, a Description that is a SnapShot line's name counts as that line."""
+    Amount. Without a Category, a Description that is a SnapShot line's name counts as that line.
+
+    Refuses (StepError) when the tab has rows but no header row with those columns: writing the tab would then
+    drop the rows typed there. An empty tab is fine (the first run)."""
+    if not any(any(str(c).strip() for c in row) for row in values):
+        return []
     h = next((i for i, row in enumerate(values) if row and str(row[0]).strip().lower() == "date"), None)
-    if h is None:  # header row lost: assume the usual columns rather than lose the rows typed there
-        values, h = [COLUMNS] + list(values), 0
-    header = [str(c).strip().lower() for c in values[h]]
+    header = [str(c).strip().lower() for c in values[h]] if h is not None else []
+    missing = [c for c in COLUMNS if c.lower() not in header]
+    if missing:
+        raise StepError(f"TimeLine's header row is {'missing' if h is None else 'changed'}: it needs the columns "
+                        f"{', '.join(COLUMNS)} (missing: {', '.join(missing)}). Fix the header in row 1, then run "
+                        "the job again. Nothing was written.")
     names = {n.lower(): n for n in line_names}
 
     def col(row, name):

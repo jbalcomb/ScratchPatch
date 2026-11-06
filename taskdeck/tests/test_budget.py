@@ -477,9 +477,12 @@ def cash_entry(day, description, amount, category=None):
     return data.Txn("cash", date.fromisoformat(day), description, amount, None, category, data.CASH_TAB)
 
 
-def test_timeline_rows_survive_a_lost_header():
-    rows = ledger.parse([["11/6/2026", "Bills", "Google Play Pass", "", "-5.51", "188.06"]], {"Google Play Pass"})
-    assert [(t.account, t.amount, t.category) for t in rows] == [("bills", -551, "Google Play Pass")]
+def test_timeline_header_lost_or_changed_stops_the_job():
+    with pytest.raises(StepError, match="header row is missing"):
+        ledger.parse([["11/6/2026", "Bills", "Google Play Pass", "", "-5.51"]])
+    with pytest.raises(StepError, match="changed.*missing: Category"):
+        ledger.parse([["Date", "Account", "Description", "Type", "Amount"], ["11/6/2026", "Bills", "X", "", "-1"]])
+    assert ledger.parse([]) == [] and ledger.parse([[], [""]]) == []  # an empty tab: the first run
 
 
 def test_merge_keeps_only_what_the_bank_and_cash_tab_dont_have():
