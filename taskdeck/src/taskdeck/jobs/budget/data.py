@@ -21,6 +21,7 @@ NICKNAMES = {label.lower(): account for account, label in ACCOUNT_LABELS.items()
 CASH = "cash"
 TRANSFER = "Transfer"  # money moved between the bank accounts: never spending
 ATM = "Cash"           # rules.txt category of ATM withdrawals and deposits: a move to or from Cash
+CASH_FROM = "bills"    # cash bills (rent) are withdrawn at the ATM from the Bills account
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,12 @@ def add_months(d: date, n: int) -> date:
 def month_end(d: date) -> date:
     """The last day of d's month."""
     return d.replace(day=calendar.monthrange(d.year, d.month)[1])
+
+
+def cash_withdrawal(txns: list[Txn], due: date, amount: int) -> Txn | None:
+    """The ATM withdrawal that pays a cash bill: at least ``amount``, in the week up to its day (or 3 days after)."""
+    return next((t for t in txns if t.category == ATM and -t.amount >= amount
+                 and date.fromordinal(due.toordinal() - 7) <= t.date <= date.fromordinal(due.toordinal() + 3)), None)
 
 
 def week_start(d: date) -> date:

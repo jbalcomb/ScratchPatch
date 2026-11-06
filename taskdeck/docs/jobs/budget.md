@@ -23,7 +23,9 @@ touched, so the hand-made TimeLine and Projected tabs stay as they are.
 
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
-from Daily into it, an ATM deposit moves it back, and SnapShot lines whose Account is Cash (rent) are paid from it.
+from its account into it, an ATM deposit moves it back, and SnapShot lines whose Account is Cash (rent) are paid
+from it. Rent's cash comes out of **Bills**: the timeline expects an ATM withdrawal from Bills on each rent day,
+unless one (at least the rent) already happened in the week before; the reconcile names the withdrawal that paid it.
 The bank can't show the cash on hand, so the timeline starts Cash at what covered the cash bills already due.
 
 ## How a transaction is tied to a budget line

@@ -7,7 +7,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from . import exceptions
-from .data import ACCOUNT_LABELS, ATM, CASH, TRANSFER, Feed, Txn, add_months, due_date, money, month_end, week_start
+from .data import (
+    ACCOUNT_LABELS, ATM, CASH, CASH_FROM, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
+    week_start,
+)
 from .snapshot import Item
 
 ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings (Save), cash
@@ -171,6 +174,9 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
                 if _paid_in(feed.txns, item, m, month_end(m)):
                     continue  # paid (or disputed) this month already
                 if due > through:
+                    if _account(item, feed.txns) == CASH and not cash_withdrawal(feed.txns, due, item.amount):
+                        events.append(Row(due, CASH_FROM, f"ATM withdrawal for {item.name}", ATM, -item.amount, {}))
+                        events.append(Row(due, CASH, f"ATM withdrawal for {item.name}", ATM, item.amount, {}))
                     add(due, item, sign * item.amount)
                 elif _account(item, feed.txns) == CASH:
                     add(due, item, sign * item.amount, kind=ASSUMED)  # rent: not in the bank, assume it was paid

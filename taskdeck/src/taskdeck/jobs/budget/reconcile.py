@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from . import exceptions
-from .data import ATM, CASH, TRANSFER, Feed, Txn, add_months, due_date, merchant, money, month_end, wednesdays
+from .data import (
+    ACCOUNT_LABELS, ATM, CASH, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, merchant, money, month_end,
+    wednesdays,
+)
 from .snapshot import Item
 
 GRACE = timedelta(days=3)  # a bill can post a few days after its day
@@ -141,8 +144,13 @@ def reconcile(items: list[Item], feed: Feed, month: date, rows: list[exceptions.
         elif item.cancelled:
             report.lines.append(Line(BILLS, item.name, "cancelled", expected=item.amount))
         elif item.account == CASH:
-            report.lines.append(Line(BILLS, item.name, f"paid in cash (not in the bank data), due {due:%-m/%-d}",
-                                     due, None, item.amount))
+            atm = cash_withdrawal(usable, due, item.amount or 0)
+            if atm:
+                status = f"paid in cash: ATM withdrawal from {ACCOUNT_LABELS[atm.account]} {atm.date:%-m/%-d}"
+                report.lines.append(Line(BILLS, item.name, status, atm.date, atm.amount, item.amount))
+            else:
+                report.lines.append(Line(BILLS, item.name, f"paid in cash (no ATM withdrawal for it), due {due:%-m/%-d}",
+                                         due, None, item.amount))
         elif item.name not in ever:
             report.lines.append(Line(BILLS, item.name, "never in the bank data: paid in cash?", expected=item.amount))
         else:

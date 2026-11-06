@@ -104,7 +104,7 @@ EXCEPTIONS = [exceptions.Entry("KLARNA", "set aside", note="look into later"),
 def test_reconcile_month(items):
     report = reconcile.reconcile(items, SEPT, date(2026, 9, 1), EXCEPTIONS)
     bills = {l.name: l for l in report.section(reconcile.BILLS)}
-    assert bills["Rent"].status == "paid in cash (not in the bank data), due 9/1"
+    assert bills["Rent"].status == "paid in cash (no ATM withdrawal for it), due 9/1"
     assert bills["Phone Payment"].status == "paid +$77.16 vs the budget"
     # The $106.75 charge is the budget line; the $21.35 one is listed as an extra.
     assert bills["Claude AI Subscription"].amount == -10675
@@ -180,11 +180,12 @@ def test_timeline(items):
     assert not any(c[2].startswith(("LinkedIn", "Amazon Prime", "Motor Fuel")) for c in coming)
     assert "Motor Fuel: no amount set" in " ".join(tl.notes)
 
+    # Rent's cash is withdrawn from Bills at the ATM on its day.
+    assert [(c[1], c[3]) for c in coming if c[0] == date(2026, 11, 1)] == [
+        ("cash", 45000), ("bills", -45000), ("cash", -45000)]
     negative = tl.first_negative()
-    assert set(negative) == {"bills", "cash"} and negative["bills"].date == date(2026, 10, 18)
-    assert negative["cash"].date == date(2026, 11, 1)
-    text = timeline.as_text(tl)
-    assert "move at least" in text and "take out at least $350.00 in cash" in text
+    assert set(negative) == {"bills"} and negative["bills"].date == date(2026, 10, 18)
+    assert "move at least" in timeline.as_text(tl)
     rows = timeline.as_rows(tl)
     assert rows[0][-6:] == ["Daily", "Bills", "Save", "Cash", "Total", "Kind"]
 
@@ -217,6 +218,20 @@ def test_timeline_shows_bills_funding_every_wednesday(items):
 def test_thisweek_leaves_transfers_out_of_income_and_expenses(items):
     tw = thisweek.build(items, OCT, date(2026, 10, 20))
     assert tw.weeks[0].income == 50000 and tw.weeks[0].expenses == 6000  # the $300 to Bills moves balances only
+
+
+def test_rent_withdrawn_early_is_not_expected_again(items):
+    items = [i for i in items if i.section != "transfer"]
+    f = feed(txn("2026-10-29", "bills", "BKOFAMERICA ATM 10/29 WITHDRWL", -45000, 10000, "Cash"))
+    tl = timeline.build(items, f)
+    nov1 = [(r.account, r.amount) for r in tl.rows if r.date == date(2026, 11, 1)]
+    assert nov1 == [("cash", -45000)]  # withdrawn on 10/29 already: no second withdrawal
+    assert not any(r.account == "cash" and r.balances["cash"] < 0 for r in tl.rows if r.date <= date(2026, 11, 30))
+    report = reconcile.reconcile(items, feed(txn("2026-11-02", "checking", "X", -1, 1, None),
+                                             txn("2026-10-29", "bills", "BKOFAMERICA ATM 10/29 WITHDRWL", -45000,
+                                                 10000, "Cash")), date(2026, 11, 1))
+    rent = next(l for l in report.section(reconcile.BILLS) if l.name == "Rent")
+    assert rent.status == "paid in cash: ATM withdrawal from Bills 10/29"
 
 
 def test_timeline_includes_yearly_lines_on_their_day(items):
