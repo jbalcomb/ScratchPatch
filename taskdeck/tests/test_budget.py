@@ -7,7 +7,7 @@ import pytest
 
 from taskdeck.core import StepError
 from taskdeck.jobs import budget
-from taskdeck.jobs.budget import cashbook, data, exceptions, reconcile, snapshot, thisweek, timeline
+from taskdeck.jobs.budget import cashbook, data, exceptions, ledger, reconcile, snapshot, thisweek, timeline
 
 H = ["Account", "Periodicity", "Day of Period", "Monthly", "Weekly", "Annually", "Rounded"]
 # The budget sheet's SnapShot tab as the Sheets API returns it: a totals row, Income section, Expense section.
@@ -189,14 +189,14 @@ def test_timeline(items):
     assert not any(c[2].startswith(("LinkedIn", "Amazon Prime", "Motor Fuel")) for c in coming)
     assert "Motor Fuel: no amount set" in " ".join(tl.notes)
 
-    # Rent's cash is withdrawn from Bills at the ATM on its day.
+    # Rent's cash is withdrawn from Daily (its ATM card) on its day.
     assert [(c[1], c[3]) for c in coming if c[0] == date(2026, 11, 1)] == [
-        ("cash", 45000), ("bills", -45000), ("cash", -45000)]
+        ("cash", 45000), ("checking", -45000), ("cash", -45000)]
     negative = tl.first_negative()
     assert set(negative) == {"bills"} and negative["bills"].date == date(2026, 10, 18)
     assert "move at least" in timeline.as_text(tl)
     rows = timeline.as_rows(tl)
-    assert rows[0][-6:] == ["Daily", "Bills", "Save", "Cash", "Total", "Kind"]
+    assert rows[0][-6:] == ["Daily", "Bills", "Save", "Cash", "Total", "Actual / Expected"]
 
 
 def test_income_without_a_day_is_not_projected_as_spending():
@@ -447,3 +447,87 @@ def test_why_the_address_changed():
     assert data.why_address("https://ws.ts.net", "https://ws.ts.net:8443").endswith("port 8443; port 443 doesn't answer.")
     assert "certificate" in data.why_address("https://ai-workstation", "https://ai-workstation.tail1.ts.net")
     assert "Tailscale Service" in data.why_address("https://ai-workstation.tail1.ts.net", "https://budget.tail1.ts.net")
+
+
+# ---- TimeLine: the bank, the Cash tab and rows typed on TimeLine, merged -----------------------------------
+
+TL_HEADER = ["Date", "Account", "Description", "Category", "Amount", "Daily", "Bills", "Save", "Cash", "Total"]
+
+
+def test_timeline_tab_rows():
+    rows = ledger.parse([TL_HEADER,
+                         ["11/6/2026", "Bills", "Google Play Pass", "", "-5.51", "188.06", "442.47", "0.2", "2", "632.73"],
+                         ["11/4/2026", "Daily", "Pizza", "Dining Out", "-$12.00"],
+                         ["11/4/2026", "Nowhere", "Bad account", "", "-1"], ["", "Daily", "No date", "", "-1"]],
+                        {"Google Play Pass", "Dining Out"})
+    assert [(t.date, t.account, t.amount, t.category, t.source) for t in rows] == [
+        (date(2026, 11, 6), "bills", -551, "Google Play Pass", "timeline"),  # its Description is a SnapShot line
+        (date(2026, 11, 4), "checking", -1200, "Dining Out", "timeline")]
+
+
+def bank(day, account, description, amount, balance, category=None):
+    return data.Txn(account, date.fromisoformat(day), description, amount, balance, category)
+
+
+def typed(day, account, description, amount, category=None):
+    return data.Txn(account, date.fromisoformat(day), description, amount, None, category, data.TIMELINE)
+
+
+def cash_entry(day, description, amount, category=None):
+    return data.Txn("cash", date.fromisoformat(day), description, amount, None, category, data.CASH_TAB)
+
+
+def test_merge_keeps_only_what_the_bank_and_cash_tab_dont_have():
+    exported = [bank("2026-11-06", "bills", "GOOGLE *Play P 11/04 PURCHASE", -551, 44196, "Google Play Pass"),
+                bank("2026-11-04", "checking", "BKOFAMERICA ATM 11/04 WITHDRWL", -45000, 10000, "Cash")]
+    cash = [cash_entry("2026-11-04", "Cash On-Hand", 200), cash_entry("2026-11-04", "From Daily, To Cash", 45000),
+            cash_entry("2026-11-04", "Landlord - Rent", -45000, "Back Rent")]
+    rows = [typed("2026-11-04", "bills", "Google Play Pass", -551),          # pending, posted on 11/6: replaced
+            typed("2026-11-07", "bills", "Netflix", -2134),                  # still pending: kept
+            typed("2026-11-04", "cash", "Rent", -45000),                     # the Cash tab has it: replaced
+            typed("2026-11-02", "checking", "ATM for rent", -45000),         # typed before it posted 11/4: replaced
+            typed("2026-07-30", "checking", "Old row", -100)]                # before the window: scrolled off
+    kept = ledger.merge(exported, cash, rows, date(2026, 8, 1))
+    # The Cash tab's +$450 is the cash side of the ATM withdrawal: covered. The other two stay.
+    assert [(t.description, t.source) for t in kept] == [
+        ("Cash On-Hand", "cash tab"), ("Landlord - Rent", "cash tab"), ("Netflix", "timeline")]
+
+
+def test_merge_matches_the_earliest_typed_row_and_needs_the_bank_on_or_after_it():
+    exported = [bank("2026-11-06", "checking", "SUNOCO 11/05", -4000, 100)]
+    rows = [typed("2026-11-05", "checking", "Gas", -4000), typed("2026-11-07", "checking", "Gas again", -4000)]
+    kept = ledger.merge(exported, [], rows, date(2026, 8, 1))
+    assert [t.description for t in kept] == ["Gas again"]  # the bank's 11/6 can't be a purchase made on 11/7
+
+
+def test_last_runs_rows_are_replaced_by_the_same_transactions():
+    exported = [bank("2026-11-02", "bills", "VERIZON", -15128, 14798, "Phone Payment"),
+                bank("2026-10-28", "checking", "BKOFAMERICA ATM", -10000, 5000, "Cash")]
+    cash = [cash_entry("2026-11-04", "Cash On-Hand", 200)]
+    previous = [typed("2026-11-02", "bills", "VERIZON", -15128), typed("2026-10-28", "cash", "ATM withdrawal", 10000),
+                typed("2026-11-04", "cash", "Cash On-Hand", 200)]
+    assert ledger.merge(exported, cash, previous, date(2026, 8, 1)) == cash  # nothing typed is left over
+
+
+def test_pending_rows_carry_on_top_of_the_bank_balance(items):
+    items = [i for i in items if i.section != "transfer"]
+    f = data.with_cash(OCT, [typed("2026-10-15", "checking", "Pizza", -1200, "Dining Out")])
+    tl = timeline.build(items, f)
+    daily = [(r.date, r.description, r.balances["checking"]) for r in tl.rows
+             if r.account == "checking" and r.kind == timeline.ACTUAL]
+    # The bank says $290 after Giant Eagle on 10/16; with the pending $12 pizza (10/15) it's $278.
+    assert daily[-1] == (date(2026, 10, 16), "GIANT EAGLE", 27800)
+    assert (date(2026, 10, 15), "Pizza", 28800) in daily
+
+
+def test_timeline_and_projected_tabs(items):
+    tl = timeline.build([i for i in items if i.section != "transfer"], OCT, start=date(2026, 8, 1))
+    tab = timeline.timeline_rows(tl)
+    assert tab[0] == TL_HEADER
+    dates = [r[0] for r in tab[1:]]
+    assert dates[0] == "10/16/2026" and dates[-1] == "9/25/2026"  # newest first, history from 8/1 on
+    projected = timeline.projected_rows(tl)
+    assert projected[0] == TL_HEADER + ["Actual / Expected"]
+    assert projected[1][-1] == "Expected" and projected[-1][-1] == "Actual"
+    assert projected[1][0].startswith("11/")  # the furthest projection, at the top
+    assert len(projected) - 1 == len(tl.rows) and len(tab) - 1 == sum(r.kind == timeline.ACTUAL for r in tl.rows)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .data import CASH, Txn, sheet_date
+from .data import CASH, CASH_TAB, Txn, sheet_date
 from .snapshot import cents
 
 
@@ -27,5 +27,5 @@ def parse(values: list[list[Any]]) -> list[Txn]:
         day, amount = sheet_date(col(row, "date")), cents(col(row, "amount"))
         if day is None or not amount:
             continue
-        out.append(Txn(CASH, day, col(row, "description") or "Cash", amount, None, col(row, "line") or None))
+        out.append(Txn(CASH, day, col(row, "description") or "Cash", amount, None, col(row, "line") or None, CASH_TAB))
     return out

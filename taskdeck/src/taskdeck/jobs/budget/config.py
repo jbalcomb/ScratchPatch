@@ -14,6 +14,11 @@ SETTINGS = (
                     "Periodicity, Day of Period, Monthly, Weekly, Annually."),
     Field.text("exceptions_tab", "Exceptions tab", default="Exceptions",
                help="Charges set aside or disputed: Match, Date, Amount, Status, Note. Optional."),
+    Field.text("timeline_tab", "TimeLine tab", default="TimeLine",
+               help="Every real transaction, newest first. Rows you type there are kept until the bank (or the Cash "
+                    "tab) has them."),
+    Field.text("projected_tab", "Projected tab", default="Projected",
+               help="TimeLine's history, then what's expected through the end of next month."),
     Field.text("cash_tab", "Cash tab", default="Cash",
                help="Cash in and out that the bank can't see: Date, Description, Amount, Line, Note. Optional."),
     Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True, required=True,

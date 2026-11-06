@@ -13,18 +13,18 @@ Projects/ScratchPatch/BudgetManager). This page is how the code follows it.
 | Job | Run | Write to sheet |
 |---|---|---|
 | **Reconcile budget month** | A month (blank = the latest with bank data) against SnapShot | the **Reconcile (auto)** tab |
-| **Update budget timeline** | This month's transactions, then what's coming through the end of next month | the **Timeline (auto)** tab |
+| **Update budget timeline** | Every transaction since the 1st of the month 3 months back, then what's coming through the end of next month | the **TimeLine** and **Projected** tabs |
 | **Update ThisWeek** | This budget week (Wednesday to Tuesday) item by item, then the 3 weeks after, summed | the **ThisWeek** tab |
 
-Running only reads. **Write to sheet** replaces the job's own tab (created the first time); no other tab is
-touched, so the hand-made TimeLine and Projected tabs stay as they are.
+Running only reads. **Write to sheet** replaces the job's tab (created the first time). TimeLine is shared: rows you
+type there are kept until the bank or the Cash tab has them (see below).
 
 ## Accounts
 
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
 from its account into it, an ATM deposit moves it back, and the **Cash** tab records the rest by hand.
-Rent's cash comes out of **Bills**: the timeline expects an ATM withdrawal from Bills on each rent day, unless one
+Rent's cash comes out of **Daily** (its ATM card): the timeline expects an ATM withdrawal from Bills on each rent day, unless one
 (at least the rent) already happened in the week before.
 
 **Cash tab** (hand-entered): Date, Description, Amount (+ in, − out), Line, Note. Line is the SnapShot line it
@@ -82,18 +82,35 @@ in the same account (the bank's Temporary Credit Adjustment).
 
 ## Update budget timeline
 
-* **Actual** rows: this month's transactions, with each bank account's balance as the bank reported it (ATM
-  withdrawals also on a Cash row). A cash bill already due (rent) is listed as *cash, assumed paid*.
-* **Projected** rows, from the day after the bank data ends to the end of next month, from the account in
-  SnapShot's Account column (or the one that last paid it):
-  * bills on their day, unless already paid (or disputed) that month; yearly lines on their date;
-  * income lines on their weekday at the baseline;
-  * **Bills funding** every Wednesday: a row out of Daily and a row into Bills (this week's only when the bank
-    data doesn't already show a transfer from Daily to Bills since Wednesday);
-  * spending: each week's target on its Wednesday, and for the current week only what's left of it;
-  * cancelled lines and lines without an amount are left out (the result names the ones with no amount).
-* The result says each account's lowest point, and for one that goes negative, the day and how much to move
-  in (or take out in cash) before then.
+**TimeLine**: every real transaction, from the 1st of the month three months back up to now, newest first, with
+each account's balance: Date, Account, Description, Category, Amount, Daily, Bills, Save, Cash, Total. It comes
+from three places, and the more official one replaces the other:
+
+1. the **bank exports** (and the cash side of each ATM withdrawal or deposit);
+2. the **Cash tab**;
+3. **rows typed on TimeLine** itself: a transaction still pending at the bank (the export only has posted ones),
+   or cash spent that isn't on the Cash tab.
+
+A row is replaced when a more official one is in the same account for the same amount, dated the same day or
+later (a purchase posts a day or two after it's made). The rows the job wrote last time match their own bank
+transactions, so they're replaced too; whatever is left over is yours and stays. A typed row's balance carries on
+top of the bank's running balance, so the balances match the bank's screen rather than the export. A typed row
+counts like any other transaction: against its SnapShot line (its Category, or a Description that is a line's
+name) and in the weekly targets. Rows older than the window drop off.
+
+**Projected**: the same history, then the expected rows through the end of next month (newest first), with an
+**Actual / Expected** column:
+* bills on their day, unless already paid (or disputed) that month; yearly lines on their date; a cash bill due
+  and not paid isn't projected (it's a debt);
+* income lines on their weekday at the baseline;
+* **Bills funding** every Wednesday: a row out of Daily and a row into Bills (this week's only when no transfer from
+  Daily to Bills is in yet);
+* spending: each week's target on its Wednesday, and for the current week only what's left of it;
+* rent: an ATM withdrawal from Daily into Cash, then the payment from Cash;
+* cancelled lines and lines without an amount are left out.
+
+The result says each account's lowest point, and for one that goes negative, the day and how much to move in (or
+take out in cash) before then.
 
 ## Update ThisWeek
 

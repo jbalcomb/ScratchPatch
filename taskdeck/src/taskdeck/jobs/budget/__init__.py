@@ -10,27 +10,28 @@ from taskdeck.core import (
     Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step,
 )
 
-from . import data, reconcile, sheets, thisweek, timeline
+from . import data, ledger, reconcile, sheets, thisweek, timeline
 from .config import SETTINGS
 
 RECONCILE_TAB = "Reconcile (auto)"
-TIMELINE_TAB = "Timeline (auto)"
 THISWEEK_TAB = "ThisWeek"
 HISTORY_MONTHS = 4  # enough to tell repeats from one-offs and to average spending
 
 
-@step(Stage.EXECUTE, name="read the sheet's SnapShot, Exceptions and Cash tabs and the bank transactions")
+@step(Stage.EXECUTE, name="read the sheet's SnapShot, Exceptions, Cash and TimeLine tabs and the bank transactions")
 def load(ctx):
-    """The budget list, exceptions and cash entries from the sheet, and a few months of transactions from the
-    budget service."""
-    ctx["items"] = sheets.read_items(ctx.settings)
+    """The budget list, exceptions, cash entries and TimeLine rows from the sheet, and a few months of
+    transactions from the budget service. Cash tab and TimeLine rows the bank (or the Cash tab) now covers are
+    dropped; the rest count like bank transactions (see ledger)."""
+    items = ctx["items"] = sheets.read_items(ctx.settings)
     ctx["exceptions"] = sheets.read_exceptions(ctx.settings)
     cash = sheets.read_cash(ctx.settings)
+    typed = sheets.read_timeline(ctx.settings, {i.name for i in items})
     since = data.add_months(ctx.get("month") or date.today(), -HISTORY_MONTHS)
     feed = data.fetch(ctx.settings.get("budget_url"), since)
     if feed.through is None:
         raise StepError("The budget service has no transactions yet. Upload a bank export first.")
-    ctx["feed"] = data.with_cash(feed, cash)
+    ctx["feed"] = data.with_cash(feed, ledger.merge(feed.txns, cash, typed, ledger.window_start(date.today())))
 
 
 @step(Stage.VALIDATE)
@@ -61,7 +62,8 @@ def show_report(ctx):
 
 @step(Stage.EXECUTE, name="project balances")
 def project(ctx):
-    ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"], rows=ctx["exceptions"])
+    ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"], rows=ctx["exceptions"],
+                                     start=ledger.window_start(date.today()))
 
 
 @step(Stage.PRESENT)
@@ -73,7 +75,8 @@ def show_timeline(ctx):
         text=timeline.as_text(tl),
         warning=("Goes negative: " + ", ".join(f"{data.ACCOUNT_LABELS[a]} on {r.date:%-m/%-d}"
                                                for a, r in negative.items()) + ".") if negative else None,
-        payload={"rows": timeline.as_rows(tl), "through": tl.through.isoformat()},
+        payload={"tabs": {"timeline_tab": timeline.timeline_rows(tl), "projected_tab": timeline.projected_rows(tl)},
+                 "through": tl.through.isoformat()},
     )
 
 
@@ -181,16 +184,24 @@ class ReconcileMonth(_BudgetJob):
 class UpdateTimeline(_BudgetJob):
     id = "budget_timeline"
     title = "Update budget timeline"
-    description = ("This month's bank transactions, then the bills, spending and pay still to come through the end "
-                   "of next month, with each account's balance day by day.")
+    description = ("TimeLine: every transaction from the bank, the Cash tab and your own rows, with each account's "
+                   "balance. Projected: the same, then what's expected through the end of next month.")
     icon = "TIMELINE_OUTLINED"
     tags = ("budget", "bills", "bank", "timeline", "forecast", "balance", "overdraft", "google sheets", "money")
     settings_from = "budget_reconcile"
     run_label = "Project balances"
-    tab = TIMELINE_TAB
+    commit_label = "Write TimeLine and Projected"
 
     def build_pipeline(self):
         return Pipeline([load, project, show_timeline])
+
+    def commit(self, payload, settings):
+        if not isinstance(payload, dict) or "tabs" not in payload:
+            raise StepError("Nothing to write. Run the job first.")
+        defaults = {"timeline_tab": "TimeLine", "projected_tab": "Projected"}
+        done = [sheets.write_tab(settings, (settings.get(key) or defaults[key]).strip(), None, rows)
+                for key, rows in payload["tabs"].items()]
+        return "; ".join(done)
 
 
 class UpdateThisWeek(_BudgetJob):

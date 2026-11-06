@@ -8,13 +8,13 @@ from datetime import date, timedelta
 
 from . import exceptions
 from .data import (
-    ACCOUNT_LABELS, ATM, CASH, CASH_FROM, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
+    ACCOUNT_LABELS, ATM, BANK, CASH, CASH_FROM, TIMELINE, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
     week_start,
 )
 from .snapshot import Item
 
 ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings (Save), cash
-BANK = tuple(a for a in ACCOUNTS if a != CASH)
+BANK_ACCOUNTS = tuple(a for a in ACCOUNTS if a != CASH)
 ACTUAL, PROJECTED = "actual", "projected"
 
 
@@ -28,6 +28,7 @@ class Row:
     balances: dict[str, int]     # every account's balance after this row
     kind: str = PROJECTED        # ACTUAL (from the bank or the Cash tab) or PROJECTED
     bank_balance: int | None = None  # for an actual bank row: the bank's running balance after it
+    pending: bool = False        # typed on TimeLine for a bank account: not in the bank's running balance yet
 
     @property
     def projected(self) -> bool:
@@ -116,11 +117,11 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
     # entry is the cash on hand then). With no Cash tab entries, Cash starts at $0 here.
     cash = [t for t in feed.txns if t.account == CASH]
     origin = cash[0].date if cash else start
-    balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK} | {CASH: (
+    balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK_ACCOUNTS} | {CASH: (
         sum(t.amount for t in cash if t.date < start)
         - sum(t.amount for t in feed.txns if t.category == ATM and t.account != CASH and origin <= t.date < start))}
-    actual = [t for t in feed.txns if start <= t.date and (t.date <= through or t.account == CASH)]
-    for a in BANK:
+    actual = [t for t in feed.txns if start <= t.date and (t.date <= through or t.source != BANK)]
+    for a in BANK_ACCOUNTS:
         first = next((t for t in actual if t.account == a), None)
         if first and first.balance is not None:
             balances[a] = first.balance - first.amount
@@ -129,8 +130,8 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
     for t in actual:
         status = applied.status_of(t)
         events.append(Row(t.date, t.account, t.description + (f" ({status})" if status else ""), t.category or "",
-                          t.amount, {}, ACTUAL, t.balance))
-        if t.category == ATM and t.account != CASH and t.date >= origin:  # a withdrawal moves money into Cash
+                          t.amount, {}, ACTUAL, t.balance, t.source == TIMELINE and t.account in BANK_ACCOUNTS))
+        if t.category == ATM and t.source == BANK and t.date >= origin:  # a withdrawal moves money into Cash
             events.append(Row(t.date, CASH, "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), ATM,
                               -t.amount, {}, ACTUAL))
 
@@ -186,8 +187,13 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
 
     # Same day: actual before projected, money in before money out (the bank's own order kept for actual rows).
     events.sort(key=lambda r: (r.date, r.kind != ACTUAL, 0 if r.kind == ACTUAL else -r.amount))
+    # A pending row (typed on TimeLine) isn't in the bank's running balance yet: carry it on top of it, so the
+    # balances match the bank's screen.
+    pending = dict.fromkeys(BANK_ACCOUNTS, 0)
     for row in events:
-        balances[row.account] = (row.bank_balance if row.bank_balance is not None
+        if row.pending:
+            pending[row.account] += row.amount
+        balances[row.account] = (row.bank_balance + pending[row.account] if row.bank_balance is not None
                                  else balances[row.account] + row.amount)
         row.balances = dict(balances)
         tl.rows.append(row)
@@ -210,10 +216,24 @@ def as_text(tl: Timeline) -> str:
     return "\n".join(out)
 
 
-def as_rows(tl: Timeline, rows: list[Row] | None = None) -> list[list]:
+def as_rows(tl: Timeline, rows: list[Row] | None = None, kind: bool = True, newest_first: bool = False) -> list[list]:
+    """The rows for a tab: Date, Account, Description, Category, Amount, a balance per account, Total, and with
+    ``kind`` an Actual / Expected column."""
     labels = [ACCOUNT_LABELS[a] for a in ACCOUNTS]
-    out = [["Date", "Account", "Description", "Category", "Amount", *labels, "Total", "Kind"]]
-    for r in tl.rows if rows is None else rows:
+    out = [["Date", "Account", "Description", "Category", "Amount", *labels, "Total"] + (["Actual / Expected"] * kind)]
+    chosen = tl.rows if rows is None else rows
+    for r in reversed(chosen) if newest_first else chosen:
         out.append([f"{r.date:%-m/%-d/%Y}", ACCOUNT_LABELS[r.account], r.description, r.category, r.amount / 100,
-                    *[r.balances[a] / 100 for a in ACCOUNTS], sum(r.balances.values()) / 100, r.kind])
+                    *[r.balances[a] / 100 for a in ACCOUNTS], sum(r.balances.values()) / 100]
+                   + (["Actual" if r.kind == ACTUAL else "Expected"] * kind))
     return out
+
+
+def timeline_rows(tl: Timeline) -> list[list]:
+    """The TimeLine tab: what has happened (the bank, the Cash tab, rows typed there), newest first."""
+    return as_rows(tl, [r for r in tl.rows if r.kind == ACTUAL], kind=False, newest_first=True)
+
+
+def projected_rows(tl: Timeline) -> list[list]:
+    """The Projected tab: the same history, then what's expected, newest first."""
+    return as_rows(tl, newest_first=True)

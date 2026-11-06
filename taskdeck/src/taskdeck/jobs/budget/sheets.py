@@ -10,7 +10,7 @@ from taskdeck.shared.google import (
     GoogleError, ServiceAccountCredentials, ServiceAccountKey, SheetsClient, a1_range, key_problems,
 )
 
-from . import cashbook, exceptions, snapshot
+from . import cashbook, exceptions, ledger, snapshot
 
 
 def client(settings: dict[str, Any], timeout: float = 30) -> SheetsClient:
@@ -61,10 +61,15 @@ def read_cash(settings: dict[str, Any]):
     return cashbook.parse(_optional_tab(settings, (settings.get("cash_tab") or "Cash").strip()))
 
 
-def write_tab(settings: dict[str, Any], title: str, note: str, rows: list[list]) -> str:
-    """Replace everything in the tab ``title`` (created if missing) with a note line and ``rows``."""
+def read_timeline(settings: dict[str, Any], line_names: set[str]):
+    """The TimeLine tab's rows, as transactions (the code's own rows from the last run among them)."""
+    return ledger.parse(_optional_tab(settings, (settings.get("timeline_tab") or "TimeLine").strip()), line_names)
+
+
+def write_tab(settings: dict[str, Any], title: str, note: str | None, rows: list[list]) -> str:
+    """Replace everything in the tab ``title`` (created if missing) with a note line (if any) and ``rows``."""
     width = max(len(r) for r in rows)
-    body = [[note] + [""] * (width - 1)] + [list(r) + [""] * (width - len(r)) for r in rows]
+    body = ([[note] + [""] * (width - 1)] if note else []) + [list(r) + [""] * (width - len(r)) for r in rows]
     last_col = chr(ord("A") + width - 1)
     try:
         c = client(settings)

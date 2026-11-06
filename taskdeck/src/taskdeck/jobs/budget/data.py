@@ -21,7 +21,8 @@ NICKNAMES = {label.lower(): account for account, label in ACCOUNT_LABELS.items()
 CASH = "cash"
 TRANSFER = "Transfer"  # money moved between the bank accounts: never spending
 ATM = "Cash"           # rules.txt category of ATM withdrawals and deposits: a move to or from Cash
-CASH_FROM = "bills"    # cash bills (rent) are withdrawn at the ATM from the Bills account
+CASH_FROM = "checking"  # cash bills (rent) are withdrawn at the ATM from Daily (its card)
+BANK, CASH_TAB, TIMELINE = "bank", "cash tab", "timeline"  # where a transaction came from
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class Txn:
     amount: int            # cents; negative = money out
     balance: int | None    # the bank's running balance after it
     category: str | None
+    source: str = BANK     # BANK (an export), CASH_TAB, or TIMELINE (a row typed on the TimeLine tab)
 
     @property
     def is_income(self) -> bool:
