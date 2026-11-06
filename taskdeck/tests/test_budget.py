@@ -7,7 +7,7 @@ import pytest
 
 from taskdeck.core import StepError
 from taskdeck.jobs import budget
-from taskdeck.jobs.budget import data, exceptions, reconcile, snapshot, thisweek, timeline
+from taskdeck.jobs.budget import cashbook, data, exceptions, reconcile, snapshot, thisweek, timeline
 
 H = ["Account", "Periodicity", "Day of Period", "Monthly", "Weekly", "Annually", "Rounded"]
 # The budget sheet's SnapShot tab as the Sheets API returns it: a totals row, Income section, Expense section.
@@ -112,7 +112,7 @@ EXCEPTIONS = [exceptions.Entry("KLARNA", "set aside", note="look into later"),
 def test_reconcile_month(items):
     report = reconcile.reconcile(items, SEPT, date(2026, 9, 1), EXCEPTIONS)
     bills = {l.name: l for l in report.section(reconcile.BILLS)}
-    assert bills["Rent"].status == "paid in cash (no ATM withdrawal for it), due 9/1"
+    assert bills["Rent"].status == "not paid: no Rent entry in the Cash tab"  # September's rent: a debt now
     assert bills["Phone Payment"].status == "paid +$77.16 vs the budget"
     # The $106.75 charge is the budget line; the $21.35 one is listed as an extra.
     assert bills["Claude AI Subscription"].amount == -10675
@@ -170,9 +170,10 @@ def test_timeline(items):
     tl = timeline.build(items, OCT)  # Friday 10/16 is the last day of bank data
     assert (tl.start, tl.through, tl.end) == (date(2026, 10, 1), date(2026, 10, 16), date(2026, 11, 30))
     actual = [r for r in tl.rows if r.kind == timeline.ACTUAL]
-    # Rent (cash, due 10/1) is assumed paid: Cash starts at what covered it, so it isn't negative.
-    assert [r.category for r in tl.rows[:2]] == ["Rent", "Phone Payment"] and tl.rows[0].kind == timeline.ASSUMED
-    assert tl.rows[0].balances == {"checking": 0, "bills": 20000, "savings": 500, "cash": 0}
+    # October's rent (cash, due 10/1) isn't in the Cash tab: not paid, so not on the timeline (it's a debt now).
+    assert not any(r.category == "Rent" and r.date.month == 10 for r in tl.rows)
+    assert tl.rows[0].category == "Phone Payment"
+    assert tl.rows[0].balances == {"checking": 0, "bills": 12885, "savings": 500, "cash": 0}
     # The ATM withdrawal moves $100 from Daily into Cash.
     atm = [r for r in actual if r.category == "Cash"]
     assert [(r.account, r.amount) for r in atm] == [("checking", -10000), ("cash", 10000)]
@@ -239,7 +240,51 @@ def test_rent_withdrawn_early_is_not_expected_again(items):
                                              txn("2026-10-29", "bills", "BKOFAMERICA ATM 10/29 WITHDRWL", -45000,
                                                  10000, "Cash")), date(2026, 11, 1))
     rent = next(l for l in report.section(reconcile.BILLS) if l.name == "Rent")
-    assert rent.status == "paid in cash: ATM withdrawal from Bills 10/29"
+    assert rent.status == "due 11/1; ATM withdrawal from Bills 10/29"
+
+
+CASH_TAB = [["Date", "Description", "Amount", "Line", "Note"],
+            ["10/10/2026", "Cash on hand", "$80.00", "", "counted"],
+            ["10/12/2026", "Tip", "$15.00", "", ""],
+            ["10/13/2026", "Farm stand", "-$12.00", "Groceries", ""],
+            ["10/14/2026", "", "", "", "a blank row"],
+            ["10/20/2026", "Rent to landlord", "-$450.00", "Rent", "late"],
+            ["11/1/2026", "Rent to landlord", "-$450.00", "Rent", ""]]
+
+
+def test_cash_tab():
+    cash = cashbook.parse(CASH_TAB)
+    assert [(t.date, t.amount, t.category) for t in cash] == [
+        (date(2026, 10, 10), 8000, None), (date(2026, 10, 12), 1500, None), (date(2026, 10, 13), -1200, "Groceries"),
+        (date(2026, 10, 20), -45000, "Rent"), (date(2026, 11, 1), -45000, "Rent")]
+    assert all(t.account == "cash" and t.balance is None for t in cash)
+
+
+def test_cash_tab_feeds_the_reconcile_and_timeline(items):
+    items = [i for i in items if i.section != "transfer"]
+    f = data.with_cash(OCT, cashbook.parse(CASH_TAB))
+    report = reconcile.reconcile(items, f, date(2026, 10, 1))
+    rent = next(l for l in report.section(reconcile.BILLS) if l.name == "Rent")
+    assert (rent.status, rent.date) == ("paid", date(2026, 10, 20))  # paid late, in cash
+    groceries = next(l for l in report.section(reconcile.SPENDING) if l.name == "Groceries")
+    assert groceries.amount == -2200  # $10 at Giant Eagle + $12 cash at the farm stand
+    income = {l.name: l.amount for l in report.section(reconcile.INCOME)}
+    assert income["Cash received (no Line)"] == 1500  # the tip; the first row is the cash on hand, not income
+
+    tl = timeline.build(items, f)
+    cash_rows = [(r.date, r.description, r.balances["cash"]) for r in tl.rows if r.account == "cash"]
+    # $80 on hand, +$15 tip, -$12, +$100 from the ATM (10/15), -$450 rent paid 10/20 (after the bank data).
+    assert cash_rows[:5] == [(date(2026, 10, 10), "Cash on hand", 8000), (date(2026, 10, 12), "Tip", 9500),
+                             (date(2026, 10, 13), "Farm stand", 8300), (date(2026, 10, 15), "ATM withdrawal", 18300),
+                             (date(2026, 10, 20), "Rent to landlord", -26700)]
+    # November's rent is already in the Cash tab: no projected withdrawal or payment for it.
+    assert not any(r.kind == timeline.PROJECTED and r.date == date(2026, 11, 1) for r in tl.rows)
+    assert any(r.kind == timeline.ACTUAL and r.date == date(2026, 11, 1) and r.category == "Rent" for r in tl.rows)
+
+
+def test_cash_starts_at_zero_without_cash_tab_entries(items):
+    tl = timeline.build([i for i in items if i.section != "transfer"], OCT)
+    assert [r.balances["cash"] for r in tl.rows if r.account == "cash"][0] == 10000  # just the ATM withdrawal
 
 
 def test_timeline_includes_yearly_lines_on_their_day(items):
@@ -316,6 +361,7 @@ def answering(monkeypatch, answers):
     monkeypatch.setattr(data.tailscale, "why_unreachable", lambda url: "")
     monkeypatch.setattr(budget.sheets, "read_items", lambda settings: snapshot.parse(SNAPSHOT, struck={LINKEDIN_ROW}))
     monkeypatch.setattr(budget.sheets, "read_exceptions", lambda settings: EXCEPTIONS)
+    monkeypatch.setattr(budget.sheets, "read_cash", lambda settings: cashbook.parse(CASH_TAB))
     data._answered.clear()
 
 
@@ -325,13 +371,14 @@ FEED = {"accounts": {"bills": {"balance": 642, "as_of": "2026-10-19"}}, "transac
 def test_service_url_uses_the_address_that_answers_and_says_so(monkeypatch):
     answering(monkeypatch, {"https://ws.ts.net:8443": FEED})
     assert data.service_url("http://ip:8092") == "https://ws.ts.net:8443"
-    note, service, sheet, excepted = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    note, service, sheet, excepted, cash = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
     assert not note.blocking and note.settings == {"budget_url": "https://ws.ts.net:8443"}
     assert note.message.startswith("Budget service address updated to https://ws.ts.net:8443")
     assert service.ok and service.message == ("Budget service at https://ws.ts.net:8443: 1 accounts, bank data "
                                               "through 10/19/2026.")
     assert sheet.ok and sheet.message == "Budget sheet: the SnapShot tab lists 1 income and 8 expense lines (1 cancelled)."  # Bills funding isn't one
     assert excepted.ok and excepted.message == "Exceptions tab: 2 charges set aside or disputed."
+    assert cash.ok and cash.message == "Cash tab: 5 entries."
     assert all(p.ok for p in budget.PLUGIN.check_ready_online({"budget_url": "https://ws.ts.net:8443"}))  # already right
 
 
@@ -347,9 +394,9 @@ def test_service_url_explains_an_older_service_or_no_answer(monkeypatch):
     with pytest.raises(StepError, match="older budget service.*docker compose up -d --build"):
         data.service_url("http://ip:8092")
     answering(monkeypatch, {})
-    problem, sheet, excepted = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
+    problem, sheet, excepted, cash = budget.PLUGIN.check_ready_online({"budget_url": "http://ip:8092"})
     assert problem.blocking and "http://ip:8092, https://ws.ts.net" in problem.message
-    assert sheet.ok and excepted.ok  # the sheet is checked (and reported) even when the service isn't there
+    assert sheet.ok and excepted.ok and cash.ok  # the sheet is checked (and reported) even when the service isn't there
 
 
 def test_settings_test_reports_both_halves_and_applies_fixes(monkeypatch):

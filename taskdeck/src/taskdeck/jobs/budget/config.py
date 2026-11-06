@@ -14,6 +14,8 @@ SETTINGS = (
                     "Periodicity, Day of Period, Monthly, Weekly, Annually."),
     Field.text("exceptions_tab", "Exceptions tab", default="Exceptions",
                help="Charges set aside or disputed: Match, Date, Amount, Status, Note. Optional."),
+    Field.text("cash_tab", "Cash tab", default="Cash",
+               help="Cash in and out that the bank can't see: Date, Description, Amount, Line, Note. Optional."),
     Field.text("service_account_json", "Google service account key (JSON)", secret=True, importable=True, required=True,
                help="The same key as Daily Log works: import the same .json. Share the budget sheet with the key's "
                     "client_email as Editor."),

@@ -169,6 +169,26 @@ def month_end(d: date) -> date:
     return d.replace(day=calendar.monthrange(d.year, d.month)[1])
 
 
+def sheet_date(text: str) -> date | None:
+    """A date as the sheet shows it: 11/3/2026, 11/3/26 or 2026-11-03; None if it isn't one."""
+    text = str(text or "").strip()
+    try:
+        parts = text.split("/")
+        if len(parts) == 3:
+            m, d, y = (int(p) for p in parts)
+            return date(y + 2000 if y < 100 else y, m, d)
+        if "-" in text:
+            return date.fromisoformat(text)
+    except ValueError:
+        return None
+    return None
+
+
+def with_cash(feed: Feed, cash: list[Txn]) -> Feed:
+    """The bank transactions plus the Cash tab's, in date order (the bank's own order kept within a day)."""
+    return Feed(feed.balances, sorted(feed.txns + cash, key=lambda t: t.date))
+
+
 def cash_withdrawal(txns: list[Txn], due: date, amount: int) -> Txn | None:
     """The ATM withdrawal that pays a cash bill: at least ``amount``, in the week up to its day (or 3 days after)."""
     return next((t for t in txns if t.category == ATM and -t.amount >= amount

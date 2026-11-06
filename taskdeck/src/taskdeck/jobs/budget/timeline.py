@@ -15,7 +15,7 @@ from .snapshot import Item
 
 ACCOUNTS = tuple(ACCOUNT_LABELS)  # column order: checking (Daily), bills, savings (Save), cash
 BANK = tuple(a for a in ACCOUNTS if a != CASH)
-ACTUAL, PROJECTED, ASSUMED = "actual", "projected", "cash, assumed paid"
+ACTUAL, PROJECTED = "actual", "projected"
 
 
 @dataclass
@@ -26,7 +26,7 @@ class Row:
     category: str
     amount: int                  # cents
     balances: dict[str, int]     # every account's balance after this row
-    kind: str = PROJECTED        # ACTUAL (from the bank), PROJECTED, or ASSUMED (a cash bill already due)
+    kind: str = PROJECTED        # ACTUAL (from the bank or the Cash tab) or PROJECTED
     bank_balance: int | None = None  # for an actual bank row: the bank's running balance after it
 
     @property
@@ -111,10 +111,15 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
     tl = Timeline(start, through, end)
     applied = exceptions.apply(list(rows), feed.txns)
 
-    # Balances at the start: before each bank account's first transaction from then on. The bank data can't
-    # show the cash on hand, so Cash starts at what covered the cash bills already due (at least $0).
-    balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK} | {CASH: 0}
-    actual = [t for t in feed.txns if start <= t.date <= through]
+    # Balances at the start: before each bank account's first transaction from then on. Cash is what the Cash
+    # tab and the ATM say: its entries, plus ATM withdrawals (minus deposits) from its first entry on (the first
+    # entry is the cash on hand then). With no Cash tab entries, Cash starts at $0 here.
+    cash = [t for t in feed.txns if t.account == CASH]
+    origin = cash[0].date if cash else start
+    balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK} | {CASH: (
+        sum(t.amount for t in cash if t.date < start)
+        - sum(t.amount for t in feed.txns if t.category == ATM and t.account != CASH and origin <= t.date < start))}
+    actual = [t for t in feed.txns if start <= t.date and (t.date <= through or t.account == CASH)]
     for a in BANK:
         first = next((t for t in actual if t.account == a), None)
         if first and first.balance is not None:
@@ -125,12 +130,12 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
         status = applied.status_of(t)
         events.append(Row(t.date, t.account, t.description + (f" ({status})" if status else ""), t.category or "",
                           t.amount, {}, ACTUAL, t.balance))
-        if t.category == ATM:  # an ATM withdrawal moves money into Cash; a deposit moves it out
+        if t.category == ATM and t.account != CASH and t.date >= origin:  # a withdrawal moves money into Cash
             events.append(Row(t.date, CASH, "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), ATM,
                               -t.amount, {}, ACTUAL))
 
-    def add(day: date, item: Item, amount: int, description: str = "", kind: str = PROJECTED):
-        events.append(Row(day, _account(item, feed.txns), description or item.name, item.name, amount, {}, kind))
+    def add(day: date, item: Item, amount: int, description: str = ""):
+        events.append(Row(day, _account(item, feed.txns), description or item.name, item.name, amount, {}))
 
     for item in items:
         if item.section == "transfer" and not item.cancelled:
@@ -173,22 +178,14 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
                     continue
                 if _paid_in(feed.txns, item, m, month_end(m)):
                     continue  # paid (or disputed) this month already
-                if due > through:
+                if due > through:  # one already due and not paid isn't projected: it's a debt now (Debts tab)
                     if _account(item, feed.txns) == CASH and not cash_withdrawal(feed.txns, due, item.amount):
                         events.append(Row(due, CASH_FROM, f"ATM withdrawal for {item.name}", ATM, -item.amount, {}))
                         events.append(Row(due, CASH, f"ATM withdrawal for {item.name}", ATM, item.amount, {}))
                     add(due, item, sign * item.amount)
-                elif _account(item, feed.txns) == CASH:
-                    add(due, item, sign * item.amount, kind=ASSUMED)  # rent: not in the bank, assume it was paid
 
     # Same day: actual before projected, money in before money out (the bank's own order kept for actual rows).
     events.sort(key=lambda r: (r.date, r.kind != ACTUAL, 0 if r.kind == ACTUAL else -r.amount))
-    running, lowest = 0, 0
-    for row in events:
-        if row.account == CASH and row.date <= through:
-            running += row.amount
-            lowest = min(lowest, running)
-    balances[CASH] = -lowest  # never below $0 up to the end of the bank data
     for row in events:
         balances[row.account] = (row.bank_balance if row.bank_balance is not None
                                  else balances[row.account] + row.amount)

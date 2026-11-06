@@ -102,9 +102,12 @@ def reconcile(items: list[Item], feed: Feed, month: date, rows: list[exceptions.
             report.lines.append(Line(INCOME, item.name, f"{money(got)} of {money(item.amount)}", amount=got,
                                      expected=item.amount))
     other: dict[str, int] = {}
+    starting = next((t for t in feed.txns if t.account == CASH), None)  # the Cash tab's first row: cash on hand
     for t in in_month:
         if t.is_income and t.category not in incomes:
             other[t.category] = other.get(t.category, 0) + t.amount
+        elif t.account == CASH and t.amount > 0 and not t.category and t is not starting:
+            other["Cash received (no Line)"] = other.get("Cash received (no Line)", 0) + t.amount
     for name, total in sorted(other.items()):
         report.lines.append(Line(INCOME, name, f"{money(total)} (not on SnapShot)", amount=total))
 
@@ -143,14 +146,12 @@ def reconcile(items: list[Item], feed: Feed, month: date, rows: list[exceptions.
                                      charge.amount, item.amount))
         elif item.cancelled:
             report.lines.append(Line(BILLS, item.name, "cancelled", expected=item.amount))
-        elif item.account == CASH:
+        elif item.account == CASH:  # paid only when the Cash tab has it (on its line)
             atm = cash_withdrawal(usable, due, item.amount or 0)
-            if atm:
-                status = f"paid in cash: ATM withdrawal from {ACCOUNT_LABELS[atm.account]} {atm.date:%-m/%-d}"
-                report.lines.append(Line(BILLS, item.name, status, atm.date, atm.amount, item.amount))
-            else:
-                report.lines.append(Line(BILLS, item.name, f"paid in cash (no ATM withdrawal for it), due {due:%-m/%-d}",
-                                         due, None, item.amount))
+            seen = f"; ATM withdrawal from {ACCOUNT_LABELS[atm.account]} {atm.date:%-m/%-d}" if atm else ""
+            late = feed.through is not None and feed.through >= due + GRACE
+            status = (f"not paid: no {item.name} entry in the Cash tab" if late else f"due {due:%-m/%-d}") + seen
+            report.lines.append(Line(BILLS, item.name, status, due, None, item.amount))
         elif item.name not in ever:
             report.lines.append(Line(BILLS, item.name, "never in the bank data: paid in cash?", expected=item.amount))
         else:

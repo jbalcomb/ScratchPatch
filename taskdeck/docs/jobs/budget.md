@@ -23,10 +23,16 @@ touched, so the hand-made TimeLine and Projected tabs stay as they are.
 
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
-from its account into it, an ATM deposit moves it back, and SnapShot lines whose Account is Cash (rent) are paid
-from it. Rent's cash comes out of **Bills**: the timeline expects an ATM withdrawal from Bills on each rent day,
-unless one (at least the rent) already happened in the week before; the reconcile names the withdrawal that paid it.
-The bank can't show the cash on hand, so the timeline starts Cash at what covered the cash bills already due.
+from its account into it, an ATM deposit moves it back, and the **Cash** tab records the rest by hand.
+Rent's cash comes out of **Bills**: the timeline expects an ATM withdrawal from Bills on each rent day, unless one
+(at least the rent) already happened in the week before.
+
+**Cash tab** (hand-entered): Date, Description, Amount (+ in, − out), Line, Note. Line is the SnapShot line it
+counts against (Rent, Groceries…), or blank. Its first row is the cash on hand when you start it; from that day on,
+Cash is that plus every entry and every ATM withdrawal (minus deposits). With no entries Cash starts at $0.
+A cash bill (rent) counts as paid only when the Cash tab has it on its line; one that's due and not entered shows
+as *not paid* and isn't projected (it's a debt: the **Debts** tab, which the code doesn't read). Entries count
+everywhere bank transactions do: against their line, in the weekly targets, and as actual rows on the timeline.
 
 ## How a transaction is tied to a budget line
 

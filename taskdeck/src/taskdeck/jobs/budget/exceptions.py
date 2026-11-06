@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from .data import Txn, money
+from .data import Txn, money, sheet_date
 from .snapshot import cents
 
 SET_ASIDE, DISPUTED = "set aside", "disputed"
@@ -31,19 +31,6 @@ class Entry:
                 and (self.amount is None or -t.amount == self.amount))
 
 
-def _date(text: str) -> date | None:
-    parts = text.strip().split("/")
-    try:
-        if len(parts) == 3:
-            m, d, y = (int(p) for p in parts)
-            return date(y + 2000 if y < 100 else y, m, d)
-        if "-" in text:
-            return date.fromisoformat(text.strip())
-    except ValueError:
-        return None
-    return None
-
-
 def parse(values: list[list[Any]], tab: str = "Exceptions") -> list[Entry]:
     """Rows under the header row (Match, Date, Amount, Status, Note); rows without a Match or a known
     Status are skipped."""
@@ -61,7 +48,7 @@ def parse(values: list[list[Any]], tab: str = "Exceptions") -> list[Entry]:
         if not match or status not in (SET_ASIDE, DISPUTED):
             continue
         amount = cents(col(row, "amount"))
-        out.append(Entry(match, status, _date(col(row, "date")), abs(amount) if amount else None,
+        out.append(Entry(match, status, sheet_date(col(row, "date")), abs(amount) if amount else None,
                               col(row, "note")))
     return out
 

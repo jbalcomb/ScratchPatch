@@ -10,7 +10,7 @@ from taskdeck.shared.google import (
     GoogleError, ServiceAccountCredentials, ServiceAccountKey, SheetsClient, a1_range, key_problems,
 )
 
-from . import exceptions, snapshot
+from . import cashbook, exceptions, snapshot
 
 
 def client(settings: dict[str, Any], timeout: float = 30) -> SheetsClient:
@@ -40,16 +40,25 @@ def read_items(settings: dict[str, Any]) -> list[snapshot.Item]:
     return snapshot.parse(values, tab, struck)
 
 
-def read_exceptions(settings: dict[str, Any]) -> list[exceptions.Entry]:
-    """The Exceptions tab's rows; none when the sheet has no such tab."""
-    tab = (settings.get("exceptions_tab") or "Exceptions").strip()
+def _optional_tab(settings: dict[str, Any], tab: str) -> list[list[Any]]:
+    """A tab's values; none when the sheet has no such tab."""
     try:
         c = client(settings)
         if not any(t.get("title") == tab for t in c.tabs()):
             return []
-        return exceptions.parse(c.get_values(a1_range(tab)), tab)
+        return c.get_values(a1_range(tab))
     except GoogleError as exc:
         raise StepError(str(exc)) from None
+
+
+def read_exceptions(settings: dict[str, Any]) -> list[exceptions.Entry]:
+    tab = (settings.get("exceptions_tab") or "Exceptions").strip()
+    return exceptions.parse(_optional_tab(settings, tab), tab)
+
+
+def read_cash(settings: dict[str, Any]):
+    """The Cash tab's rows, as transactions of the Cash account."""
+    return cashbook.parse(_optional_tab(settings, (settings.get("cash_tab") or "Cash").strip()))
 
 
 def write_tab(settings: dict[str, Any], title: str, note: str, rows: list[list]) -> str:

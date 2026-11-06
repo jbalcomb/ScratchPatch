@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from . import exceptions, timeline
-from .data import ACCOUNT_LABELS, ATM, TRANSFER, Feed, money, week_start
+from .data import ACCOUNT_LABELS, ATM, CASH, TRANSFER, Feed, money, week_start
 from .snapshot import Item
 
 WEEKS_AFTER = 3
@@ -56,6 +56,11 @@ def title(tw: ThisWeek) -> str:
     return f"Week of Wednesday {tw.start:%-m/%-d} to Tuesday {tw.start + timedelta(days=6):%-m/%-d}"
 
 
+def _balances(balances: dict[str, int]) -> str:
+    return ", ".join(("cash on hand" if a == CASH else ACCOUNT_LABELS[a]) + f" {money(balances[a])}"
+                     for a in timeline.ACCOUNTS)
+
+
 def as_text(tw: ThisWeek) -> str:
     out = [title(tw) + f" (bank data through {tw.timeline.through:%-m/%-d})"]
     for r in tw.rows:
@@ -63,17 +68,17 @@ def as_text(tw: ThisWeek) -> str:
         out.append(f"• {r.date:%a %-m/%-d} {ACCOUNT_LABELS[r.account]}: {r.description} {money(r.amount)}{mark}")
     if tw.rows:
         end = tw.rows[-1].balances
-        out.append("Balances: " + ", ".join(f"{ACCOUNT_LABELS[a]} {money(end[a])}" for a in timeline.ACCOUNTS))
+        out.append("Balances: " + _balances(end))
     out.append("")
     out.append(f"NEXT {WEEKS_AFTER} WEEKS")
     for w in tw.weeks:
         out.append(f"• Week of {w.start:%-m/%-d}: in {money(w.income)}, out {money(w.expenses)}; then "
-                   + ", ".join(f"{ACCOUNT_LABELS[a]} {money(w.balances[a])}" for a in timeline.ACCOUNTS))
+                   + _balances(w.balances))
     return "\n".join(out)
 
 
 def as_rows(tw: ThisWeek) -> list[list]:
-    labels = [ACCOUNT_LABELS[a] for a in timeline.ACCOUNTS]
+    labels = ["Cash on hand" if a == CASH else ACCOUNT_LABELS[a] for a in timeline.ACCOUNTS]
     out = [[title(tw)]] + timeline.as_rows(tw.timeline, tw.rows)
     out += [[], [f"Next {WEEKS_AFTER} weeks"], ["Week of", "Income", "Expenses", *labels, "Total"]]
     for w in tw.weeks:

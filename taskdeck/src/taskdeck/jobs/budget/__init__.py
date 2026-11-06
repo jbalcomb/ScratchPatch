@@ -19,16 +19,18 @@ THISWEEK_TAB = "ThisWeek"
 HISTORY_MONTHS = 4  # enough to tell repeats from one-offs and to average spending
 
 
-@step(Stage.EXECUTE, name="read SnapShot and Exceptions tabs and bank transactions")
+@step(Stage.EXECUTE, name="read the sheet's SnapShot, Exceptions and Cash tabs and the bank transactions")
 def load(ctx):
-    """The budget list and exceptions from the sheet, and a few months of transactions from the budget service."""
+    """The budget list, exceptions and cash entries from the sheet, and a few months of transactions from the
+    budget service."""
     ctx["items"] = sheets.read_items(ctx.settings)
     ctx["exceptions"] = sheets.read_exceptions(ctx.settings)
+    cash = sheets.read_cash(ctx.settings)
     since = data.add_months(ctx.get("month") or date.today(), -HISTORY_MONTHS)
     feed = data.fetch(ctx.settings.get("budget_url"), since)
     if feed.through is None:
         raise StepError("The budget service has no transactions yet. Upload a bank export first.")
-    ctx["feed"] = feed
+    ctx["feed"] = data.with_cash(feed, cash)
 
 
 @step(Stage.VALIDATE)
@@ -146,6 +148,12 @@ class _BudgetJob(JobPlugin):
             out.append(Problem(f"Exceptions tab: {exc}", blocking=False, fix="recheck"))
         else:
             out.append(Problem.passed(f"Exceptions tab: {len(rows)} charges set aside or disputed."))
+        try:
+            cash = sheets.read_cash(settings)
+        except StepError as exc:
+            out.append(Problem(f"Cash tab: {exc}", blocking=False, fix="recheck"))
+        else:
+            out.append(Problem.passed(f"Cash tab: {len(cash)} entries."))
         return out
 
     def commit(self, payload, settings):
