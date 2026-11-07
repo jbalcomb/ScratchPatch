@@ -2,7 +2,8 @@
 (pending at the bank, or not entered anywhere else). See the design doc.
 
 The same transaction can come from more than one place. The more official one replaces the other: bank export
-(with the cash side of each ATM withdrawal), then the Cash tab, then a TimeLine row. They match when they're in
+(with the cash side of each ATM withdrawal, dated the day it was made), then the Cash tab, then a TimeLine row.
+They match when they're in
 the same account for the same amount, and the replacing one is dated the same day or later (a purchase posts a
 day or two after it's made).
 """
@@ -14,7 +15,7 @@ from typing import Any
 
 from taskdeck.core import StepError
 
-from .data import ATM, CASH, NICKNAMES, TIMELINE, Txn, add_months, sheet_date
+from .data import NICKNAMES, TIMELINE, Txn, add_months, cash_side, is_atm, sheet_date
 from .snapshot import cents
 
 WINDOW_MONTHS = 3  # TimeLine starts on the 1st of the month three months back
@@ -60,8 +61,7 @@ def parse(values: list[list[Any]], line_names: set[str] = frozenset()) -> list[T
 
 def atm_cash_sides(bank: list[Txn]) -> list[Txn]:
     """The cash side of each ATM withdrawal (cash in) and deposit (cash out)."""
-    return [Txn(CASH, t.date, "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), -t.amount, None, ATM)
-            for t in bank if t.category == ATM and t.account != CASH]
+    return [cash_side(t) for t in bank if is_atm(t)]
 
 
 def _unmatched(entries: list[Txn], official: list[Txn]) -> list[Txn]:

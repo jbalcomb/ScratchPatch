@@ -29,6 +29,10 @@ the bank or the Cash tab has them (see below).
 The nicknames from the sheet's Accounts tab: **Daily** (the budget service's `checking`), **Bills**, **Save**
 (`savings`) and **Cash**. Cash isn't a bank account: an ATM withdrawal (category `Cash` in rules.txt) moves money
 from its account into it, an ATM deposit moves it back, and the **Cash** tab records the rest by hand.
+The Cash side is dated the day it was made, from the date in the bank's description ("ATM 11/04"), while the
+bank side keeps its posting date so it stays in step with the bank's running balance. (No date there, or one
+after the posting date or more than 10 days before it: the posting date.) Within a day, cash comes in before
+it goes out, so cash withdrawn and spent the same day never shows as negative.
 Rent's money is kept in **Bills** and its cash comes out of **Daily** (its ATM card): on each rent day the
 projection moves it from Bills to Daily and withdraws it, unless an ATM withdrawal for it (at least the rent)
 already happened in the week before.

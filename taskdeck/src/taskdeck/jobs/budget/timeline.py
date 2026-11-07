@@ -8,8 +8,8 @@ from datetime import date, timedelta
 
 from . import exceptions
 from .data import (
-    ACCOUNT_LABELS, ATM, BANK, CASH, CASH_FROM, CASH_KEPT_IN, TIMELINE, TRANSFER, Feed, Txn, add_months, cash_withdrawal, due_date, money, month_end,
-    week_start,
+    ACCOUNT_LABELS, ATM, BANK, CASH, CASH_FROM, CASH_KEPT_IN, TIMELINE, TRANSFER, Feed, Txn, add_months, cash_side,
+    cash_withdrawal, due_date, is_atm, money, month_end, week_start,
 )
 from .snapshot import Item
 
@@ -102,6 +102,18 @@ def _bills_funding(item: Item, feed: Feed, through: date, end: date, events: lis
             events.append(Row(day, "bills", "Bills funding (from Daily)", TRANSFER, item.amount, {}))
 
 
+def _cash_in_first(events: list[Row]) -> None:
+    """Within a day, the actual Cash rows in their own places, money in first: Cash has no bank balance to
+    follow, so cash withdrawn that day is there before it's spent."""
+    slots: dict[date, list[int]] = {}
+    for i, r in enumerate(events):
+        if r.kind == ACTUAL and r.account == CASH:
+            slots.setdefault(r.date, []).append(i)
+    for places in slots.values():
+        for i, r in zip(places, sorted((events[i] for i in places), key=lambda r: -r.amount)):
+            events[i] = r
+
+
 def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exceptions.Entry] = (),
           start: date | None = None) -> Timeline:
     through = feed.through
@@ -117,9 +129,12 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
     # entry is the cash on hand then). With no Cash tab entries, Cash starts at $0 here.
     cash = [t for t in feed.txns if t.account == CASH]
     origin = cash[0].date if cash else start
+    # The cash side of each ATM withdrawal or deposit, dated the day it was made (its bank side keeps the
+    # posting date, to stay in step with the bank's running balance).
+    side_of = {id(t): cash_side(t) for t in feed.txns if is_atm(t)}
+    sides = [s for s in side_of.values() if s.date >= origin]
     balances = {a: feed.balances.get(a, (0, through))[0] for a in BANK_ACCOUNTS} | {CASH: (
-        sum(t.amount for t in cash if t.date < start)
-        - sum(t.amount for t in feed.txns if t.category == ATM and t.account != CASH and origin <= t.date < start))}
+        sum(t.amount for t in cash if t.date < start) + sum(s.amount for s in sides if s.date < start))}
     actual = [t for t in feed.txns if start <= t.date and (t.date <= through or t.source != BANK)]
     for a in BANK_ACCOUNTS:
         first = next((t for t in actual if t.account == a), None)
@@ -131,9 +146,9 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
         status = applied.status_of(t)
         events.append(Row(t.date, t.account, t.description + (f" ({status})" if status else ""), t.category or "",
                           t.amount, {}, ACTUAL, t.balance, t.source == TIMELINE and t.account in BANK_ACCOUNTS))
-        if t.category == ATM and t.source == BANK and t.date >= origin:  # a withdrawal moves money into Cash
-            events.append(Row(t.date, CASH, "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), ATM,
-                              -t.amount, {}, ACTUAL))
+        side = side_of.get(id(t))
+        if side is not None and side.date >= max(origin, start):  # a withdrawal moves money into Cash
+            events.append(Row(side.date, CASH, side.description, ATM, side.amount, {}, ACTUAL))
 
     def add(day: date, item: Item, amount: int, description: str = ""):
         events.append(Row(day, _account(item, feed.txns), description or item.name, item.name, amount, {}))
@@ -190,6 +205,7 @@ def build(items: list[Item], feed: Feed, end: date | None = None, rows: list[exc
 
     # Same day: actual before projected, money in before money out (the bank's own order kept for actual rows).
     events.sort(key=lambda r: (r.date, r.kind != ACTUAL, 0 if r.kind == ACTUAL else -r.amount))
+    _cash_in_first(events)
     # A pending row (typed on TimeLine) isn't in the bank's running balance yet: carry it on top of it, so the
     # balances match the bank's screen.
     pending = dict.fromkeys(BANK_ACCOUNTS, 0)
