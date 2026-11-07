@@ -8,7 +8,7 @@ Design doc: <https://claude.ai/artifact/4GTHDgziygR7nYupHYqdcj> (threat model, m
 components, phase plan).
 
 So far: the signed envelope, the fixed screening stage, and the Phase A gateway that admits
-messages over HTTP and publishes them to ntfy.
+messages over HTTP and publishes them to a private ntfy, with install scripts for both.
 
 ```
 sender ──make_submission──▶ gateway.admit ──signed envelope──▶ broker ──▶ agent.receive ──▶ toppings ──▶ action tier
@@ -25,21 +25,39 @@ sender ──make_submission──▶ gateway.admit ──signed envelope──�
 | `courier/server.py` | The Phase A gateway HTTP API: `POST /messages`, per-sender rate limit, duplicate-ID handling, an audit log with no bodies. |
 | `courier/store.py` | Gateway key and `senders.json` (public keys and secret hashes only; re-read when it changes). |
 | `courier/ntfy.py` | Publishes admitted envelopes to a self-hosted ntfy topic per channel. |
-| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send`. |
+| `courier/ntfy_setup.py` | Writes ntfy's private `server.yml`: no anonymous access, a write-only gateway token, a read-only device token. |
+| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · ntfy-setup · ntfy-run`. |
 
 Line endings: LF is canonical everywhere inside Courier (stored, signed, hashed, sent), like git's
 object store. Agents convert to the host's form only when text leaves Courier.
 
-## Run the gateway (Phase A)
-
-The gateway listens on `127.0.0.1:8766` and publishes to ntfy (default `http://127.0.0.1:2586`);
-put `tailscale serve` in front of it, as Home Runner does.
+## Install (Phase A: ntfy + gateway)
 
 ```powershell
-$env:PYTHONPATH = "src"
-.venv\Scripts\python -m courier add-sender laptop-agent --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
-.venv\Scripts\python -m courier serve --ntfy http://127.0.0.1:2586
-.venv\Scripts\python -m courier send clip "git status" --creds $HOME\.config\courier\laptop-agent.sender.json
+# Windows: two logon tasks, "Courier ntfy" and "Courier Gateway", restarted within 5 minutes if they die
+powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+```
+```bash
+# Linux: systemd user services courier-ntfy and courier-gateway (Restart=always)
+bash scripts/install-linux.sh
+```
+
+The script creates `.venv`, downloads ntfy 2.35.0 into `bin/` (refused unless its SHA-256 matches
+the pinned one), writes `~/.config/courier` (readable only by you), starts both services, and runs
+`tailscale serve` so devices reach them at `https://<machine>.<tailnet>.ts.net:8766` (gateway) and
+`:2586` (ntfy). It prints the gateway's public key and where the device token is. Rerunning it is
+safe; keys, tokens and senders are kept. macOS can't host the broker (ntfy's server doesn't run
+there), but it can run device agents.
+
+ntfy is private: anonymous access is denied and its web app is off. The gateway holds a
+write-only token (`ntfy-gateway.token`) and devices share a read-only one (`ntfy-device.token`),
+so nothing reaches a channel except through the gateway. Per-device broker credentials come in
+Phase B.
+
+```powershell
+cd src
+..\.venv\Scripts\python -m courier add-sender laptop-agent --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
+..\.venv\Scripts\python -m courier send clip "git status" --creds $HOME\.config\courier\laptop-agent.sender.json
 ```
 
 `add-sender` writes the sender's credentials file once (private key + bearer secret); the gateway
@@ -81,5 +99,5 @@ python -m venv .venv
 
 ## Next (Phase A)
 
-Install scripts (logon task / systemd user unit + `tailscale serve`) for the gateway and ntfy, a
-desktop agent with a policy file and clipboard writes, and a TaskDeck job that sends.
+A desktop agent that subscribes to ntfy with the device token, runs `receive`, applies a policy
+file and writes the clipboard; then a TaskDeck job that sends.
