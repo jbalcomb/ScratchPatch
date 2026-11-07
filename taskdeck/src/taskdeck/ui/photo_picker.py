@@ -3,7 +3,9 @@
 The grid shows the photos in a folder and its subfolders, newest first, under day headings, starting at
 Photos (the camera's DCIM folder). Each photo has a check circle in its upper right corner; tapping a photo
 selects it and the circle shows its number, the order the photos are added in (a receipt goes top to
-bottom). Once anything is selected, the top bar shows how many, with Clear, Select all and **Add**.
+bottom). Once anything is selected, the top bar shows how many, with Clear, Select all and **Add**. For a
+field whose photos come in groups (``Field.grouped``, e.g. "product"), selecting several photos offers two
+buttons instead: **1 product** (all of them are one product) and **N products** (each photo its own).
 Long-press a photo to see it full size.
 
 Thumbnails come from the small JPEG a camera stores inside each photo (``shared.photos.exif_thumbnail``),
@@ -32,9 +34,10 @@ TURNS = {3: math.pi, 6: math.pi / 2, 8: -math.pi / 2}  # EXIF orientation -> rot
 
 
 class PhotoPicker:
-    def __init__(self, app: "TaskDeckApp", title: str, on_pick: Callable[[list[Path]], None],
-                 accept: Callable[[str], bool] = photos.is_image, start: Path | None = None):
-        self.app, self.title, self.on_pick, self.accept = app, title, on_pick, accept
+    def __init__(self, app: "TaskDeckApp", title: str, on_pick: Callable[[list[Path], bool], None],
+                 accept: Callable[[str], bool] = photos.is_image, start: Path | None = None, noun: str = ""):
+        """on_pick(photos in the order picked, separate): ``separate`` = one group per photo (only with ``noun``)."""
+        self.app, self.title, self.on_pick, self.accept, self.noun = app, title, on_pick, accept, noun
         self.photos_loc = files.photos_location()
         self.locations = [self.photos_loc] + [loc for loc in files.locations() if loc.path != self.photos_loc.path]
         self.folder = start if start and start.is_dir() else self.photos_loc.path
@@ -55,9 +58,9 @@ class PhotoPicker:
         self.load(update=False)
 
     @classmethod
-    def pick(cls, app: "TaskDeckApp", on_pick: Callable[[list[Path]], None], title: str = "Choose photos",
-             accept: Callable[[str], bool] = photos.is_image, start: Path | None = None) -> "PhotoPicker":
-        picker = cls(app, title, on_pick, accept, start)
+    def pick(cls, app: "TaskDeckApp", on_pick: Callable[[list[Path], bool], None], title: str = "Choose photos",
+             accept: Callable[[str], bool] = photos.is_image, start: Path | None = None, noun: str = "") -> "PhotoPicker":
+        picker = cls(app, title, on_pick, accept, start, noun)
         app.push(picker)
         return picker
 
@@ -205,24 +208,35 @@ class PhotoPicker:
         n = len(self.selected)
         if not n:
             return ft.AppBar(title=ft.Text(self.title))
+        actions: list[ft.Control] = [ft.IconButton(ft.Icons.SELECT_ALL, tooltip="Select all shown",
+                                                   on_click=self.select_all)]
+        if n == 1:
+            actions.append(ft.IconButton(ft.Icons.ZOOM_IN, tooltip="View the selected photo",
+                                         on_click=lambda e: self._enlarge(self.selected[0])))
+        if self.noun and n > 1:  # two ways to add: all of them as one thing, or one thing per photo
+            actions += [
+                ft.OutlinedButton(f"1 {self.noun}", tooltip=f"All {n} photos are one {self.noun}",
+                                  on_click=lambda e: self.submit(separate=False)),
+                ft.Container(ft.FilledButton(f"{n} {self.noun}s", tooltip=f"Each photo is its own {self.noun}",
+                                             on_click=lambda e: self.submit(separate=True)),
+                             padding=ft.Padding.only(left=6, right=8)),
+            ]
+        else:
+            actions.append(ft.Container(ft.FilledButton(f"Add {n}", icon=ft.Icons.CHECK, on_click=lambda e: self.submit()),
+                                        padding=ft.Padding.only(right=8)))
         return ft.AppBar(
             leading=ft.IconButton(ft.Icons.CLOSE, tooltip="Clear the selection", on_click=self.clear),
-            title=ft.Text(f"{n} selected"),
+            # the count alone, as Google Photos shows it: "3 selected" doesn't fit beside the buttons on a phone
+            title=ft.Text(str(n), tooltip=f"{n} selected"),
             bgcolor=ft.Colors.SECONDARY_CONTAINER,
-            actions=[
-                ft.IconButton(ft.Icons.SELECT_ALL, tooltip="Select all shown", on_click=self.select_all),
-                ft.IconButton(ft.Icons.ZOOM_IN, tooltip="View the selected photo", disabled=n != 1,
-                              on_click=lambda e: self._enlarge(self.selected[0])),
-                ft.Container(ft.FilledButton(f"Add {n}", icon=ft.Icons.CHECK, on_click=self.submit),
-                             padding=ft.Padding.only(right=8)),
-            ],
+            actions=actions,
         )
 
-    def submit(self, e=None) -> None:
+    def submit(self, separate: bool = False) -> None:
         chosen = list(self.selected)
         self.app.back()
         if chosen:
-            self.on_pick(chosen)
+            self.on_pick(chosen, separate)
 
 
 def _is_under(path: Path, root: Path) -> bool:

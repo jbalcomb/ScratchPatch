@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 import flet as ft
 
-from taskdeck.core import Field, FieldKind
+from taskdeck.core import Field, FieldKind, join_groups, split_groups
 
 from . import thumbnails
 
@@ -70,7 +70,8 @@ class FieldControl:
         if value == self._shown:
             return
         self._shown = value
-        self.thumbs.content = thumbnails.strip(value)
+        self.thumbs.content = thumbnails.grouped(value, self.field.grouped) if self.field.grouped else \
+            thumbnails.strip(value)
         try:
             self.thumbs.update()
         except RuntimeError:  # not on screen yet: it is drawn with the form
@@ -106,15 +107,21 @@ class FieldControl:
         if self._on_change:
             self._on_change(None)
 
-    def picked_many(self, paths: list[str]) -> None:
-        """Several files chosen at once (the photo picker), in order: each added like ``picked``."""
+    def picked_many(self, paths: list[str], separate: bool = False) -> None:
+        """Several files chosen at once (the photo picker), in order. A grouped field gets them as one new group,
+        or with ``separate`` one group each (one product per photo); any other FILES field adds them as lines."""
         if self.field.kind != FieldKind.FILES:
             if paths:
                 self.picked(paths[0])
             return
-        lines = [line for line in str(self.input.value or "").splitlines() if line.strip()]
-        lines += [p for p in paths if p not in lines]
-        self.input.value = "\n".join(lines)
+        if self.field.grouped:
+            groups = split_groups(self.input.value)
+            new = [[p] for p in paths] if separate else [list(paths)]
+            self.input.value = join_groups(groups + [g for g in new if g])
+        else:
+            lines = [line for line in str(self.input.value or "").splitlines() if line.strip()]
+            lines += [p for p in paths if p not in lines]
+            self.input.value = "\n".join(lines)
         self.input.update()
         self.refresh_thumbnails()
         if self._on_change:

@@ -430,3 +430,53 @@ def test_multipart_helper_escapes_names():
     assert parts[0] == ("note", None, b"a\r\nb")
     assert parts[1][1] == "we%22ird.jpg" and parts[1][2] == b"x"
     assert b"Content-Type: image/jpeg" in body
+
+
+def test_several_products_at_once(service, settings, tmp_path, monkeypatch):
+    """Groups separated by a blank line: one product each, sent in order, read together, one row each."""
+    monkeypatch.setattr(photos, "READ_TIMEOUT_SECONDS", 0.2)
+    a, b, c, d = photo_files(tmp_path, "milk-front.jpg", "milk-label.jpg", "soap.jpg", "eggs.jpg").splitlines()
+    ids = iter([26, 27, 28])
+    plain = service.answer
+
+    def answer(req):
+        if req["method"] == "POST" and req["path"] == "/api/products":
+            if b"soap.jpg" in req["body"]:
+                return 400, {"error": "soap.jpg is not a photo"}
+            return 201, {"id": next(ids), "status": "pending"}
+        return plain(req)
+
+    service.answer = answer
+    service.pending_polls = 0
+    service.readings["/api/products/27"] = {"id": 27, "status": "review", "bucket": "review", "name": "Eggs",
+                                            "brand": None, "size": "large", "suspect": ["size"]}
+    service.readings["/api/products/28"] = {"id": 28, "status": "pending"}  # never read in time
+    report = run(photos.PRODUCT, settings, photos=f"{a}\n{b}\n\n{c}\n\n{d}\n\n{c}")
+    assert report.ok, report.error
+    posts = [parse_multipart(r["content_type"], r["body"]) for r in service.requests if r["method"] == "POST"]
+    assert [[f for _, f, _ in p] for p in posts] == [["milk-front.jpg", "milk-label.jpg"], ["soap.jpg"],
+                                                       ["eggs.jpg"], ["soap.jpg"]]
+    assert report.result.rows == [
+        ("1. #26", "Great Value Whole milk 1 gal · Saved: every check passed"),
+        ("Product 2", "not sent: soap.jpg is not a photo"),
+        ("3. #27", "Eggs large · Needs a look · check size"),
+        ("Product 4", "not sent: soap.jpg is not a photo"),
+        ("Products page", f"{service.url}/products"),
+    ]
+    assert report.result.title == "2 of 4 products sent · 2 read"
+    assert report.result.warning == "1 needs a look: check it on the review page."
+    assert report.result.images == [a, c, d, c]  # the first photo of each product
+
+
+def test_products_all_refused_is_an_error(service, settings, tmp_path):
+    service.errors["POST /api/products"] = (503, {"error": "the workstation is busy"})
+    report = run(photos.PRODUCT, settings, photos=photo_files(tmp_path, "a.jpg", "b.jpg").replace("\n", "\n\n"))
+    assert not report.ok and report.error == "the workstation is busy"
+
+
+def test_grouped_field_value():
+    from taskdeck.core import Field, join_groups, split_groups
+    f = Field.files("photos", "Photos", grouped="product")
+    assert f.coerce("a.jpg\nb.jpg\n\n\nc.jpg\n  \n") == [["a.jpg", "b.jpg"], ["c.jpg"]]
+    assert Field.files("photos", "Photos").coerce("a.jpg\n\nc.jpg") == ["a.jpg", "c.jpg"]
+    assert join_groups(split_groups("a\nb\n\nc")) == "a\nb\n\nc"

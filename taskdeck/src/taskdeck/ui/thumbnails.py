@@ -6,6 +6,8 @@ from pathlib import Path
 
 import flet as ft
 
+from taskdeck.core import split_groups
+
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
 WIDTH, HEIGHT = 120, 160  # tall, for receipts; the whole photo is shown, not a crop
 MOST = 8  # a strip shows at most this many; more are counted
@@ -43,6 +45,20 @@ def strip(value: str | list[str] | None) -> ft.Control | None:
     if len(paths) > MOST:
         tiles.append(ft.Text(f"+{len(paths) - MOST} more"))
     return ft.Row(tiles, wrap=True, spacing=8, run_spacing=8) if tiles else None
+
+
+def grouped(value: str | None, noun: str) -> ft.Control | None:
+    """A grouped field's thumbnails: one labelled strip per group ("Product 1", "Product 2", ...); one group is
+    shown like an ungrouped field."""
+    groups = [g for g in split_groups(value) if image_paths(g)]
+    if len(groups) <= 1:
+        return strip(groups[0] if groups else None)
+    parts: list[ft.Control] = []
+    for n, group in enumerate(groups, 1):
+        row = strip(group)
+        if row:
+            parts += [ft.Text(f"{noun.capitalize()} {n}", size=13, weight=ft.FontWeight.W_600), row]
+    return ft.Column(parts, spacing=4)
 
 
 def enlarge(page: ft.Page, data: bytes, name: str) -> None:

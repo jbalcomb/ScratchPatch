@@ -322,5 +322,14 @@ def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
     screen._browse_file(fc)
     assert "file_browser" not in opened and opened["title"] == "Choose Receipt photos"
     assert opened["accept"]("IMG_1.JPG") and opened["accept"]("s.webp") and not opened["accept"]("clip.heic")
-    opened["on_pick"]([tmp_path / "top.jpg", tmp_path / "bottom.jpg"])
+    opened["on_pick"]([tmp_path / "top.jpg", tmp_path / "bottom.jpg"], False)
     assert fc.value.splitlines() == [str(tmp_path / "top.jpg"), str(tmp_path / "bottom.jpg")]
+    assert opened["noun"] == ""  # a receipt's photos are one receipt: one Add button
+
+    screen = JobScreen(app, photos.PRODUCT)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert opened["noun"] == "product"
+    opened["on_pick"]([tmp_path / "milk.jpg", tmp_path / "eggs.jpg"], True)
+    assert fc.value == f"{tmp_path / 'milk.jpg'}\n\n{tmp_path / 'eggs.jpg'}"

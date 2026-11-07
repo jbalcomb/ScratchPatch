@@ -29,30 +29,35 @@ def read_photos(ctx):
 @step(Stage.EXECUTE, name="send receipt")
 def send_receipt(ctx):
     note = (ctx.get("note") or "").strip()
-    ctx["sent"] = api.call(ctx.settings, "POST", "/api/receipts", fields=[("note", note)] if note else [],
-                           files=ctx["parts"], timeout=UPLOAD_TIMEOUT)
+    ctx["sent_all"] = [api.call(ctx.settings, "POST", "/api/receipts", fields=[("note", note)] if note else [],
+                                files=ctx["parts"], timeout=UPLOAD_TIMEOUT)]
+    ctx["send_errors"] = [None]
 
 
 def wait_for_reading(path: str):
-    """A step that asks the service every READ_POLL_SECONDS whether the photos sent are read yet (``path`` with
-    ``{id}``), up to READ_TIMEOUT_SECONDS. Leaves ``ctx["reading"]`` = the record, or None if not read in time."""
+    """A step that asks the service every READ_POLL_SECONDS whether everything sent (``ctx["sent_all"]``) has
+    been read (``path`` with ``{id}``), up to READ_TIMEOUT_SECONDS. Leaves ``ctx["readings"]``, one per thing
+    sent: its record, or None if not read in time (or not sent); ``ctx["reading_errors"]`` when asking failed."""
 
     @step(Stage.EXECUTE, name="wait for reading")
     def wait(ctx):
-        ctx["reading"], ctx["reading_error"] = None, None
-        url_path = path.format(id=ctx["sent"].get("id"))
+        sent = ctx["sent_all"]
+        ctx["readings"], ctx["reading_errors"] = [None] * len(sent), [None] * len(sent)
+        waiting = {i for i, s in enumerate(sent) if s}
         deadline = time.monotonic() + READ_TIMEOUT_SECONDS
-        while True:
-            ctx.check_cancelled()
-            try:
-                record = api.call(ctx.settings, "GET", url_path)
-            except StepError as exc:  # the photos are sent; only the wait stops
-                ctx["reading_error"] = str(exc)
-                return
-            if record.get("status") != "pending":
-                ctx["reading"] = record
-                return
-            if time.monotonic() >= deadline:
+        while waiting:
+            for i in sorted(waiting):
+                ctx.check_cancelled()
+                try:
+                    record = api.call(ctx.settings, "GET", path.format(id=sent[i].get("id")))
+                except StepError as exc:  # the photos are sent; only the wait for this one stops
+                    ctx["reading_errors"][i] = str(exc)
+                    waiting.discard(i)
+                    continue
+                if record.get("status") != "pending":
+                    ctx["readings"][i] = record
+                    waiting.discard(i)
+            if not waiting or time.monotonic() >= deadline:
                 return
             pause_until = time.monotonic() + READ_POLL_SECONDS
             while time.monotonic() < pause_until:
@@ -73,20 +78,21 @@ def _verdict(reading: dict, ok_status: str, retake_what: str) -> tuple[str, str 
     return "Needs a look", "Some of this reading looks doubtful: check the marked fields on the page."
 
 
-def _not_read(ctx, rows: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], str]:
-    if ctx.get("reading_error"):
-        return rows + [("Status", "sent")], f"Sent, but the reading couldn't be checked: {ctx['reading_error']}"
+def _not_read(ctx, i: int, rows: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], str]:
+    error = ctx["reading_errors"][i]
+    if error:
+        return rows + [("Status", "sent")], f"Sent, but the reading couldn't be checked: {error}"
     return rows + [("Status", "still being read")], "Still being read on the workstation; the page shows it when it's done."
 
 
 @step(Stage.PRESENT)
 def show_receipt(ctx):
-    sent, reading = ctx["sent"], ctx.get("reading")
+    sent, reading = ctx["sent_all"][0], ctx["readings"][0]
     rid = sent.get("id")
     rows = [("Receipt", f"#{rid}"), ("Photos", str(sent.get("photos", len(ctx["parts"]))))]
     page = ("Review page", api.page_url(ctx.settings, f"/review/{rid}"))
     if not reading:
-        rows, text = _not_read(ctx, rows)
+        rows, text = _not_read(ctx, 0, rows)
         ctx.result = Result(title=f"Receipt #{rid} sent", rows=rows + [page], text=text, images=list(ctx["photos"]))
         return
     status, warning = _verdict(reading, "approved", "The total or date")
@@ -102,29 +108,87 @@ def show_receipt(ctx):
         rows=rows + [page], warning=warning, images=list(ctx["photos"]))
 
 
+# ---- products: each group of photos (``Field.grouped``) is one product -------------------------------------
+
+@step(Stage.VALIDATE)
+def read_product_photos(ctx):
+    groups = ctx["photos"]
+    if not groups:
+        raise StepError("Add at least one photo.")
+    ctx["groups"] = groups
+    ctx["parts_by_group"] = [api.read_files(g, api.PHOTO_EXTENSIONS) for g in groups]
+
+
 @step(Stage.EXECUTE, name="send product photos")
-def send_product(ctx):
-    ctx["sent"] = api.call(ctx.settings, "POST", "/api/products", files=ctx["parts"], timeout=UPLOAD_TIMEOUT)
+def send_products(ctx):
+    """One product per group. A product the service refuses is reported; the others still go."""
+    ctx["sent_all"], ctx["send_errors"] = [], []
+    for parts in ctx["parts_by_group"]:
+        ctx.check_cancelled()
+        try:
+            ctx["sent_all"].append(api.call(ctx.settings, "POST", "/api/products", files=parts, timeout=UPLOAD_TIMEOUT))
+            ctx["send_errors"].append(None)
+        except StepError as exc:
+            ctx["sent_all"].append(None)
+            ctx["send_errors"].append(str(exc))
+    if not any(ctx["sent_all"]):
+        raise StepError(ctx["send_errors"][0])
+
+
+def _product_label(reading: dict) -> str:
+    return " ".join(x for x in (reading.get("brand"), reading.get("name"), reading.get("size")) if x) or "name not read"
 
 
 @step(Stage.PRESENT)
 def show_product(ctx):
-    sent, reading = ctx["sent"], ctx.get("reading")
+    if len(ctx["groups"]) > 1:
+        _show_products(ctx)
+        return
+    sent, reading = ctx["sent_all"][0], ctx["readings"][0]
     pid = sent.get("id")
-    rows = [("Product", f"#{pid}"), ("Photos", str(len(ctx["parts"])))]
+    photos = ctx["groups"][0]
+    rows = [("Product", f"#{pid}"), ("Photos", str(len(photos)))]
     page = ("Product page", api.page_url(ctx.settings, f"/products/{pid}"))
     if not reading:
-        rows, text = _not_read(ctx, rows)
-        ctx.result = Result(title=f"Product #{pid} added", rows=rows + [page], text=text, images=list(ctx["photos"]))
+        rows, text = _not_read(ctx, 0, rows)
+        ctx.result = Result(title=f"Product #{pid} added", rows=rows + [page], text=text, images=list(photos))
         return
     status, warning = _verdict(reading, "ready", "The product name")
     rows += [("Name", reading.get("name") or "—"), ("Brand", reading.get("brand") or "—"),
              ("Size", reading.get("size") or "—"), ("Status", status)]
     if reading.get("suspect"):
         rows.append(("Check", ", ".join(reading["suspect"])))
-    label = " ".join(x for x in (reading.get("brand"), reading.get("name"), reading.get("size")) if x) or "name not read"
-    ctx.result = Result(title=f"Product #{pid}: {label}", rows=rows + [page], warning=warning,
-                        images=list(ctx["photos"]))
+    ctx.result = Result(title=f"Product #{pid}: {_product_label(reading)}", rows=rows + [page], warning=warning,
+                        images=list(photos))
+
+
+def _show_products(ctx):
+    """Several products sent at once: one row each, in the order picked, beside the first photo of each."""
+    rows, sent_n, read_n, look_n = [], 0, 0, 0
+    for i, group in enumerate(ctx["groups"]):
+        sent, reading, error = ctx["sent_all"][i], ctx["readings"][i], ctx["send_errors"][i]
+        if not sent:
+            rows.append((f"Product {i + 1}", f"not sent: {error}"))
+            continue
+        sent_n += 1
+        key = f"{i + 1}. #{sent.get('id')}"
+        if not reading:
+            rows.append((key, "sent; couldn't check the reading" if ctx["reading_errors"][i] else "still being read"))
+            continue
+        read_n += 1
+        status, warning = _verdict(reading, "ready", "The product name")
+        look_n += warning is not None
+        check = f" · check {', '.join(reading['suspect'])}" if reading.get("suspect") else ""
+        rows.append((key, f"{_product_label(reading)} · {status}{check}"))
+    n = len(ctx["groups"])
+    parts = [f"{read_n} read"] + ([f"{sent_n - read_n} still being read"] if sent_n > read_n else [])
+    rows.append(("Products page", api.page_url(ctx.settings, "/products")))
+    sent_words = f"{n} products sent" if sent_n == n else f"{sent_n} of {n} products sent"
+    ctx.result = Result(
+        title=f"{sent_words} · {', '.join(parts)}",
+        rows=rows, images=[g[0] for g in ctx["groups"]],
+        warning=f"{look_n} need{'s' if look_n == 1 else ''} a look: check {'it' if look_n == 1 else 'them'} on the review "
+                f"page." if look_n else None)
 
 
 class ReceiptCapture(api.PhotoOcrJob):
@@ -149,17 +213,20 @@ class ReceiptCapture(api.PhotoOcrJob):
 class ProductPhoto(api.PhotoOcrJob):
     id = "photo_ocr_product_photo"
     title = "Product photo"
-    description = "Add a product to the catalog from one or more photos of it; the service reads name, brand and size."
+    description = ("Add products to the catalog from their photos, one product or several at once; the service reads "
+                   "name, brand and size.")
     icon = "ADD_A_PHOTO_OUTLINED"
     tags = ("product", "photo", "catalog", "gallery", "groceries", "receipts", "immich")
     fields = (Field.files("photos", "Product photos", required=True, extensions=api.PHOTO_EXTENSIONS, preview=True,
-                          help="One or more photos of one product, e.g. the front and the label."),)
+                          grouped="product",
+                          help="Add… several photos, then 1 product (front and label of one product) or N products "
+                               "(each photo its own product). Products are separated by a blank line."),)
     uses_immich = True
-    run_label = "Send photos"
+    run_label = "Send products"
 
     def build_pipeline(self):
-        return Pipeline([api.service_configured, read_photos, send_product, wait_for_reading("/api/products/{id}"),
-                         show_product])
+        return Pipeline([api.service_configured, read_product_photos, send_products,
+                         wait_for_reading("/api/products/{id}"), show_product])
 
 
 CAPTURE = ReceiptCapture()

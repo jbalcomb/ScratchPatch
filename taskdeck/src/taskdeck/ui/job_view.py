@@ -233,8 +233,8 @@ class JobScreen:
         is, else where another file field's file is (e.g. Supporting DLLs: the executable's folder)."""
         exts = tuple(e.lower() for e in fc.field.extensions)
         if fc.field.preview:  # a photo field: the photo grid, starting at the camera's photos (DCIM)
-            PhotoPicker.pick(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
-                             title=f"Choose {fc.field.label}",
+            PhotoPicker.pick(self.app, lambda paths, separate: fc.picked_many([str(p) for p in paths], separate),
+                             title=f"Choose {fc.field.label}", noun=fc.field.grouped,
                              accept=(lambda name: name.lower().endswith(exts)) if exts else photos.is_image)
             return
         candidates = [line.strip() for line in str(fc.value or "").splitlines() if line.strip()][-1:] + \

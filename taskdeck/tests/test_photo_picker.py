@@ -113,7 +113,8 @@ def picker(tmp_path, monkeypatch):
     monkeypatch.setattr(files, "locations", lambda: [files.Location("Downloads", tmp_path, "DOWNLOAD")])
     picked = []
     accept = lambda name: name.lower().endswith((".jpg", ".png"))  # noqa: E731
-    p = PhotoPicker.pick(FakeApp(), picked.append, title="Choose Receipt photos", accept=accept)
+    p = PhotoPicker.pick(FakeApp(), lambda paths, separate: picked.append((paths, separate)),
+                         title="Choose Receipt photos", accept=accept)
     p.picked = picked
     return p
 
@@ -138,14 +139,14 @@ def test_multi_select_numbers_photos_in_the_order_picked(picker):
     picker.toggle(c)
     picker.toggle(a)
     picker.toggle(b)
-    assert picker.view.appbar.title.value == "3 selected"
+    assert picker.view.appbar.title.value == "3"
     assert [picker.circles[x].content.value for x in (c, a, b)] == ["1", "2", "3"]
     picker.toggle(a)  # unselected: the others renumber
     assert picker.circles[a].content is None and picker.circles[b].content.value == "2"
     add = picker.view.appbar.actions[-1].content
     assert add.content == "Add 2"
     add.on_click(None)
-    assert picker.app.backs == 1 and picker.picked == [[c, b]]
+    assert picker.app.backs == 1 and picker.picked == [([c, b], False)]
 
 
 def test_clear_and_select_all(picker):
@@ -174,3 +175,29 @@ def test_field_takes_the_picked_photos_in_order(tmp_path, monkeypatch):
     fc.picked_many([str(c), str(a), str(b)])
     assert fc.value.splitlines() == [str(a), str(c), str(b)]
     assert len(fc.thumbs.content.controls) == 3
+
+
+def test_grouped_fields_get_two_add_buttons(picker):
+    picker.noun = "product"
+    a, b, c = (p.path for p in picker.all[:3])
+    picker.toggle(a)
+    assert "Add 1" in [getattr(x.content, "content", None) for x in picker.view.appbar.actions if isinstance(x, ft.Container)]
+    picker.toggle(b)
+    picker.toggle(c)
+    one, many = picker.view.appbar.actions[-2], picker.view.appbar.actions[-1].content
+    assert (one.content, many.content) == ("1 product", "3 products")
+    assert all(not isinstance(x, ft.IconButton) or x.icon != ft.Icons.ZOOM_IN for x in picker.view.appbar.actions)
+    many.on_click(None)
+    assert picker.picked == [([a, b, c], True)]
+
+
+def test_grouped_field_adds_products(tmp_path, monkeypatch):
+    a, b, c = (str(camera_jpeg(tmp_path / n)) for n in ("a.jpg", "b.jpg", "c.jpg"))
+    fc = FieldControl(Field.files("photos", "Product photos", preview=True, grouped="product"), "")
+    monkeypatch.setattr(fc.input, "update", lambda: None)
+    fc.picked_many([a, b])              # 1 product: front and label
+    fc.picked_many([c, a], separate=True)  # 2 products, one photo each
+    assert fc.value == f"{a}\n{b}\n\n{c}\n\n{a}"
+    texts = [x.value for x in fc.thumbs.content.controls if isinstance(x, ft.Text)]
+    assert texts == ["Product 1", "Product 2", "Product 3"]
+    assert fc.field.coerce(fc.value) == [[a, b], [c], [a]]
