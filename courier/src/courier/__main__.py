@@ -206,7 +206,7 @@ channel = "clip"
 action = "clipboard"       # inbox | notify | clipboard | open-url
 clear_after = 90           # seconds until the clipboard is cleared, if it still holds this; 0 keeps it
 allow_multiline = false    # pasting a line break into a terminal runs the line
-allow_shell_chars = false  # ; | & $ ` < >
+allow_shell_chars = true   # ; | & $ ` < > on a single line: nothing runs until you press Enter
 toppings = [
   {{ filter = "drop-labels", labels = ["secret", "ai_injection", "ai_suspicious"] }},
 ]
