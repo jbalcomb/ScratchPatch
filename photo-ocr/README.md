@@ -307,3 +307,9 @@ These were written from the services' documentation and tested only against the 
   receipt photo or not. That work belongs in budget. Open with it: whether photo-ocr's store moves to the
   same Postgres (the PRD's "SQLite or Postgres?" question), which would let budget read receipts directly
   instead of through this service's API. No Postgres runs on the workstation yet.
+- **Several receipts at once: grouping in the photo picker** (option C, noted 2026-11-07): receipts are
+  usually several photos each and sometimes come in batches, so Receipt capture should let you group photos
+  in the picker. Select a receipt's photos top to bottom, tap **+ Next receipt**, select the next, and so on;
+  the check circles show 1a, 1b, 2a, … and one **Add** sends every group. It reuses what Product photo already
+  has (`Field.grouped`, one group per item, sent and read as one batch). Product photo keeps its two buttons
+  (**1 product** / **N products**, option A), which were tried on the phone and kept.
