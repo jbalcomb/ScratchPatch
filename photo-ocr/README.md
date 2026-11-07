@@ -290,8 +290,11 @@ accounts or OCR installs.
 
 These were written from the services' documentation and tested only against the stand-ins:
 
-- **Immich API calls** (`immich.py`): upload, albums, original download, and metadata search for the external
-  library. The upload retries without the `deviceAssetId`/`deviceId` fields if the server refuses them.
+- **Immich API calls** (`immich.py`): written for Immich v3 (the workstation runs v3.3.6). An album's photos
+  are listed with `POST /search/metadata` filtered by the album, since v3's album response carries only
+  `assetCount`. The `albumIds`, `libraryId` and `page` search fields used there were deprecated in v3.2 (still
+  accepted on v3.3.6); their replacements are a filter object and cursor paging. The upload retries without
+  the `deviceAssetId`/`deviceId` fields if the server refuses them.
 - **Google Photos Picker** (`picker.py`): OAuth, sessions, media items, download.
 - **The engines on real photos:** `qwen3-vl-8b` and `paddleocr-vl` load on the workstation but haven't read
   a receipt or product yet; PaddleOCR and docTR haven't been run (Tesseract has). The checks and buckets are

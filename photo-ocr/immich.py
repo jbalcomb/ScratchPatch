@@ -67,9 +67,10 @@ class Immich:
             self._albums[name] = found[0]["id"] if found else self._req("POST", "/albums", {"albumName": name})["id"]
         return self._albums[name]
 
-    def album_assets(self, name):
-        """[{id, originalFileName, originalPath, ...}] in the album."""
-        return self._req("GET", f"/albums/{self.album_id(name)}")["assets"]
+    def album_assets(self, name, page_size=1000, max_pages=40):
+        """[{id, originalFileName, originalPath, ...}] in the album. Immich v3's album response has only
+        assetCount, not the photos, so they are listed with a metadata search filtered by the album."""
+        return self._search({"albumIds": [self.album_id(name)]}, page_size, max_pages)
 
     def add_to_album(self, name, asset_ids):
         if asset_ids:
@@ -100,11 +101,17 @@ class Immich:
 
     def library_assets(self, library_id, page_size=250, max_pages=40):
         """Assets of an external library (the Syncthing folder), newest first, with their originalPath."""
+        return self._search({"libraryId": library_id, "order": "desc"}, page_size, max_pages)
+
+    def _search(self, filters, page_size, max_pages):
+        """POST /search/metadata page by page (size at most 1000) -> all the matching assets.
+        Response: {"assets": {"items": [...], "total", "count", "nextPage", "nextCursor"}, ...}.
+        Immich v3.2 deprecated albumIds, libraryId and page here (still accepted on v3.3.6); their
+        replacements are a filter object and cursor paging."""
         out, page = [], 1
         while page and page <= max_pages:
-            res = self._req("POST", "/search/metadata", {"libraryId": library_id, "page": page, "size": page_size,
-                                                         "order": "desc"})
-            assets = res.get("assets", {})
+            res = self._req("POST", "/search/metadata", {**filters, "page": page, "size": min(page_size, 1000)})
+            assets = (res or {}).get("assets", {})
             out += assets.get("items", [])
             page = int(assets["nextPage"]) if assets.get("nextPage") else None
         return out
