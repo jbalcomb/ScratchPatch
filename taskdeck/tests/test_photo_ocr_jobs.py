@@ -20,6 +20,10 @@ RETAKE = {**RECEIPT, "id": 18, "bucket": "retake", "merchant": None, "purchase_d
           "suspect": ["merchant", "purchase_date", "total", "tax", "items"], "url": "/review/18"}
 SUMMARY = {"pending": 2, "review": 3, "retake": 1, "approved": 40, "unmatched_items": 12, "products": 25, "due": 4,
            "products_review": 1, "products_pending": 1, "unreconciled_receipts": 5, "unreconciled_bank": 7}
+READ_RECEIPT = {"id": 17, "status": "parsed", "bucket": "review", "merchant": "Giant Eagle", "purchase_date": "2026-10-12",
+                "total": 4519, "tax": 112, "items": [{"id": 1}, {"id": 2}, {"id": 3}], "suspect": ["merchant"], "error": None}
+READ_PRODUCT = {"id": 26, "status": "ready", "bucket": "auto", "name": "Whole milk", "brand": "Great Value", "size": "1 gal",
+                "suspect": [], "error": None}
 PRODUCT_TO_CHECK = {"id": 5, "name": "product", "brand": None, "size": "large", "status": "review", "bucket": "review",
                     "suspect": ["name", "size"], "url": "/products/5"}
 UNMATCHED = [
@@ -58,6 +62,8 @@ class FakeService:
     def __init__(self):
         self.requests, self.errors, self.matched_ids = [], {}, []
         self.health = {"ok": True, "immich": True, "engines": ["qwen3-vl-8b"], "version": 1}
+        self.readings = {"/api/receipts/17": READ_RECEIPT, "/api/products/26": READ_PRODUCT}
+        self.pending_polls, self.polls = 2, {}
         fake = self
 
         class Handler(http_server.BaseHTTPRequestHandler):
@@ -103,6 +109,10 @@ class FakeService:
             return 200, {"products": [PRODUCT_TO_CHECK]}
         if path == "/api/products" and method == "POST":
             return 201, {"id": 26, "status": "pending"}
+        if path in self.readings and method == "GET":  # "pending" until the worker has read it
+            self.polls[path] = self.polls.get(path, 0) + 1
+            pending = self.polls[path] <= self.pending_polls
+            return 200, {"id": 0, "status": "pending"} if pending else self.readings[path]
         if path == "/api/items/unmatched":
             return 200, {"items": UNMATCHED}
         if path.startswith("/api/items/") and path.endswith("/match"):
@@ -121,6 +131,11 @@ class FakeService:
 
     def calls(self):
         return [(r["method"], r["path"]) for r in self.requests]
+
+
+@pytest.fixture(autouse=True)
+def quick_polls(monkeypatch):
+    monkeypatch.setattr(photos, "READ_POLL_SECONDS", 0.01)
 
 
 @pytest.fixture
@@ -206,8 +221,9 @@ def test_capture_sends_one_multipart_request_in_order(service, settings, tmp_pat
     files = photo_files(tmp_path, "top.jpg", "middle.PNG", "bottom.webp")
     report = run(photos.CAPTURE, settings, photos=files, note="Groceries for the party")
     assert report.ok, report.error
-    [req] = service.requests
+    req = service.requests[0]
     assert (req["method"], req["path"]) == ("POST", "/api/receipts")
+    assert service.calls()[1:] == [("GET", "/api/receipts/17")] * 3  # pending, pending, read
     assert req["content_type"].startswith("multipart/form-data; boundary=")
     parts = parse_multipart(req["content_type"], req["body"])
     assert [(name, filename) for name, filename, _ in parts] == [
@@ -215,9 +231,13 @@ def test_capture_sends_one_multipart_request_in_order(service, settings, tmp_pat
     assert parts[0][2] == b"Groceries for the party"
     assert parts[1][2] == b"image 0 top.jpg" + bytes(range(256))
     assert parts[3][2].startswith(b"image 2 bottom.webp")
-    rows = dict(report.result.rows)
-    assert rows == {"Receipt": "#17", "Photos": "3", "Status": "pending",
-                    "Review page": f"{service.url}/review/17"}
+    assert report.result.title == "Receipt #17: Giant Eagle · $45.19"
+    assert report.result.rows == [
+        ("Receipt", "#17"), ("Photos", "3"), ("Store", "Giant Eagle"), ("Date", "2026-10-12"), ("Total", "$45.19"),
+        ("Tax", "$1.12"), ("Items", "3"), ("Status", "Needs a look"), ("Check", "store"),
+        ("Review page", f"{service.url}/review/17")]
+    assert report.result.warning.startswith("Some of this reading looks doubtful")
+    assert report.result.images == files.splitlines()  # the thumbnails beside the reading
 
 
 def test_capture_without_note_sends_only_photos(service, settings, tmp_path):
@@ -252,13 +272,50 @@ def test_server_error_without_json(service, settings):
 def test_product_photo(service, settings, tmp_path):
     report = run(photos.PRODUCT, settings, photos=photo_files(tmp_path, "front.jpg", "label.jpg"))
     assert report.ok, report.error
-    [req] = service.requests
+    req = service.requests[0]
     assert (req["method"], req["path"]) == ("POST", "/api/products")
     assert [(n, f) for n, f, _ in parse_multipart(req["content_type"], req["body"])] == [
         ("photo", "front.jpg"), ("photo", "label.jpg")]
-    rows = dict(report.result.rows)
-    assert rows["Product"] == "#26" and rows["Photos"] == "2" and rows["Status"] == "pending"
-    assert rows["Product page"] == f"{service.url}/products/26"
+    assert report.result.title == "Product #26: Great Value Whole milk 1 gal"
+    assert report.result.rows == [
+        ("Product", "#26"), ("Photos", "2"), ("Name", "Whole milk"), ("Brand", "Great Value"), ("Size", "1 gal"),
+        ("Status", "Saved: every check passed"), ("Product page", f"{service.url}/products/26")]
+    assert report.result.warning is None and len(report.result.images) == 2
+
+
+def test_reading_not_done_in_time(service, settings, tmp_path, monkeypatch):
+    monkeypatch.setattr(photos, "READ_TIMEOUT_SECONDS", 0)
+    service.pending_polls = 99
+    report = run(photos.PRODUCT, settings, photos=photo_files(tmp_path, "front.jpg"))
+    assert report.ok, report.error
+    assert report.result.title == "Product #26 added"
+    assert dict(report.result.rows)["Status"] == "still being read"
+    assert report.result.text.startswith("Still being read on the workstation")
+
+
+def test_reading_check_fails_after_the_photos_are_sent(service, settings, tmp_path):
+    service.errors["GET /api/receipts/17"] = (500, {"error": "database is locked"})
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    assert report.ok, report.error  # the receipt is sent; only the wait stopped
+    assert report.result.text == "Sent, but the reading couldn't be checked: database is locked"
+
+
+def test_retake_and_failed_readings(service, settings, tmp_path):
+    service.readings["/api/receipts/17"] = {**READ_RECEIPT, "bucket": "retake", "total": None}
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    assert dict(report.result.rows)["Status"] == "Retake" and report.result.warning.startswith("The total or date")
+    service.readings["/api/products/26"] = {"id": 26, "status": "failed", "error": "HTTP 500 from the model"}
+    report = run(photos.PRODUCT, settings, photos=photo_files(tmp_path, "p.jpg"))
+    assert report.result.warning == "Reading failed: HTTP 500 from the model."
+
+
+def test_cancel_stops_the_wait(service, settings, tmp_path, monkeypatch):
+    from taskdeck.core import Context
+    service.pending_polls = 99
+    ctx = Context({})
+    threading.Timer(0.3, ctx.cancel).start()
+    report = photos.PRODUCT.run({"photos": photo_files(tmp_path, "p.jpg")}, ctx=ctx, settings=settings)
+    assert report.cancelled and report.steps[-1].name == "wait for reading"
 
 
 # ---- read-only lists -------------------------------------------------------------------------------------
@@ -373,3 +430,53 @@ def test_multipart_helper_escapes_names():
     assert parts[0] == ("note", None, b"a\r\nb")
     assert parts[1][1] == "we%22ird.jpg" and parts[1][2] == b"x"
     assert b"Content-Type: image/jpeg" in body
+
+
+def test_several_products_at_once(service, settings, tmp_path, monkeypatch):
+    """Groups separated by a blank line: one product each, sent in order, read together, one row each."""
+    monkeypatch.setattr(photos, "READ_TIMEOUT_SECONDS", 0.2)
+    a, b, c, d = photo_files(tmp_path, "milk-front.jpg", "milk-label.jpg", "soap.jpg", "eggs.jpg").splitlines()
+    ids = iter([26, 27, 28])
+    plain = service.answer
+
+    def answer(req):
+        if req["method"] == "POST" and req["path"] == "/api/products":
+            if b"soap.jpg" in req["body"]:
+                return 400, {"error": "soap.jpg is not a photo"}
+            return 201, {"id": next(ids), "status": "pending"}
+        return plain(req)
+
+    service.answer = answer
+    service.pending_polls = 0
+    service.readings["/api/products/27"] = {"id": 27, "status": "review", "bucket": "review", "name": "Eggs",
+                                            "brand": None, "size": "large", "suspect": ["size"]}
+    service.readings["/api/products/28"] = {"id": 28, "status": "pending"}  # never read in time
+    report = run(photos.PRODUCT, settings, photos=f"{a}\n{b}\n\n{c}\n\n{d}\n\n{c}")
+    assert report.ok, report.error
+    posts = [parse_multipart(r["content_type"], r["body"]) for r in service.requests if r["method"] == "POST"]
+    assert [[f for _, f, _ in p] for p in posts] == [["milk-front.jpg", "milk-label.jpg"], ["soap.jpg"],
+                                                       ["eggs.jpg"], ["soap.jpg"]]
+    assert report.result.rows == [
+        ("1. #26", "Great Value Whole milk 1 gal · Saved: every check passed"),
+        ("Product 2", "not sent: soap.jpg is not a photo"),
+        ("3. #27", "Eggs large · Needs a look · check size"),
+        ("Product 4", "not sent: soap.jpg is not a photo"),
+        ("Products page", f"{service.url}/products"),
+    ]
+    assert report.result.title == "2 of 4 products sent · 2 read"
+    assert report.result.warning == "1 needs a look: check it on the review page."
+    assert report.result.images == [a, c, d, c]  # the first photo of each product
+
+
+def test_products_all_refused_is_an_error(service, settings, tmp_path):
+    service.errors["POST /api/products"] = (503, {"error": "the workstation is busy"})
+    report = run(photos.PRODUCT, settings, photos=photo_files(tmp_path, "a.jpg", "b.jpg").replace("\n", "\n\n"))
+    assert not report.ok and report.error == "the workstation is busy"
+
+
+def test_grouped_field_value():
+    from taskdeck.core import Field, join_groups, split_groups
+    f = Field.files("photos", "Photos", grouped="product")
+    assert f.coerce("a.jpg\nb.jpg\n\n\nc.jpg\n  \n") == [["a.jpg", "b.jpg"], ["c.jpg"]]
+    assert Field.files("photos", "Photos").coerce("a.jpg\n\nc.jpg") == ["a.jpg", "c.jpg"]
+    assert join_groups(split_groups("a\nb\n\nc")) == "a\nb\n\nc"

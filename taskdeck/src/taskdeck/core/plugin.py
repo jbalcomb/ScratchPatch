@@ -32,6 +32,21 @@ class FieldKind(str, Enum):
     FILES = "files"  # several paths, one per line, with an Add button; coerced to a list
 
 
+def split_groups(text: Any) -> list[list[str]]:
+    """A FILES value as groups of paths: one path per line, groups separated by blank lines."""
+    groups: list[list[str]] = [[]]
+    for line in str(text or "").splitlines():
+        if line.strip():
+            groups[-1].append(line.strip())
+        elif groups[-1]:
+            groups.append([])
+    return [g for g in groups if g]
+
+
+def join_groups(groups: list[list[str]]) -> str:
+    return "\n\n".join("\n".join(g) for g in groups if g)
+
+
 @dataclass(frozen=True)
 class Field:
     """One input the job asks for. The UI builds its form from these."""
@@ -47,6 +62,10 @@ class Field:
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
     extensions: tuple[str, ...] = ()  # FILE(S) fields: the files Browse offers (".exe", ...); empty = any file
+    preview: bool = False  # FILE(S) fields: show thumbnails of the chosen image files under the field
+    # FILES fields: the files come in groups, one per thing (e.g. "product"), separated by a blank line;
+    # the value is then a list of groups (lists of paths), and the photo picker offers "1 product" / "N products".
+    grouped: str = ""
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -85,10 +104,10 @@ class Field:
         if self.kind == FieldKind.TOGGLE:
             return bool(raw)
         if self.kind == FieldKind.FILES:
-            paths = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
-            if self.required and not paths:
+            groups = split_groups(raw)
+            if self.required and not groups:
                 raise StepError(f"{self.label} is required")
-            return paths
+            return groups if self.grouped else [p for g in groups for p in g]
         if raw is None or (isinstance(raw, str) and raw.strip() == ""):
             if self.required:
                 raise StepError(f"{self.label} is required")

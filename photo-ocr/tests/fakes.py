@@ -112,6 +112,7 @@ class FakeImmich:
         self.server = Server(self.handle)
         self.url = self.server.url
         self.key_seen = set()
+        self.searches = []
 
     def add_asset(self, data, name, album=None, path=None, library=None):
         aid = str(uuid.uuid4())
@@ -148,7 +149,8 @@ class FakeImmich:
                     if aid not in album["assets"]:
                         album["assets"].append(aid)
                 return 200, [], None
-            return 200, {**album, "assets": [self._public(a) for a in album["assets"]]}, None
+            # Immich v3: the album response has assetCount, not the photos (they come from /search/metadata)
+            return 200, {"id": album["id"], "albumName": album["albumName"], "assetCount": len(album["assets"])}, None
         if path == "/api/assets" and method == "POST":
             import web
             fields, files = web.parse_multipart(headers["Content-Type"], body)
@@ -164,8 +166,17 @@ class FakeImmich:
             return 200, self.assets[m[1]]["data"], "image/png"
         if path == "/api/search/metadata":
             q = json.loads(body)
-            items = [self._public(a) for a, v in self.assets.items() if v["libraryId"] == q.get("libraryId")]
-            return 200, {"assets": {"items": items, "nextPage": None}}, None
+            self.searches.append(q)
+            if q.get("albumIds"):
+                ids = [a for album_id in q["albumIds"] for a in self.albums[album_id]["assets"]]
+            else:
+                ids = [a for a, v in self.assets.items() if v["libraryId"] == q.get("libraryId")]
+            size, page = q.get("size", 250), q.get("page", 1)
+            assert size <= 1000, "Immich refuses a page size over 1000"
+            items = [self._public(a) for a in ids[(page - 1) * size:page * size]]
+            more = page * size < len(ids)
+            return 200, {"assets": {"items": items, "total": len(ids), "count": len(items),
+                                    "nextPage": str(page + 1) if more else None, "nextCursor": None}}, None
         return 404, {"message": "not found"}, None
 
     def close(self):

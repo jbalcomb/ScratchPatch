@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any
 import flet as ft
 
 from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.shared import photos
 from taskdeck.shared.gdrive import DriveLocation
 
-from . import task_view
+from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
 from .file_browser import FileBrowser
+from .photo_picker import PhotoPicker
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -230,6 +232,11 @@ class JobScreen:
         """Browse for a FILE(S) field with TaskDeck's own browser (real paths), starting where its (last) file
         is, else where another file field's file is (e.g. Supporting DLLs: the executable's folder)."""
         exts = tuple(e.lower() for e in fc.field.extensions)
+        if fc.field.preview:  # a photo field: the photo grid, starting at the camera's photos (DCIM)
+            PhotoPicker.pick(self.app, lambda paths, separate: fc.picked_many([str(p) for p in paths], separate),
+                             title=f"Choose {fc.field.label}", noun=fc.field.grouped,
+                             accept=(lambda name: name.lower().endswith(exts)) if exts else photos.is_image)
+            return
         candidates = [line.strip() for line in str(fc.value or "").splitlines() if line.strip()][-1:] + \
             [str(other.value) for other in self.fields.values()
              if other is not fc and other.field.kind == FieldKind.FILE and other.value]
@@ -436,6 +443,9 @@ class JobScreen:
         parts: list[ft.Control] = []
         if result.title:
             parts.append(ft.Text(result.title, weight=ft.FontWeight.W_600))
+        images = thumbnails.strip(result.images) if result.images else None
+        if images:
+            parts.append(images)
         if result.rows:
             parts.append(
                 ft.Column(

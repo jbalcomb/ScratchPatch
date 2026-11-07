@@ -329,6 +329,25 @@ def test_immich_upload_poll_and_syncthing(tmp_path, model, immich_fake):
     assert svc.work_once()["albums"] == 0  # nothing new the second time
 
 
+def test_album_assets_on_immich_v3(immich_fake):
+    """Immich v3: GET /albums/{id} has only assetCount; the photos are listed with /search/metadata filtered by
+    the album, page by page (size at most 1000)."""
+    client = immich.Immich(immich_fake.url, "k1")
+    ids = [immich_fake.add_asset(png(i), f"IMG_{i}.jpg", album="Products") for i in range(5)]
+    immich_fake.add_asset(png(9), "other.jpg", album="Receipts")
+    album = client._req("GET", f"/albums/{client.album_id('Products')}")
+    assert "assets" not in album and album["assetCount"] == 5  # the v3 shape that broke the old code
+
+    assert [a["id"] for a in client.album_assets("Products", page_size=2)] == ids  # three pages of 2, 2, 1
+    assert [q["page"] for q in immich_fake.searches] == [1, 2, 3]
+    assert all(q["albumIds"] == [client.album_id("Products")] and q["size"] == 2 for q in immich_fake.searches)
+    assert client.album_assets("Empty") == []
+
+    immich_fake.searches.clear()
+    client.album_assets("Products")
+    assert immich_fake.searches[0]["size"] == 1000  # the default page, Immich's maximum
+
+
 def test_upload_without_device_fields(tmp_path):
     """Newer Immich servers refuse the device fields; the upload is sent again without them."""
     calls = []
