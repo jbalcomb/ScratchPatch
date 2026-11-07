@@ -7,8 +7,9 @@ clipboard, open it, or hand it to a handler. **A message is data and never choos
 Design doc: <https://claude.ai/artifact/4GTHDgziygR7nYupHYqdcj> (threat model, message format,
 components, phase plan).
 
-So far: the signed envelope, the fixed screening stage, and the Phase A gateway that admits
-messages over HTTP and publishes them to a private ntfy, with install scripts for both.
+So far: the signed envelope, the fixed screening stage, the Phase A gateway that admits messages
+over HTTP and publishes them to a private ntfy, and the device agent that acts on them (clipboard,
+notifications, inbox, links), with install scripts for Windows and Linux.
 
 ```
 sender ──make_submission──▶ gateway.admit ──signed envelope──▶ broker ──▶ agent.receive ──▶ toppings ──▶ action tier
@@ -25,8 +26,10 @@ sender ──make_submission──▶ gateway.admit ──signed envelope──�
 | `courier/server.py` | The Phase A gateway HTTP API: `POST /messages`, per-sender rate limit, duplicate-ID handling, an audit log with no bodies. |
 | `courier/store.py` | Gateway key and `senders.json` (public keys and secret hashes only; re-read when it changes). |
 | `courier/ntfy.py` | Publishes admitted envelopes to a self-hosted ntfy topic per channel. |
+| `courier/device.py` | The device agent: `device.toml` policy, toppings, action tiers and their guards, inbox, and the ntfy subscriber that resumes after the last message. |
+| `courier/desktop.py` | Clipboard and notifications on Windows (Win32, kept out of clipboard history and cloud sync; WinRT toasts), macOS (pbcopy, osascript) and Linux (wl-copy or xclip, notify-send). |
 | `courier/ntfy_setup.py` | Writes ntfy's private `server.yml`: no anonymous access, a write-only gateway token, a read-only device token. |
-| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · ntfy-setup · ntfy-run`. |
+| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · ntfy-setup · ntfy-run · device-init · device · inbox`. |
 
 Line endings: LF is canonical everywhere inside Courier (stored, signed, hashed, sent), like git's
 object store. Agents convert to the host's form only when text leaves Courier.
@@ -97,7 +100,38 @@ python -m venv .venv
 .venv\Scripts\python -m pytest
 ```
 
+## Device agent
+
+Each device runs an agent that subscribes to ntfy with the read-only device token, verifies and
+re-screens every envelope, runs the subscription's toppings, and does at most what
+`~/.config/courier/device.toml` allows for that channel. Nothing in a message can raise it.
+
+```powershell
+# Windows: logon task "Courier Device" (it needs your session for the clipboard)
+powershell -ExecutionPolicy Bypass -File scripts\install-device-windows.ps1 -Ntfy https://<broker>.<tailnet>.ts.net:2586 -GatewayKey <key>
+```
+```bash
+# Linux: systemd user service tied to your desktop session; needs wl-copy or xclip, and notify-send
+bash scripts/install-device-linux.sh https://<broker>.<tailnet>.ts.net:2586 <gateway key>
+```
+
+Copy `ntfy-device.token` from the broker machine's `~/.config/courier` first. On the broker
+machine itself both arguments can be left out. `python -m courier inbox` shows what arrived.
+
+| Action | What it does | Refused when |
+|---|---|---|
+| `inbox` | Appends to `data/inbox.jsonl` | Never; a `secret` body is not written to disk |
+| `notify` | Desktop notification (first 240 characters) and the inbox | Never; a `secret` body is hidden |
+| `clipboard` | Copies with native line endings; clears after `clear_after` s if still unchanged | Not text; `ai_injection`; `secret`, `multiline`, `shell_chars` unless allowed |
+| `open-url` | Opens one https link in the browser | Anything but a single https URL; `url_*`, `ai_*` or `secret` labels |
+
+When a clipboard or open-url action is refused, you get a notification saying why (never the
+text itself). Toppings: filters `drop-labels`, `allow-origins`, `allow-senders`; mutations
+`single-line`, `trim`, `max-length`. Labels about origin and content stay with a message whatever
+the toppings do; guards about the body's shape (`multiline`, `shell_chars`, `long`) look at the
+body actually being delivered, so `single-line` can make a message copyable. In Phase A a `queue`
+message goes to every device like `fanout`; claiming arrives with NATS in Phase B.
+
 ## Next (Phase A)
 
-A desktop agent that subscribes to ntfy with the device token, runs `receive`, applies a policy
-file and writes the clipboard; then a TaskDeck job that sends.
+A TaskDeck job that sends; macOS LaunchAgent for the device agent.

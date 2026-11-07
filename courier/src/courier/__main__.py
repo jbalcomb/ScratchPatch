@@ -8,6 +8,9 @@
   remove-sender   revoke a sender
   senders         list senders, their kind and channels
   send            send a message with a credentials file: send CHANNEL TEXT (or - for stdin)
+  device-init     write <config>/device.toml for this device's agent
+  device          run the device agent (subscribe, verify, re-screen, act per device.toml)
+  inbox           show the latest inbox entries
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from courier.desktop import Clipboard, Notifier
+from courier.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
 from courier.envelope import make_submission
 from courier.gateway import ORIGIN_KINDS
 from courier.ntfy import publisher
@@ -68,6 +73,20 @@ def main(argv=None) -> int:
     remove.add_argument("name")
 
     sub.add_parser("senders", help="list senders")
+
+    init = sub.add_parser("device-init", help="write <config>/device.toml for this device's agent")
+    init.add_argument("--ntfy", required=True, help="ntfy URL, e.g. https://<machine>.<tailnet>.ts.net:2586")
+    init.add_argument("--gateway-key", help="the gateway's public key (default: this machine's gateway)")
+    init.add_argument("--token-file", default="ntfy-device.token", help="device token, relative to the config folder")
+    init.add_argument("--force", action="store_true", help="replace an existing device.toml")
+
+    device = sub.add_parser("device", help="run the device agent")
+    device.add_argument("--data", type=Path, default=PROJECT / "data", help="inbox and device log folder")
+    device.add_argument("--log-file", help="append the log here instead of printing it")
+
+    inbox = sub.add_parser("inbox", help="show the latest inbox entries")
+    inbox.add_argument("-n", type=int, default=10)
+    inbox.add_argument("--data", type=Path, default=PROJECT / "data")
 
     send = sub.add_parser("send", help="send a message")
     send.add_argument("channel")
@@ -128,6 +147,34 @@ def main(argv=None) -> int:
     if args.command == "send":
         return send_message(args)
 
+    if args.command == "device-init":
+        return device_init(args)
+
+    if args.command == "inbox":
+        path = args.data / "inbox.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()[-args.n:] if path.is_file() else []
+        for line in lines:
+            e = json.loads(line)
+            body = e["body"] if e["body"] is not None else "(not stored: it looks like a secret)"
+            print(f"{e['at']}  {e['channel']}  {e['sender']}  {','.join(e['labels'])}\n    {body}")
+        return 0
+
+    if args.command == "device":
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                            filename=args.log_file, encoding="utf-8")
+        try:
+            config = DeviceConfig.load(args.config / "device.toml")
+        except ConfigError as error:
+            logging.error("%s", error)
+            return 2
+        agent = DeviceAgent(config, Ruleset.load(), args.data, Clipboard(), Notifier())
+        logging.info("courier device agent: %s -> %s", ", ".join(sorted(config.subscriptions)), config.ntfy)
+        try:
+            subscribe(config, agent, args.data / "device-state.json")
+        except KeyboardInterrupt:
+            pass
+        return 0
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         filename=args.log_file, encoding="utf-8")
     token = args.ntfy_token_file.read_text(encoding="utf-8").strip() if args.ntfy_token_file else None
@@ -143,6 +190,52 @@ def main(argv=None) -> int:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+DEVICE_TOML = """\
+# Courier device agent. Each subscription sets the most this device will do with a channel's
+# messages; nothing in a message can raise it. Restart the agent to apply changes.
+ntfy = {ntfy}
+token_file = {token_file}
+gateway_keys = [{gateway_key}]
+accept_rulesets = []  # pin screening ruleset hashes; empty accepts any
+
+[[subscriptions]]
+channel = "clip"
+action = "clipboard"       # inbox | notify | clipboard | open-url
+clear_after = 90           # seconds until the clipboard is cleared, if it still holds this; 0 keeps it
+allow_multiline = false    # pasting a line break into a terminal runs the line
+allow_shell_chars = false  # ; | & $ ` < >
+toppings = [
+  {{ filter = "drop-labels", labels = ["secret", "ai_injection", "ai_suspicious"] }},
+]
+
+[[subscriptions]]
+channel = "agent-inbox"
+action = "notify"
+"""
+
+
+def device_init(args) -> int:
+    path = args.config / "device.toml"
+    if path.exists() and not args.force:
+        print(f"courier: {path} exists; pass --force to replace it", file=sys.stderr)
+        return 1
+    key = args.gateway_key
+    if not key:
+        try:
+            key = public_key_text(load_gateway_key(args.config / "gateway.key", create=False))
+        except FileNotFoundError:
+            print("courier: no gateway on this machine; pass --gateway-key", file=sys.stderr)
+            return 2
+    if not (args.config / args.token_file).is_file():
+        print(f"courier: warning: {args.config / args.token_file} doesn't exist yet; copy the device token there",
+              file=sys.stderr)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(DEVICE_TOML.format(ntfy=json.dumps(args.ntfy.rstrip("/")), token_file=json.dumps(args.token_file),
+                                       gateway_key=json.dumps(key)), encoding="utf-8", newline="\n")
+    print(path)
     return 0
 
 
