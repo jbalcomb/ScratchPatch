@@ -92,7 +92,8 @@ Each month in the window, newest first; the Month column (`2026-11`) is for a fi
 ## TimeLine and Projected
 
 **TimeLine**: every real transaction, from the 1st of the month three months back up to now, newest first, with
-each account's balance: Date, Account, Description, Category, Amount, Daily, Bills, Save, Cash, Total. It comes
+each account's balance: Date, Account, Description, Category, Amount, Daily, Bills, Save, Cash, Total. Total
+(on Projected too) is a formula, `=SUM(F:I)` of its own row, so a row you copy to type a new one brings it along. It comes
 from three places, and the more official one replaces the other:
 
 1. the **bank exports** (and the cash side of each ATM withdrawal or deposit);

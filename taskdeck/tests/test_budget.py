@@ -560,3 +560,6 @@ def test_timeline_and_projected_tabs(items):
     assert projected[1][-1] == "Expected" and projected[-1][-1] == "Actual"
     assert projected[1][0].startswith("11/")  # the furthest projection, at the top
     assert len(projected) - 1 == len(tl.rows) and len(tab) - 1 == sum(r.kind == timeline.ACTUAL for r in tl.rows)
+    # Total is a formula on its own row (header in row 1), so a row copied by hand carries it along.
+    assert tab[1][9] == "=SUM(F2:I2)" and tab[-1][9] == f"=SUM(F{len(tab)}:I{len(tab)})"
+    assert projected[3][9] == "=SUM(F4:I4)"

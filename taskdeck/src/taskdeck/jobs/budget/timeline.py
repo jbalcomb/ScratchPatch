@@ -219,24 +219,34 @@ def as_text(tl: Timeline) -> str:
     return "\n".join(out)
 
 
-def as_rows(tl: Timeline, rows: list[Row] | None = None, kind: bool = True, newest_first: bool = False) -> list[list]:
+def _col(n: int) -> str:
+    """Column letter for a 0-based column index (A..Z is plenty here)."""
+    return chr(ord("A") + n)
+
+
+def as_rows(tl: Timeline, rows: list[Row] | None = None, kind: bool = True, newest_first: bool = False,
+            header_row: int | None = None) -> list[list]:
     """The rows for a tab: Date, Account, Description, Category, Amount, a balance per account, Total, and with
-    ``kind`` an Actual / Expected column."""
+    ``kind`` an Actual / Expected column. With ``header_row`` (the sheet row the header lands on), Total is a
+    formula summing the balances, so a row copied by hand carries it along."""
     labels = [ACCOUNT_LABELS[a] for a in ACCOUNTS]
     out = [["Date", "Account", "Description", "Category", "Amount", *labels, "Total"] + (["Actual / Expected"] * kind)]
+    first, last = _col(5), _col(4 + len(ACCOUNTS))  # the balance columns: F to I
     chosen = tl.rows if rows is None else rows
-    for r in reversed(chosen) if newest_first else chosen:
+    for n, r in enumerate(reversed(chosen) if newest_first else chosen, start=1):
+        total = (f"=SUM({first}{header_row + n}:{last}{header_row + n})" if header_row is not None
+                 else sum(r.balances.values()) / 100)
         out.append([f"{r.date:%-m/%-d/%Y}", ACCOUNT_LABELS[r.account], r.description, r.category, r.amount / 100,
-                    *[r.balances[a] / 100 for a in ACCOUNTS], sum(r.balances.values()) / 100]
+                    *[r.balances[a] / 100 for a in ACCOUNTS], total]
                    + (["Actual" if r.kind == ACTUAL else "Expected"] * kind))
     return out
 
 
 def timeline_rows(tl: Timeline) -> list[list]:
     """The TimeLine tab: what has happened (the bank, the Cash tab, rows typed there), newest first."""
-    return as_rows(tl, [r for r in tl.rows if r.kind == ACTUAL], kind=False, newest_first=True)
+    return as_rows(tl, [r for r in tl.rows if r.kind == ACTUAL], kind=False, newest_first=True, header_row=1)
 
 
 def projected_rows(tl: Timeline) -> list[list]:
     """The Projected tab: the same history, then what's expected, newest first."""
-    return as_rows(tl, newest_first=True)
+    return as_rows(tl, newest_first=True, header_row=1)
