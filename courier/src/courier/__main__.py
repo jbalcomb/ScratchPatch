@@ -2,6 +2,8 @@
 
   serve           start the gateway (default 127.0.0.1:8766; put `tailscale serve` in front of it)
   gateway-key     print the gateway's public key, creating the key first if needed
+  ntfy-setup      write ntfy's server.yml and the gateway (write) and device (read) tokens
+  ntfy-run        run ntfy with that config, without a console window, appending to a log
   add-sender      create a sender and write its credentials file (shown once, not kept here)
   remove-sender   revoke a sender
   senders         list senders, their kind and channels
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -21,6 +24,7 @@ from pathlib import Path
 from courier.envelope import make_submission
 from courier.gateway import ORIGIN_KINDS
 from courier.ntfy import publisher
+from courier.ntfy_setup import ntfy_hasher, write_config
 from courier.screen import Ruleset
 from courier.server import RateLimit, Service, make_server
 from courier.store import CONFIG_DIR, Senders, load_gateway_key, private_key_from, public_key_text, write_private
@@ -44,6 +48,14 @@ def main(argv=None) -> int:
     serve.add_argument("--log-file", help="append the log here instead of printing it")
 
     sub.add_parser("gateway-key", help="print the gateway's public key")
+
+    setup = sub.add_parser("ntfy-setup", help="write ntfy's server.yml and the gateway and device tokens")
+    setup.add_argument("--ntfy-exe", required=True, help="the ntfy binary, used to bcrypt the users' passwords")
+    setup.add_argument("--listen", default="127.0.0.1:2586")
+
+    run = sub.add_parser("ntfy-run", help="run ntfy with <config>/ntfy/server.yml, no console window, output to a log")
+    run.add_argument("--ntfy-exe", required=True)
+    run.add_argument("--log-file", type=Path, required=True)
 
     add = sub.add_parser("add-sender", help="create a sender")
     add.add_argument("name")
@@ -72,6 +84,20 @@ def main(argv=None) -> int:
     if args.command == "gateway-key":
         print(public_key_text(load_gateway_key(args.config / "gateway.key")))
         return 0
+
+    if args.command == "ntfy-setup":
+        path = write_config(args.config, ntfy_hasher(args.ntfy_exe), args.listen)
+        print(path)
+        return 0
+
+    if args.command == "ntfy-run":
+        # Under pythonw on Windows this keeps ntfy's console from popping up at logon. It exits
+        # when ntfy does, so the scheduled task's watchdog (or systemd) brings both back.
+        args.log_file.parent.mkdir(parents=True, exist_ok=True)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with args.log_file.open("a", encoding="utf-8") as log:
+            command = [args.ntfy_exe, "serve", "--config", str(args.config / "ntfy" / "server.yml")]
+            return subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, creationflags=flags).returncode
 
     if args.command == "add-sender":
         channels = [c.strip() for c in args.channels.split(",") if c.strip()]
