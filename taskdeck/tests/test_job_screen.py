@@ -333,3 +333,25 @@ def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
     assert opened["noun"] == "product"
     opened["on_pick"]([tmp_path / "milk.jpg", tmp_path / "eggs.jpg"], True)
     assert fc.value == f"{tmp_path / 'milk.jpg'}\n\n{tmp_path / 'eggs.jpg'}"
+
+
+def test_take_photos_opens_the_camera_and_adds_its_photos(tmp_path, monkeypatch):
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.CameraCapture, "open",
+                        classmethod(lambda cls, app, on_done, **kw: opened.update(kw, on_done=on_done)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    take = fc.control.controls[1].controls[0]
+    assert take.content == "Take photos"
+    take.on_click(None)
+    assert opened["guides"] == "receipt" and opened["title"] == "Receipt photos"
+    opened["on_done"]([tmp_path / "1.jpg", tmp_path / "2.jpg"])
+    assert fc.value.splitlines() == [str(tmp_path / "1.jpg"), str(tmp_path / "2.jpg")]
+    product = JobScreen(app, photos.PRODUCT).fields["photos"]
+    assert [b.content for b in product.control.controls[1].controls] == ["Add…"]

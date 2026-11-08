@@ -16,6 +16,7 @@ from taskdeck.shared.gdrive import DriveLocation
 from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
 from .file_browser import FileBrowser
+from .camera_capture import CameraCapture
 from .photo_picker import PhotoPicker
 from .forms import FieldControl
 
@@ -46,7 +47,7 @@ class JobScreen:
 
         self.fields = {
             f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run,
-                                 browse=self._browse_file)
+                                 browse=self._browse_file, camera=self._take_photos)
             for f in plugin.fields
         }
         # Notes under fields that depend on the inputs (JobPlugin.field_notes), e.g. where the output goes.
@@ -246,6 +247,11 @@ class JobScreen:
                               title=f"Choose {fc.field.label}",
                               accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
                               kind=" or ".join(exts) + " files" if exts else "files")
+
+    def _take_photos(self, fc: FieldControl) -> None:
+        """Take photos (fields with Field.camera): TaskDeck's camera; the photos join the field in order."""
+        CameraCapture.open(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
+                           title=fc.field.label, guides=fc.field.camera)
 
     def clear(self, e=None) -> None:
         for fc in self.fields.values():

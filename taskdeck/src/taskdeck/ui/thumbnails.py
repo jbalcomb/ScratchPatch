@@ -24,26 +24,43 @@ def image_paths(value: str | list[str] | None) -> list[Path]:
     return out
 
 
-def strip(value: str | list[str] | None) -> ft.Control | None:
-    """A wrapping row of square thumbnails, or None when there is no image to show."""
-    paths = image_paths(value)
-    if not paths:
-        return None
-    tiles: list[ft.Control] = []
-    for path in paths[:MOST]:
+def _images(value) -> list[tuple[bytes, str]]:
+    """(image bytes, name) for each image in a field value or a list of paths and/or bytes (a photo already
+    sent, whose file is gone, comes as its bytes)."""
+    if isinstance(value, list) and any(isinstance(v, bytes) for v in value):
+        out = []
+        for n, item in enumerate(value, 1):
+            if isinstance(item, bytes):
+                out.append((item, f"photo {n}"))
+            else:
+                out += [(p.read_bytes(), p.name) for p in image_paths([item])]
+        return out
+    out = []
+    for path in image_paths(value):
         try:
-            data = path.read_bytes()
+            out.append((path.read_bytes(), path.name))
         except OSError:
             continue
+    return out
+
+
+def strip(value) -> ft.Control | None:
+    """A wrapping row of thumbnails, or None when there is no image to show. ``value``: a field value (one path
+    per line), or a list of paths and/or image bytes."""
+    images = _images(value)
+    if not images:
+        return None
+    tiles: list[ft.Control] = []
+    for data, name in images[:MOST]:
         tiles.append(ft.Container(
             ft.Image(src=data, width=WIDTH, height=HEIGHT, fit=ft.BoxFit.CONTAIN, border_radius=6,
-                     semantics_label=path.name,
+                     semantics_label=name,
                      error_content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED)),
             width=WIDTH, height=HEIGHT, border_radius=8, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
-            alignment=ft.Alignment.CENTER, tooltip=f"{path.name}: tap to enlarge", ink=True,
-            on_click=lambda e, data=data, name=path.name: enlarge(e.page, data, name)))
-    if len(paths) > MOST:
-        tiles.append(ft.Text(f"+{len(paths) - MOST} more"))
+            alignment=ft.Alignment.CENTER, tooltip=f"{name}: tap to enlarge", ink=True,
+            on_click=lambda e, data=data, name=name: enlarge(e.page, data, name)))
+    if len(images) > MOST:
+        tiles.append(ft.Text(f"+{len(images) - MOST} more"))
     return ft.Row(tiles, wrap=True, spacing=8, run_spacing=8) if tiles else None
 
 

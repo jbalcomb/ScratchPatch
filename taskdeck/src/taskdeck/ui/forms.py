@@ -17,11 +17,14 @@ class FieldControl:
     """One rendered field: ``control`` goes in the layout, ``value`` reads it back."""
 
     def __init__(self, field: Field, value: Any, on_change: Handler = None, on_submit: Handler = None,
-                 browse: Callable[["FieldControl"], None] | None = None):
+                 browse: Callable[["FieldControl"], None] | None = None,
+                 camera: Callable[["FieldControl"], None] | None = None):
         """``browse``: what Browse does for FILE fields (the job screen opens TaskDeck's own file browser,
-        which gives real paths; Android's picker hands back a copy in the app's cache)."""
+        which gives real paths; Android's picker hands back a copy in the app's cache). ``camera``: what Take
+        photos does, for fields with ``Field.camera``."""
         self.field = field
         self._browse_with = browse
+        self._camera_with = camera
         self._shown: str | None = None  # the value the thumbnails were drawn for
         self.thumbs = ft.Container()
         if field.preview:
@@ -43,9 +46,12 @@ class FieldControl:
             )
         if field.kind in (FieldKind.FILE, FieldKind.FILES):
             button = "Add…" if field.kind == FieldKind.FILES else "Browse…"
+            buttons = [ft.TextButton(button, icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)]
+            if field.camera and camera:
+                buttons.insert(0, ft.FilledTonalButton("Take photos", icon=ft.Icons.PHOTO_CAMERA_OUTLINED,
+                                                       on_click=lambda e: self._camera_with(self)))
             self.control = ft.Column(
-                [self.input, ft.Row([ft.TextButton(button, icon=ft.Icons.FOLDER_OPEN, on_click=self._browse)])]
-                + ([self.thumbs] if field.preview else []),
+                [self.input, ft.Row(buttons)] + ([self.thumbs] if field.preview else []),
                 spacing=4,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             )

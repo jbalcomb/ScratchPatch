@@ -3,9 +3,11 @@ local models to read them, and show the reading beside the photos so a person ca
 
 from __future__ import annotations
 
+import os
 import time
 
 from taskdeck.core import Field, Pipeline, Result, Stage, StepError, step
+from taskdeck.shared import files
 
 from . import api
 
@@ -32,6 +34,23 @@ def send_receipt(ctx):
     ctx["sent_all"] = [api.call(ctx.settings, "POST", "/api/receipts", fields=[("note", note)] if note else [],
                                 files=ctx["parts"], timeout=UPLOAD_TIMEOUT)]
     ctx["send_errors"] = [None]
+    _delete_camera_photos(ctx["photos"])
+
+
+def _delete_camera_photos(paths: list[str]) -> None:
+    """Photos from TaskDeck's camera are kept only until sent (the service keeps them, in Immich); photos the
+    user picked from the phone stay where they are."""
+    for p in paths:
+        if files.is_camera_photo(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _sent_images(parts) -> list[bytes]:
+    """The photos sent, as bytes: thumbnails for the result even when the files are deleted."""
+    return [data for _, _, data in parts]
 
 
 def wait_for_reading(path: str):
@@ -93,7 +112,8 @@ def show_receipt(ctx):
     page = ("Review page", api.page_url(ctx.settings, f"/review/{rid}"))
     if not reading:
         rows, text = _not_read(ctx, 0, rows)
-        ctx.result = Result(title=f"Receipt #{rid} sent", rows=rows + [page], text=text, images=list(ctx["photos"]))
+        ctx.result = Result(title=f"Receipt #{rid} sent", rows=rows + [page], text=text,
+                            images=_sent_images(ctx["parts"]))
         return
     status, warning = _verdict(reading, "approved", "The total or date")
     suspect = [api.FIELD_NAMES.get(f, f) for f in reading.get("suspect") or []]
@@ -105,7 +125,7 @@ def show_receipt(ctx):
         rows.append(("Check", ", ".join(suspect)))
     ctx.result = Result(
         title=f"Receipt #{rid}: {reading.get('merchant') or 'store not read'} · {api.dollars(reading.get('total'))}",
-        rows=rows + [page], warning=warning, images=list(ctx["photos"]))
+        rows=rows + [page], warning=warning, images=_sent_images(ctx["parts"]))
 
 
 # ---- products: each group of photos (``Field.grouped``) is one product -------------------------------------
@@ -199,7 +219,9 @@ class ReceiptCapture(api.PhotoOcrJob):
     tags = ("receipt", "photo", "scan", "ocr", "capture", "groceries", "immich")
     fields = (
         Field.files("photos", "Receipt photos", required=True, extensions=api.PHOTO_EXTENSIONS, preview=True,
-                    help="In order from the top of the receipt to the bottom. All the photos become one receipt."),
+                    camera="receipt",
+                    help="Take photos with the camera, or Add… photos you took, in order from the top of the "
+                         "receipt to the bottom. All the photos become one receipt."),
         Field.text("note", "Note"),
     )
     uses_immich = True

@@ -4,6 +4,7 @@ import email.parser
 import email.policy
 import http.server as http_server
 import json
+import os
 import threading
 import urllib.parse
 
@@ -237,7 +238,7 @@ def test_capture_sends_one_multipart_request_in_order(service, settings, tmp_pat
         ("Tax", "$1.12"), ("Items", "3"), ("Status", "Needs a look"), ("Check", "store"),
         ("Review page", f"{service.url}/review/17")]
     assert report.result.warning.startswith("Some of this reading looks doubtful")
-    assert report.result.images == files.splitlines()  # the thumbnails beside the reading
+    assert report.result.images == [p[2] for p in parts[1:]]  # the photos sent, beside the reading
 
 
 def test_capture_without_note_sends_only_photos(service, settings, tmp_path):
@@ -480,3 +481,29 @@ def test_grouped_field_value():
     assert f.coerce("a.jpg\nb.jpg\n\n\nc.jpg\n  \n") == [["a.jpg", "b.jpg"], ["c.jpg"]]
     assert Field.files("photos", "Photos").coerce("a.jpg\n\nc.jpg") == ["a.jpg", "c.jpg"]
     assert join_groups(split_groups("a\nb\n\nc")) == "a\nb\n\nc"
+
+
+def test_camera_photos_are_kept_only_until_sent(service, settings, tmp_path, monkeypatch):
+    """Photos from TaskDeck's camera are deleted once the receipt is sent; photos picked from the phone stay;
+    a failed send deletes nothing. The result still shows the photos (as the bytes that were sent)."""
+    from taskdeck.shared import files as storage
+    monkeypatch.setenv("TASKDECK_DATA_DIR", str(tmp_path / "app"))
+    shot = storage.camera_dir() / "receipt-1.jpg"
+    shot.write_bytes(b"camera photo")
+    [own] = photo_files(tmp_path, "from-gallery.jpg").splitlines()
+
+    service.errors["POST /api/receipts"] = (503, {"error": "busy"})
+    assert not run(photos.CAPTURE, settings, photos=f"{shot}\n{own}").ok
+    assert shot.exists()
+    del service.errors["POST /api/receipts"]
+    report = run(photos.CAPTURE, settings, photos=f"{shot}\n{own}")
+    assert report.ok, report.error
+    assert not shot.exists() and os.path.exists(own)
+    assert report.result.images[0] == b"camera photo"
+
+
+def test_receipt_field_offers_the_camera():
+    [field] = [f for f in photos.CAPTURE.fields if f.name == "photos"]
+    assert field.camera == "receipt" and field.preview
+    [product_field] = photos.PRODUCT.fields
+    assert product_field.camera == ""  # products: the camera later
