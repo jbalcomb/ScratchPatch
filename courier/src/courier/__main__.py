@@ -8,6 +8,7 @@
   remove-sender   revoke a sender
   senders         list senders, their kind and channels
   send            send a message with a credentials file: send CHANNEL TEXT (or - for stdin)
+  mcp             run an MCP server (stdio) that lets an AI agent send with a credentials file
   device-init     write <config>/device.toml for this device's agent
   device          run the device agent (subscribe, verify, re-screen, act per device.toml)
   inbox           show the latest inbox entries
@@ -21,19 +22,18 @@ import json
 import logging
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
+from courier import client
+from courier import mcp as mcp_server
 from courier.desktop import Clipboard, Notifier
 from courier.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
-from courier.envelope import make_submission
 from courier.gateway import ORIGIN_KINDS
 from courier.ntfy import publisher
 from courier.ntfy_setup import ntfy_hasher, write_config
 from courier.screen import Ruleset
 from courier.server import RateLimit, Service, make_server
-from courier.store import CONFIG_DIR, Senders, load_gateway_key, private_key_from, public_key_text, write_private
+from courier.store import CONFIG_DIR, Senders, load_gateway_key, public_key_text, write_private
 
 PROJECT = Path(__file__).resolve().parents[2]
 
@@ -100,6 +100,11 @@ def main(argv=None) -> int:
     send.add_argument("--ttl", type=int, default=600, help="seconds until it expires (default 600)")
     send.add_argument("--content-type", default="text/plain")
 
+    mcp = sub.add_parser("mcp", help="run the MCP server for AI agents (stdio)")
+    mcp.add_argument("--creds", type=Path, required=True, help="a credentials file from add-sender (--kind agent)")
+    mcp.add_argument("--gateway", help="gateway URL (default: the one in the credentials file)")
+    mcp.add_argument("--channels", help="comma-separated channels to offer (default: the credentials file's)")
+
     args = parser.parse_args(argv)
     senders = Senders(args.config / "senders.json")
 
@@ -129,6 +134,7 @@ def main(argv=None) -> int:
             print(f"courier: {error}", file=sys.stderr)
             return 2
         creds["gateway"] = args.gateway
+        creds["channels"] = sorted(set(channels))
         out = args.out or args.config / f"{args.name}.sender.json"
         write_private(out, json.dumps(creds, indent=2) + "\n")
         print(f"sender {args.name!r} ({args.kind}) may post to: {', '.join(sorted(set(channels)))}")
@@ -153,6 +159,9 @@ def main(argv=None) -> int:
 
     if args.command == "send":
         return send_message(args)
+
+    if args.command == "mcp":
+        return run_mcp(args)
 
     if args.command == "device-init":
         return device_init(args)
@@ -247,28 +256,35 @@ def device_init(args) -> int:
 
 
 def send_message(args) -> int:
-    creds = json.loads(args.creds.read_text(encoding="utf-8"))
-    gateway = (args.gateway or creds.get("gateway") or "").rstrip("/")
-    if not gateway:
-        print("courier: no gateway URL; pass --gateway", file=sys.stderr)
+    try:
+        creds = client.Credentials.load(args.creds, args.gateway)
+    except (OSError, ValueError, KeyError) as error:
+        print(f"courier: {error}", file=sys.stderr)
         return 2
     text = sys.stdin.read() if args.text == "-" else args.text
-    submission = make_submission(private_key_from(creds["private_key"]), args.channel, text,
-                                 content_type=args.content_type, mode=args.mode, ttl_s=args.ttl)
-    request = urllib.request.Request(f"{gateway}/messages", data=json.dumps(submission).encode("utf-8"), method="POST")
-    request.add_header("Content-Type", "application/json")
-    request.add_header("Authorization", f"Bearer {creds['secret']}")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            print(response.read().decode("utf-8"))
-            return 0
-    except urllib.error.HTTPError as error:
-        print(f"courier: {error.code} {error.read().decode('utf-8', 'replace')}", file=sys.stderr)
+        reply = client.send(creds, args.channel, text, content_type=args.content_type, mode=args.mode,
+                            ttl_s=args.ttl)
+    except client.SendFailed as failure:
+        print(f"courier: {failure}", file=sys.stderr)
         return 1
-    except urllib.error.URLError as error:
-        print(f"courier: cannot reach {gateway}: {error.reason}", file=sys.stderr)
-        return 1
+    print(json.dumps(reply))
+    return 0
 
+
+def run_mcp(args) -> int:
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="courier-mcp %(levelname)s %(message)s")
+    try:
+        creds = client.Credentials.load(args.creds, args.gateway)
+    except (OSError, ValueError, KeyError) as error:
+        print(f"courier: {error}", file=sys.stderr)
+        return 2
+    channels = [c.strip() for c in args.channels.split(",") if c.strip()] if args.channels else creds.channels
+    # JSON-RPC lines are UTF-8 and end in LF on every platform.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    mcp_server.serve(mcp_server.Server(creds, channels))
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

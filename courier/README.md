@@ -28,8 +28,10 @@ sender ──make_submission──▶ gateway.admit ──signed envelope──�
 | `courier/ntfy.py` | Publishes admitted envelopes to a self-hosted ntfy topic per channel. |
 | `courier/device.py` | The device agent: `device.toml` policy, toppings, action tiers and their guards, inbox, and the ntfy subscriber that resumes after the last message. |
 | `courier/desktop.py` | Clipboard and notifications on Windows (Win32, kept out of clipboard history and cloud sync; WinRT toasts), macOS (pbcopy, osascript) and Linux (wl-copy or xclip, notify-send). |
+| `courier/client.py` | Sending side: loads a credentials file, signs, posts, and turns gateway refusals into plain reasons. |
+| `courier/mcp.py` | MCP server (stdio) with one tool, `send_to_devices`, so an AI agent can send as its own sender. |
 | `courier/ntfy_setup.py` | Writes ntfy's private `server.yml`: no anonymous access, a write-only gateway token, a read-only device token. |
-| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · ntfy-setup · ntfy-run · device-init · device · inbox`. |
+| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · mcp · ntfy-setup · ntfy-run · device-init · device · inbox`. |
 
 Line endings: LF is canonical everywhere inside Courier (stored, signed, hashed, sent), like git's
 object store. Agents convert to the host's form only when text leaves Courier.
@@ -147,7 +149,28 @@ Create its sender with `--paste-string` and paste the printed line into the job'
 
 The line is the credentials file in one line (`courier-sender:` + base64), so treat it as a secret.
 
+## Send from an AI agent (MCP)
+
+Give each agent its own sender, so it can be revoked on its own and devices can tell it apart:
+
+```powershell
+..\.venv\Scripts\python -m courier add-sender claude --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
+```
+
+Then register it as a stdio MCP server. For Claude Code:
+
+```powershell
+claude mcp add courier --scope user --env PYTHONPATH=C:\path\to\courier\src -- C:\path\to\courier\.venv\Scripts\python.exe -m courier mcp --creds C:\Users\you\.config\courier\claude.sender.json
+```
+
+The tool, `send_to_devices`, offers only the sender's channels and takes plain text up to 3,000
+characters. The gateway stamps `origin_agent` from the sender's token, screening runs as for any
+sender, and each device's policy decides what happens; the agent learns only whether the gateway
+admitted the message and which labels it got. Prompt injection can still make an agent send
+something, which is why every agent message carries `origin_agent` and devices can filter on it
+with `drop-labels` or `allow-origins`.
+
 ## Next
 
-Phase A is complete. Phase B: NATS JetStream in place of ntfy (per-device credentials, queue
-claiming), an MCP server so AI agents can send, and a native agent for phones.
+Phase A is complete, and the MCP server from Phase B is in. Still to do in Phase B: NATS JetStream
+in place of ntfy (per-device credentials, queue claiming) and a native agent for phones.
