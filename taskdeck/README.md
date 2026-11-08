@@ -56,6 +56,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
 | **Update budget** | The budget sheet's SnapShot tab against the bank transactions from the budget service, in one run: TimeLine and Projected (day-by-day balances through next month), ThisWeek, and every month reconciled (bills paid or missing, spending week by week and not on the list). [docs/jobs/budget.md](docs/jobs/budget.md). |
 | **Photo OCR**: Receipt capture, Review queue, Unmatched items, Product photo, Shopping list, Reconciliation | Phone side of the photo OCR service on the AI Workstation, over Tailscale: send receipt and product photos, see what needs checking, accept product matches, the shopping list, and bank reconciliation against the budget store. Needs the service URL: [docs/jobs/photo_ocr.md](docs/jobs/photo_ocr.md). |
+| **PDF Parser** | Send a PDF to the PDF parser service on the AI Workstation; get its text, tables, images and OCR as a folder with a manifest, and a summary (pages, tables, images kept and to review). Needs the service: [docs/jobs/pdf_parser.md](docs/jobs/pdf_parser.md). |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
 Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:

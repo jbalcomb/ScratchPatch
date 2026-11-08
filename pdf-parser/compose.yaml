@@ -1,0 +1,17 @@
+# From this folder:  docker compose up -d --build
+services:
+  pdf-parser:
+    build: .
+    container_name: pdf-parser
+    restart: unless-stopped
+    # Host networking: reaches the llama.cpp server on the workstation like any local program. The service
+    # listens on localhost:8096 only; Tailscale Serve makes it reachable from your own devices (README).
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"   # files in ~/pdf-parser belong to you, not root
+    env_file:
+      - ${HOME}/.config/secrets.env                   # LLM_URL, LLM_API_KEY
+      - path: ${HOME}/.config/pdf-parser.env          # PDF_PARSER_* (README)
+        required: false
+    volumes:
+      - ${HOME}/pdf-parser:/data                      # jobs: the uploaded PDFs and their bundles
+      - /etc/localtime:/etc/localtime:ro

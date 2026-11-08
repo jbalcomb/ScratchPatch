@@ -9,6 +9,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 | [voice-rec/](voice-rec/) | Voice notes: recorded in TaskDeck on the phone, then transcribed (Whisper), categorized (llama.cpp) and archived in Postgres, an Obsidian vault and the knowledge graph on the AI Workstation. |
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
 | [photo-ocr/](photo-ocr/) | Photo OCR: phone photos of receipts and products read by local models on the AI Workstation, checked and reviewed, then used for a shopping list and for matching receipts to the bank transactions in budget. Immich holds the photos; one Docker service behind Tailscale; TaskDeck jobs on the phone. |
+| [pdf-parser/](pdf-parser/) | PDF Parser: a PDF from the phone becomes a folder of text (with fonts and positions), tables, images and OCR, plus a manifest for rebuilding the document later. Images get heuristic checks, then the local vision model, with retries. Docker service on the AI Workstation; a TaskDeck job on the phone. |
 
 ## Conventions
 
