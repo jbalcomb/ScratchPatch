@@ -250,7 +250,7 @@ class JobScreen:
         if report.ok and not self.plugin.has_commit:
             # The draft is kept until the job is done (for jobs with a save step: until it saves).
             self.app.drafts.clear(self.plugin.id)
-        self.app.history.add(self.plugin.id, report.ok, _summary(report), raw)
+        self.app.history.add(self.plugin.id, report.ok, _summary(report), self.plugin.history_inputs(raw))
         self.app.on_history_changed()
         self.view.update()
 
@@ -335,7 +335,7 @@ class JobScreen:
             self.commit_button.icon = ft.Icons.CHECK
             if generation == self.generation:
                 self.app.drafts.clear(self.plugin.id)
-            self.app.history.add(self.plugin.id, True, message, self.raw_inputs())
+            self.app.history.add(self.plugin.id, True, message, self.plugin.history_inputs(self.raw_inputs()))
             self.app.on_history_changed()
             self.app.toast(message)
         else:

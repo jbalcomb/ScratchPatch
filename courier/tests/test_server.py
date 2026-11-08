@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import json
@@ -141,6 +142,16 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["labels"], ["origin_script", "trailing_newline_removed"])
         self.assertEqual(self.published[-1].body, "hello")
+
+    def test_paste_string_holds_the_credentials_file(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--config", str(self.dir), "add-sender", "phone", "--kind", "human", "--channels", "clip",
+                  "--gateway", self.url, "--paste-string"])
+        line = [l for l in out.getvalue().splitlines() if l.startswith("courier-sender:")][0]
+        encoded = line.removeprefix("courier-sender:")
+        decoded = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        self.assertEqual(decoded, json.loads((self.dir / "phone.sender.json").read_text()))
 
 
 class NtfyTests(unittest.TestCase):

@@ -132,6 +132,17 @@ the toppings do; guards about the body's shape (`multiline`, `shell_chars`, `lon
 body actually being delivered, so `single-line` can make a message copyable. In Phase A a `queue`
 message goes to every device like `fanout`; claiming arrives with NATS in Phase B.
 
+## Send from the phone
+
+TaskDeck's **Send to Devices** job signs submissions on the phone and posts them to the gateway.
+Create its sender with `--paste-string` and paste the printed line into the job's settings:
+
+```powershell
+..\.venv\Scripts\python -m courier add-sender phone --kind human --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766 --paste-string
+```
+
+The line is the credentials file in one line (`courier-sender:` + base64), so treat it as a secret.
+
 ## Next (Phase A)
 
-A TaskDeck job that sends; macOS LaunchAgent for the device agent.
+macOS LaunchAgent for the device agent.

@@ -43,6 +43,7 @@ class Field:
     secret: bool = False  # masked in the UI; for settings such as API keys
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
+    private: bool = False  # never kept in run history (e.g. text sent to another device's clipboard)
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -188,6 +189,11 @@ class JobPlugin:
         """Slower checks that may use the network (run in the background when the job opens).
         Only called when :meth:`check_ready` found nothing blocking."""
         return []
+
+    def history_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """The inputs worth keeping in run history: everything except private fields."""
+        private = {f.name for f in self.fields if f.private}
+        return {k: v for k, v in raw.items() if k not in private}
 
     def collect_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {f.name: f.coerce(raw.get(f.name, f.default)) for f in self.fields}

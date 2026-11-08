@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import subprocess
@@ -68,6 +69,8 @@ def main(argv=None) -> int:
     add.add_argument("--channels", required=True, help="comma-separated channels it may post to")
     add.add_argument("--gateway", default="", help="gateway URL to record in the credentials file")
     add.add_argument("--out", type=Path, help="credentials file (default <config>/<name>.sender.json)")
+    add.add_argument("--paste-string", action="store_true",
+                     help="also print the credentials as one line to paste into TaskDeck's Send to Devices")
 
     remove = sub.add_parser("remove-sender", help="revoke a sender")
     remove.add_argument("name")
@@ -130,6 +133,10 @@ def main(argv=None) -> int:
         write_private(out, json.dumps(creds, indent=2) + "\n")
         print(f"sender {args.name!r} ({args.kind}) may post to: {', '.join(sorted(set(channels)))}")
         print(f"credentials: {out}  (give this file to the sender; the gateway keeps only its public half)")
+        if args.paste_string:
+            line = base64.urlsafe_b64encode(json.dumps(creds, separators=(",", ":")).encode()).decode().rstrip("=")
+            print("paste into TaskDeck (Send to Devices > settings > Sender credentials); it is a secret:")
+            print(f"courier-sender:{line}")
         return 0
 
     if args.command == "remove-sender":
