@@ -42,15 +42,20 @@ def to_cents(value):
     return -cents if negative else cents
 
 
-DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d", "%b %d %Y", "%d %b %Y")
+DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d",
+                "%b %d %Y", "%b %d %y", "%B %d %Y", "%d %b %Y")
+NUMERIC_DATE = re.compile(r"(?<!\d)(\d{4}-\d{1,2}-\d{1,2}|\d{4}/\d{1,2}/\d{1,2}|\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2}))(?!\d)")
 
 
 def to_date(value):
-    """A receipt date in any common US form -> "YYYY-MM-DD", or None."""
+    """A receipt date as printed, in any common US form -> "YYYY-MM-DD", or None. Slashed and dashed dates are
+    month first (mm/dd/yyyy: month and day with or without a leading zero, year two or four digits); a time or
+    other text printed beside the date is ignored."""
     if not value:
         return None
     s = re.sub(r"\s+", " ", str(value).strip().replace(",", ""))
-    s = s.split("T")[0] if re.match(r"\d{4}-\d\d-\d\dT", s) else s
+    found = NUMERIC_DATE.search(s)
+    s = found.group(1) if found else s
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(s, fmt).date().isoformat()
@@ -79,7 +84,8 @@ def normalize(record):
     store = record.get("store")
     return {
         "store": store if isinstance(store, list) else (str(store).strip() if store else None),
-        "date": to_date(record.get("date")),
+        # model readings give the date as printed and it is converted here; hand labels give "date" (YYYY-MM-DD)
+        "date": to_date(record.get("date_printed") or record.get("date")),
         "tax": to_cents(record.get("tax")),
         "total": to_cents(record.get("total")),
         "items": items,
@@ -116,10 +122,9 @@ PROMPT = """These photos are one store receipt, in order from top to bottom. The
 in two photos is still one line, so list it once.
 
 Reply with JSON only, in this shape:
-{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "date": "YYYY-MM-DD", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
+{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
  "subtotal": 0.00, "tax": 0.00, "total": 0.00}
 
-- Dates on receipts are written as YYYY-MM-DD or mm/dd/yyyy; give the date as YYYY-MM-DD.
 - price is the amount printed for that line (the line total, not the unit price).
 - Discounts, coupons and savings printed as their own lines are items with a negative price.
 - Bottle deposits and bag fees are items.
@@ -138,7 +143,6 @@ SCHEMA = {
         "store": {"type": ["string", "null"]},
         "location": {"type": ["string", "null"]},
         "date_printed": {"type": ["string", "null"]},
-        "date": {"type": ["string", "null"]},
         "items": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"}, "quantity": {"type": ["number", "null"]}, "price": {"type": ["number", "null"]}},
             "required": ["name", "price"]}},
@@ -146,7 +150,7 @@ SCHEMA = {
         "tax": {"type": ["number", "null"]},
         "total": {"type": ["number", "null"]},
     },
-    "required": ["store", "date", "items", "tax", "total"],
+    "required": ["store", "date_printed", "items", "tax", "total"],
 }
 
 PRODUCT_PROMPT = """These photos show one grocery or household product (front, back or sides of the packaging).

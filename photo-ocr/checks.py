@@ -37,9 +37,10 @@ def run_checks(parsed, known_stores, today=None, receipt_source="in-store"):
         out.append({"name": "sum", "ok": ok, "fields": [] if ok else ["total", "tax", "items"],
                     "detail": f"items + tax = {got / 100:.2f}, total = {rec['total'] / 100:.2f}"})
 
+    printed = raw.get("date_printed") or raw.get("date")
     if rec["date"] is None:
         out.append({"name": "date", "ok": False, "fields": ["purchase_date"],
-                    "detail": f"{raw.get('date')!r} isn't a date" if raw.get("date") else "no date"})
+                    "detail": f"{printed!r} isn't a date" if printed else "no date"})
     else:
         d = date.fromisoformat(rec["date"])
         ok = today - timedelta(days=PLAUSIBLE_DAYS) <= d <= today + timedelta(days=1)

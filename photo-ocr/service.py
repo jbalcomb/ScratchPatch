@@ -343,7 +343,7 @@ class Service:
                         "error": r["error"], "prompt_version": r["prompt_version"], "prompt": r["prompt"],
                         "raw": r["raw_output"],
                         "date_printed": parsed.get("date_printed") if isinstance(parsed, dict) else None,
-                        "date": parsed.get("date") if isinstance(parsed, dict) else None})
+                        "date": parsing.normalize(parsed)["date"] if isinstance(parsed, dict) else None})
         return out
 
     def ask(self, rid, question):

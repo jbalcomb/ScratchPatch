@@ -70,7 +70,8 @@ Receipt summary:
 
 `GET /api/receipts/{id}/runs` → `{"runs": [...]}`, newest first: each reading's `at`, `engine`, `seconds`,
 `error`, `prompt_version` (8 characters, changes whenever the prompt text changes), the full `prompt` sent with
-the photos, the model's `raw` reply, and `date_printed` (the date as the model saw it) beside the `date` it gave.
+the photos, the model's `raw` reply, `date_printed` (the date as the model read it off the receipt) and the `date` the
+service converted it to (month first; the model is not asked to convert dates).
 
 `POST /api/receipts/{id}/ask` `{"question": "What month, day and year are printed?"}` → `{"answer", "engine",
 "seconds"}`: asks the vision model a free question about this receipt's photos. Nothing is saved; for debugging.

@@ -74,8 +74,8 @@ def test_buckets():
     assert next(c for c in a["checks"] if c["name"] == "sum")["detail"] == "items + tax = 7.19, total = 7.91"
 
     assert checks.assess(dict(RECEIPT, total=None), {}, known)["bucket"] == "retake"
-    assert checks.assess(dict(RECEIPT, date="13/45/2026"), {}, known)["bucket"] == "retake"
-    assert checks.assess(dict(RECEIPT, date="2019-01-01"), {}, known)["bucket"] == "review"
+    assert checks.assess(dict(RECEIPT, date_printed="13/45/2026"), {}, known)["bucket"] == "retake"
+    assert checks.assess(dict(RECEIPT, date_printed="01/01/2019"), {}, known)["bucket"] == "review"
     assert checks.assess(dict(RECEIPT, tax="forty"), {}, known)["bucket"] == "review"
 
 
@@ -213,7 +213,7 @@ def test_aliases_products_and_shopping_list(tmp_path, model):
     model.pick = milk
     rids = []
     for n, d in enumerate(days):
-        model.receipt = dict(RECEIPT, date=d.isoformat(), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
+        model.receipt = dict(RECEIPT, date_printed=d.strftime("%m/%d/%y"), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
                                                                    {"name": "BAG FEE", "price": 0.10}],
                              tax=0, total=round(3.39 + n * 0.1, 2))
         rids.append(capture(svc, 10 + n))
@@ -631,14 +631,15 @@ def test_worker_makes_the_page_copies_ahead(tmp_path, model):
 
 def test_readings_keep_their_prompt_and_the_date_as_printed(api, model):
     import parsing
-    model.receipt = dict(RECEIPT, date_printed="11/07/26", date="2026-07-11")
+    model.receipt = dict(RECEIPT, date_printed="11/04/26 12:19:13")
     api.svc.create_receipt([("r.png", png(1))])
     api.svc.parse_pending()
     [run] = api("GET", "/api/receipts/1/runs")[1]["runs"]
     assert run["prompt"] == parsing.PROMPT and run["prompt_version"] == parsing.prompt_version(parsing.PROMPT)
-    assert (run["date_printed"], run["date"]) == ("11/07/26", "2026-07-11")
+    assert (run["date_printed"], run["date"]) == ("11/04/26 12:19:13", "2026-11-04")
+    assert api("GET", "/api/receipts/1")[1]["purchase_date"] == "2026-11-04"
     assert '"date_printed"' in run["raw"]
-    assert "YYYY-MM-DD or mm/dd/yyyy;" in run["prompt"]
+    assert "date_printed" in run["prompt"] and "YYYY-MM-DD" not in run["prompt"]
     last = api("GET", "/api/receipts/1")[1]["runs"][0]
     assert last["prompt_version"] == run["prompt_version"] and last["created_at"]
     assert api("GET", "/api/receipts/9/runs")[0] == 404
@@ -668,3 +669,12 @@ def test_an_existing_store_gets_the_new_columns(tmp_path):
     [row] = store.q("SELECT engine, prompt, prompt_version FROM engine_runs")
     assert row == {"engine": "qwen3-vl-8b", "prompt": None, "prompt_version": None}
     db.Store(old)  # opening again changes nothing
+
+
+@pytest.mark.parametrize("printed, want", [
+    ("11/04/26", "2026-11-04"), ("1/4/26", "2026-01-04"), ("01/04/2026", "2026-01-04"), ("11/7/2026", "2026-11-07"),
+    ("11/04/26 12:19:13", "2026-11-04"), ("TC# 1234 11/04/26 12:19", "2026-11-04"), ("2026-11-04", "2026-11-04"),
+    ("11-04-26", "2026-11-04"), ("Nov 4, 2026", "2026-11-04"), ("13/04/26", None), ("", None), ("soon", None)])
+def test_the_printed_date_is_converted_in_code(printed, want):
+    import parsing
+    assert parsing.to_date(printed) == want
