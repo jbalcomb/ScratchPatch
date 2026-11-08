@@ -4,6 +4,7 @@ live pipeline progress and the result."""
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,9 @@ STAGE_COLOR = {
     Stage.PRESENT: ft.Colors.PURPLE,
 }
 
+
+
+URL = re.compile(r"https?://[^\s<>\"')]+[^\s<>\"').,;:!?]")
 
 class JobScreen:
     def __init__(self, app: "TaskDeckApp", plugin: JobPlugin, preset: dict[str, Any] | None = None):
@@ -248,6 +252,21 @@ class JobScreen:
                               accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
                               kind=" or ".join(exts) + " files" if exts else "files")
 
+    def _linked(self, text: str) -> list[ft.TextSpan]:
+        """Text with every web address in it a tappable link (opens in the browser)."""
+        spans: list[ft.TextSpan] = []
+        at = 0
+        for m in URL.finditer(text):
+            if m.start() > at:
+                spans.append(ft.TextSpan(text[at:m.start()]))
+            url = m.group(0)
+            spans.append(ft.TextSpan(url, style=ft.TextStyle(color=ft.Colors.PRIMARY, decoration=ft.TextDecoration.UNDERLINE),
+                                     on_click=lambda e, url=url: self.app.open_url(url)))
+            at = m.end()
+        if at < len(text):
+            spans.append(ft.TextSpan(text[at:]))
+        return spans
+
     def _take_photos(self, fc: FieldControl) -> None:
         """Take photos (fields with Field.camera): TaskDeck's camera; the photos join the field in order."""
         CameraCapture.open(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
@@ -459,7 +478,8 @@ class JobScreen:
                         ft.Row(
                             [
                                 ft.Text(k, color=ft.Colors.ON_SURFACE_VARIANT, width=150),
-                                ft.Text(v, selectable=True, expand=True, weight=ft.FontWeight.W_500),
+                                ft.Text(spans=self._linked(v), selectable=True, expand=True,
+                                        weight=ft.FontWeight.W_500),
                             ],
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         )
@@ -468,8 +488,17 @@ class JobScreen:
                     spacing=6,
                 )
             )
+        if result.table:
+            if result.table_title:
+                parts.append(ft.Text(result.table_title, weight=ft.FontWeight.W_600))
+            parts.append(ft.Column(
+                [ft.Row([ft.Text(k, selectable=True, expand=True),
+                         ft.Text(v, selectable=True, text_align=ft.TextAlign.RIGHT, weight=ft.FontWeight.W_500)],
+                        vertical_alignment=ft.CrossAxisAlignment.START)
+                 for k, v in result.table],
+                spacing=4))
         if result.text is not None:
-            parts.append(ft.Text(result.text, selectable=True, font_family="monospace"))
+            parts.append(ft.Text(spans=self._linked(result.text), selectable=True, font_family="monospace"))
         if result.warning:
             parts.append(ft.Text(result.warning, color=ft.Colors.ERROR))
         text = result.as_plain_text()

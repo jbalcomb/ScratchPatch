@@ -355,3 +355,18 @@ def test_take_photos_opens_the_camera_and_adds_its_photos(tmp_path, monkeypatch)
     assert fc.value.splitlines() == [str(tmp_path / "1.jpg"), str(tmp_path / "2.jpg")]
     product = JobScreen(app, photos.PRODUCT).fields["photos"]
     assert [b.content for b in product.control.controls[1].controls] == ["Add…"]
+
+
+def test_web_addresses_in_results_are_links(tmp_path):
+    from taskdeck.jobs.photo_ocr import photos
+
+    app = fake_app(tmp_path)
+    opened = []
+    app.open_url = opened.append
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    spans = screen._linked("Review them on https://ws.example.ts.net:8444/review/17.")
+    assert [s.text for s in spans] == ["Review them on ", "https://ws.example.ts.net:8444/review/17", "."]
+    spans[1].on_click(None)
+    assert opened == ["https://ws.example.ts.net:8444/review/17"]
+    assert [s.text for s in screen._linked("no links here")] == ["no links here"]

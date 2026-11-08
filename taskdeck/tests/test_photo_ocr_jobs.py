@@ -507,3 +507,35 @@ def test_receipt_field_offers_the_camera():
     assert field.camera == "receipt" and field.preview
     [product_field] = photos.PRODUCT.fields
     assert product_field.camera == ""  # products: the camera later
+
+
+def test_receipt_result_says_why_and_lists_the_items(service, settings, tmp_path):
+    service.readings["/api/receipts/17"] = {
+        **READ_RECEIPT, "location": "Mentor, OH", "tax": 112, "total": 4519,
+        "items": [{"raw_text": "BANANAS", "quantity": 1, "line_total": 129},
+                  {"raw_text": "GV WHL MLK GAL", "quantity": 2, "line_total": 658},
+                  {"raw_text": "BONUS SAVINGS", "quantity": None, "line_total": -100}],
+        "checks": [{"name": "sum", "ok": False, "detail": "items + tax = 7.99, total = 45.19"},
+                   {"name": "date", "ok": True, "detail": "2026-10-12"},
+                   {"name": "store", "ok": False, "detail": "new store: Giant Eagle"}],
+        "disagreements": {"total": {"qwen3-vl-8b": 4519, "tesseract+llm": 4591}},
+        "runs": [{"engine": "qwen3-vl-8b", "seconds": 41.6, "error": None}]}
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    rows = dict(report.result.rows)
+    assert rows["Store"] == "Giant Eagle · Mentor, OH" and rows["Items"] == "3"
+    assert rows["Why"] == ("items + tax = 7.99, total = 45.19; new store: Giant Eagle; "
+                           "the engines read total differently")
+    assert rows["Read by"] == "qwen3-vl-8b in 42 s"
+    assert report.result.table_title == "Items read (3)"
+    assert report.result.table == [("BANANAS", "$1.29"), ("GV WHL MLK GAL ×2", "$6.58"), ("BONUS SAVINGS", "-$1.00")]
+    assert report.result.text == "Items + tax = $7.99 (total on the receipt $45.19)"
+    assert "GV WHL MLK GAL ×2       $6.58" in report.result.as_plain_text()  # Copy keeps them in columns
+
+
+def test_a_new_store_is_said_plainly(service, settings, tmp_path):
+    service.readings["/api/receipts/17"] = {
+        **READ_RECEIPT, "checks": [{"name": "sum", "ok": True, "detail": "x"},
+                                   {"name": "store", "ok": False, "detail": "new store: Giant Eagle"}]}
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    assert dict(report.result.rows)["Status"] == "Needs a look: first receipt from this store"
+    assert report.result.warning.startswith("First receipt from Giant Eagle: check it once on the review page")

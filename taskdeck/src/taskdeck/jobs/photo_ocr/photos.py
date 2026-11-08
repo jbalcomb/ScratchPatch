@@ -116,16 +116,58 @@ def show_receipt(ctx):
                             images=_sent_images(ctx["parts"]))
         return
     status, warning = _verdict(reading, "approved", "The total or date")
+    failed = [c.get("name") for c in reading.get("checks") or [] if not c.get("ok")]
+    if failed == ["store"] and not reading.get("disagreements") and reading.get("bucket") == "review":
+        # Read fine; only the store is new. Say so, rather than call the reading doubtful.
+        status = "Needs a look: first receipt from this store"
+        warning = (f"First receipt from {reading.get('merchant') or 'this store'}: check it once on the review page "
+                   f"and approve it. Later receipts from this store are saved by themselves when every check passes.")
     suspect = [api.FIELD_NAMES.get(f, f) for f in reading.get("suspect") or []]
-    items = reading.get("items")
-    rows += [("Store", reading.get("merchant") or "—"), ("Date", reading.get("purchase_date") or "—"),
+    items = reading.get("items") if isinstance(reading.get("items"), list) else []
+    store = reading.get("merchant") or "—"
+    if reading.get("location"):
+        store += f" · {reading['location']}"
+    rows += [("Store", store), ("Date", reading.get("purchase_date") or "—"),
              ("Total", api.dollars(reading.get("total"))), ("Tax", api.dollars(reading.get("tax"))),
-             ("Items", str(len(items) if isinstance(items, list) else items or 0)), ("Status", status)]
-    if suspect:
-        rows.append(("Check", ", ".join(suspect)))
+             ("Items", str(len(items) if items else reading.get("items") or 0)), ("Status", status)]
+    rows += _why_rows(reading, suspect)
+    run = next(iter(reading.get("runs") or []), None)
+    if run and run.get("engine"):
+        rows.append(("Read by", f"{run['engine']}" + (f" in {run['seconds']:.0f} s" if run.get("seconds") else "")))
     ctx.result = Result(
         title=f"Receipt #{rid}: {reading.get('merchant') or 'store not read'} · {api.dollars(reading.get('total'))}",
-        rows=rows + [page], warning=warning, images=_sent_images(ctx["parts"]))
+        rows=rows + [page], table_title=f"Items read ({len(items)})" if items else None, table=_item_table(items),
+        text=_sum_line(reading, items), warning=warning, images=_sent_images(ctx["parts"]))
+
+
+def _why_rows(reading: dict, suspect: list[str]) -> list[tuple[str, str]]:
+    """Why a reading needs a look: its failed checks in words and the fields the engines read differently;
+    else the fields to check."""
+    why = [c.get("detail") or c.get("name") for c in reading.get("checks") or [] if not c.get("ok")]
+    why += [f"the engines read {api.FIELD_NAMES.get(f, f)} differently" for f in reading.get("disagreements") or {}]
+    if why:
+        return [("Why", "; ".join(why))]
+    return [("Check", ", ".join(suspect))] if suspect else []
+
+
+def _item_table(items: list[dict]) -> list[tuple[str, str]]:
+    """The line items as read, with their prices: what a person checks against the photo."""
+    out = []
+    for i in items:
+        qty, name = i.get("quantity"), str(i.get("raw_text") or "?")
+        out.append((f"{name} ×{qty:g}" if isinstance(qty, (int, float)) and qty not in (0, 1) else name,
+                    api.dollars(i.get("line_total"))))
+    return out
+
+
+def _sum_line(reading: dict, items: list[dict]) -> str | None:
+    """Items + tax against the total on the receipt: the check that catches a misread price or a missed line."""
+    priced = [i.get("line_total") for i in items if isinstance(i.get("line_total"), int)]
+    if not priced:
+        return None
+    total = reading.get("total")
+    line = f"Items + tax = {api.dollars(sum(priced) + (reading.get('tax') or 0))}"
+    return line + (f" (total on the receipt {api.dollars(total)})" if isinstance(total, int) else "")
 
 
 # ---- products: each group of photos (``Field.grouped``) is one product -------------------------------------
@@ -176,8 +218,7 @@ def show_product(ctx):
     status, warning = _verdict(reading, "ready", "The product name")
     rows += [("Name", reading.get("name") or "—"), ("Brand", reading.get("brand") or "—"),
              ("Size", reading.get("size") or "—"), ("Status", status)]
-    if reading.get("suspect"):
-        rows.append(("Check", ", ".join(reading["suspect"])))
+    rows += _why_rows(reading, reading.get("suspect") or [])
     ctx.result = Result(title=f"Product #{pid}: {_product_label(reading)}", rows=rows + [page], warning=warning,
                         images=list(photos))
 
