@@ -563,3 +563,32 @@ def test_timeline_and_projected_tabs(items):
     # Total is a formula on its own row (header in row 1), so a row copied by hand carries it along.
     assert tab[1][9] == "=SUM(F2:I2)" and tab[-1][9] == f"=SUM(F{len(tab)}:I{len(tab)})"
     assert projected[3][9] == "=SUM(F4:I4)"
+
+
+def test_made_on_reads_the_date_in_the_description():
+    made = lambda day, description: data.made_on(bank(day, "checking", description, -45000, 0, "Cash"))
+    assert made("2026-11-05", "BKOFAMERICA ATM 11/04 #000008465 WITHDRWL MENTOR OH") == date(2026, 11, 4)
+    assert made("2027-01-02", "BKOFAMERICA ATM 12/31 #000001 WITHDRWL") == date(2026, 12, 31)  # the year before
+    assert made("2026-11-05", "Online Banking transfer Confirmation# 4678681553") == date(2026, 11, 5)  # no date
+    assert made("2026-11-05", "ATM 11/09 WITHDRWL") == date(2026, 11, 5)   # after it posted: not the day it was made
+    assert made("2026-11-05", "ATM 10/20 WITHDRWL") == date(2026, 11, 5)   # more than 10 days before
+    assert made("2026-11-05", "ATM 13/45 WITHDRWL") == date(2026, 11, 5)   # not a date
+
+
+def test_atm_cash_arrives_the_day_it_was_withdrawn(items):
+    """Rent paid in cash on 11/4 with money withdrawn on 11/4 that posted 11/5: Cash never dips below zero."""
+    exported = [bank("2026-11-05", "checking", "BKOFAMERICA ATM 11/04 #000008465 WITHDRWL", -45000, 18806, "Cash")]
+    cash = [cash_entry("2026-11-04", "Cash On-Hand", 200),
+            cash_entry("2026-11-04", "Landlord - Rent", -45000, "Back Rent"),
+            cash_entry("2026-11-04", "From Bills, To Cash", 45000, "Transfer")]
+    kept = ledger.merge(exported, cash, [], date(2026, 8, 1))
+    assert [t.description for t in kept] == ["Cash On-Hand", "Landlord - Rent"]  # the ATM covers the +$450
+    f = data.with_cash(data.Feed({"checking": (18806, date(2026, 11, 5))}, exported), kept)
+    tl = timeline.build([i for i in items if i.section != "transfer"], f, start=date(2026, 11, 1))
+    on_hand = [(r.date, r.description, r.balances["cash"]) for r in tl.rows
+               if r.account == "cash" and r.kind == timeline.ACTUAL]
+    assert on_hand == [(date(2026, 11, 4), "ATM withdrawal", 45000), (date(2026, 11, 4), "Cash On-Hand", 45200),
+                       (date(2026, 11, 4), "Landlord - Rent", 200)]
+    # The Daily side keeps its posting date and the bank's balance.
+    daily = [(r.date, r.balances["checking"]) for r in tl.rows if r.account == "checking" and r.kind == timeline.ACTUAL]
+    assert daily == [(date(2026, 11, 5), 18806)]

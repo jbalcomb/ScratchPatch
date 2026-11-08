@@ -192,6 +192,39 @@ def with_cash(feed: Feed, cash: list[Txn]) -> Feed:
     return Feed(feed.balances, sorted(feed.txns + cash, key=lambda t: t.date))
 
 
+MADE_ON = re.compile(r"(?<![\d/])(\d{1,2})/(\d{1,2})(?![\d/])")  # "ATM 11/04": the day it was made
+MADE_ON_LIMIT = 10  # days: an earlier "date" in a description is something else
+
+
+def made_on(t: Txn) -> date:
+    """The day a bank transaction was made, from the date in its description ("ATM 11/04 ..."); its posting
+    date when there's none, or when the one there is after the posting date or more than 10 days before it.
+    The year is the posting date's, or the year before for one made 12/31 and posted 1/2."""
+    m = MADE_ON.search(t.description or "")
+    if not m:
+        return t.date
+    month, day = int(m.group(1)), int(m.group(2))
+    for year in (t.date.year, t.date.year - 1):
+        try:
+            made = date(year, month, day)
+        except ValueError:
+            return t.date
+        if made <= t.date:
+            return made if (t.date - made).days <= MADE_ON_LIMIT else t.date
+    return t.date
+
+
+def is_atm(t: Txn) -> bool:
+    """An ATM withdrawal or deposit in a bank export: it moves money between its account and Cash."""
+    return t.category == ATM and t.source == BANK and t.account != CASH
+
+
+def cash_side(t: Txn) -> Txn:
+    """The Cash side of an ATM withdrawal (cash in) or deposit (cash out), dated the day it was made: Cash has
+    no bank balance to keep in step with, and the bank side keeps its posting date."""
+    return Txn(CASH, made_on(t), "ATM " + ("withdrawal" if t.amount < 0 else "deposit"), -t.amount, None, ATM)
+
+
 def cash_withdrawal(txns: list[Txn], due: date, amount: int) -> Txn | None:
     """The ATM withdrawal that pays a cash bill: at least ``amount``, in the week up to its day (or 3 days after)."""
     return next((t for t in txns if t.category == ATM and -t.amount >= amount
