@@ -9,7 +9,7 @@ components, phase plan).
 
 So far: the signed envelope, the fixed screening stage, the Phase A gateway that admits messages
 over HTTP and publishes them to a private ntfy, and the device agent that acts on them (clipboard,
-notifications, inbox, links), with install scripts for Windows and Linux.
+notifications, inbox, links), with install scripts for Windows, Linux and (device agent only) macOS.
 
 ```
 sender ──make_submission──▶ gateway.admit ──signed envelope──▶ broker ──▶ agent.receive ──▶ toppings ──▶ action tier
@@ -114,6 +114,10 @@ powershell -ExecutionPolicy Bypass -File scripts\install-device-windows.ps1 -Ntf
 # Linux: systemd user service tied to your desktop session; needs wl-copy or xclip, and notify-send
 bash scripts/install-device-linux.sh https://<broker>.<tailnet>.ts.net:2586 <gateway key>
 ```
+```bash
+# macOS: LaunchAgent net.courier.device in your login session (KeepAlive); uses pbcopy and osascript
+bash scripts/install-device-macos.sh https://<broker>.<tailnet>.ts.net:2586 <gateway key>
+```
 
 Copy `ntfy-device.token` from the broker machine's `~/.config/courier` first. On the broker
 machine itself both arguments can be left out. `python -m courier inbox` shows what arrived.
@@ -143,6 +147,7 @@ Create its sender with `--paste-string` and paste the printed line into the job'
 
 The line is the credentials file in one line (`courier-sender:` + base64), so treat it as a secret.
 
-## Next (Phase A)
+## Next
 
-macOS LaunchAgent for the device agent.
+Phase A is complete. Phase B: NATS JetStream in place of ntfy (per-device credentials, queue
+claiming), an MCP server so AI agents can send, and a native agent for phones.
