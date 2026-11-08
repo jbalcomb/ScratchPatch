@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parsing import (OCR, PROMPT, SCHEMA, chat, extract_json, image_part, load_engines, norm_item,  # noqa: E402,F401
                      norm_size, norm_store, normalize, normalize_product, ocr_photos, ocr_text, parse_photos,
-                     sum_check, to_cents, to_date)
+                     sum_check, to_cents, to_date, date_options)
 
 HERE = Path(__file__).resolve().parent
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -58,13 +58,20 @@ def match_items(truth, predicted, threshold=NAME_THRESHOLD):
     return matched
 
 
+def printed_dates(parsed) -> set:
+    """Every date a reading's printed date could be (one, or two for 11/04/26)."""
+    raw = parsed if isinstance(parsed, dict) else {}
+    return set(date_options(raw.get("date_printed") or raw.get("date")).values())
+
+
 def score(label, parsed, threshold=NAME_THRESHOLD):
     truth, pred = normalize(label), normalize(parsed)
     stores = truth["store"] if isinstance(truth["store"], list) else [truth["store"]]
     matched = match_items(truth["items"], pred["items"], threshold)
     s = {
         "total": pred["total"] is not None and pred["total"] == truth["total"],
-        "date": pred["date"] is not None and pred["date"] == truth["date"],
+        # the model's job is reading the date as printed; which way round it goes is the store's (see date_options)
+        "date": truth["date"] is not None and truth["date"] in printed_dates(parsed),
         "store": bool(pred["store"]) and norm_store(pred["store"]) in {norm_store(x) for x in stores if x},
         "tax": (pred["tax"] or 0) == (truth["tax"] or 0),
         "items_matched": len(matched),
@@ -398,9 +405,9 @@ def _agree(home, a, b, rid):
         run = json.loads((home / "results" / e / f"{rid}.json").read_text())
         if not run.get("parsed"):
             return False
-        recs.append(normalize(run["parsed"]))
-    return all(r["total"] is not None and r["date"] for r in recs) and \
-        recs[0]["total"] == recs[1]["total"] and recs[0]["date"] == recs[1]["date"]
+        recs.append((normalize(run["parsed"]), printed_dates(run["parsed"])))
+    (r0, d0), (r1, d1) = recs
+    return r0["total"] is not None and r0["total"] == r1["total"] and bool(d0) and d0 == d1
 
 
 def cmd_score(args):

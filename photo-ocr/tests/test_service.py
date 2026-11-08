@@ -75,7 +75,7 @@ def test_buckets():
 
     assert checks.assess(dict(RECEIPT, total=None), {}, known)["bucket"] == "retake"
     assert checks.assess(dict(RECEIPT, date_printed="13/45/2026"), {}, known)["bucket"] == "retake"
-    assert checks.assess(dict(RECEIPT, date_printed="01/01/2019"), {}, known)["bucket"] == "review"
+    assert checks.assess(dict(RECEIPT, date_printed="2019-01-01"), {}, known)["bucket"] == "review"
     assert checks.assess(dict(RECEIPT, tax="forty"), {}, known)["bucket"] == "review"
 
 
@@ -120,7 +120,7 @@ def test_capture_parse_review_approve(tmp_path, model):
     assert r["status"] == "approved"
     fixes = svc.store.q("SELECT field, before, after FROM corrections WHERE receipt_id = ?", rid)
     assert {f["field"] for f in fixes} == {"merchant", "items"}
-    assert svc.known_stores() == {"gianteagle4", "gianteagle"}
+    assert svc.known_stores() == {"gianteagle4": None, "gianteagle": None}
 
     # The same store next time: everything checks out, so it's saved without review.
     rid2 = capture(svc, 3)
@@ -213,7 +213,7 @@ def test_aliases_products_and_shopping_list(tmp_path, model):
     model.pick = milk
     rids = []
     for n, d in enumerate(days):
-        model.receipt = dict(RECEIPT, date_printed=d.strftime("%m/%d/%y"), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
+        model.receipt = dict(RECEIPT, date_printed=d.strftime("%b %d, %Y"), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
                                                                    {"name": "BAG FEE", "price": 0.10}],
                              tax=0, total=round(3.39 + n * 0.1, 2))
         rids.append(capture(svc, 10 + n))
@@ -636,8 +636,7 @@ def test_readings_keep_their_prompt_and_the_date_as_printed(api, model):
     api.svc.parse_pending()
     [run] = api("GET", "/api/receipts/1/runs")[1]["runs"]
     assert run["prompt"] == parsing.PROMPT and run["prompt_version"] == parsing.prompt_version(parsing.PROMPT)
-    assert (run["date_printed"], run["date"]) == ("11/04/26 12:19:13", "2026-11-04")
-    assert api("GET", "/api/receipts/1")[1]["purchase_date"] == "2026-11-04"
+    assert (run["date_printed"], run["date"]) == ("11/04/26 12:19:13", None)  # Nov 4 or Apr 11: not known yet
     assert '"date_printed"' in run["raw"]
     assert "date_printed" in run["prompt"] and "YYYY-MM-DD" not in run["prompt"]
     last = api("GET", "/api/receipts/1")[1]["runs"][0]
@@ -671,10 +670,70 @@ def test_an_existing_store_gets_the_new_columns(tmp_path):
     db.Store(old)  # opening again changes nothing
 
 
-@pytest.mark.parametrize("printed, want", [
-    ("11/04/26", "2026-11-04"), ("1/4/26", "2026-01-04"), ("01/04/2026", "2026-01-04"), ("11/7/2026", "2026-11-07"),
-    ("11/04/26 12:19:13", "2026-11-04"), ("TC# 1234 11/04/26 12:19", "2026-11-04"), ("2026-11-04", "2026-11-04"),
-    ("11-04-26", "2026-11-04"), ("Nov 4, 2026", "2026-11-04"), ("13/04/26", None), ("", None), ("soon", None)])
-def test_the_printed_date_is_converted_in_code(printed, want):
+@pytest.mark.parametrize("printed, options", [
+    ("11/04/26", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("1/4/26", {"mdy": "2026-01-04", "dmy": "2026-04-01"}),
+    ("11/04/26 12:19:13", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("TC# 1234 11.04.2026 12:19", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("04/04/26", {"mdy": "2026-04-04", "dmy": "2026-04-04"}),
+    ("11/25/2026", {"mdy": "2026-11-25"}), ("25/11/26", {"dmy": "2026-11-25"}), ("25-11-2026", {"dmy": "2026-11-25"}),
+    ("2026-11-04", {"": "2026-11-04"}), ("2026/11/04 08:15", {"": "2026-11-04"}),
+    ("Nov 4, 2026", {"": "2026-11-04"}), ("4 November 2026", {"": "2026-11-04"}), ("SAT NOV 04 26", {"": "2026-11-04"}),
+    ("13/45/26", {}), ("", {}), (None, {}), ("soon", {})])
+def test_every_way_a_printed_date_reads(printed, options):
     import parsing
-    assert parsing.to_date(printed) == want
+    assert parsing.date_options(printed) == options
+
+
+def test_to_date_converts_only_what_reads_one_way():
+    import parsing
+    assert parsing.to_date("25/11/26") == "2026-11-25" and parsing.to_date("04/04/26") == "2026-04-04"
+    assert parsing.to_date("11/04/26") is None
+    assert parsing.to_date("11/04/26", "mdy") == "2026-11-04" and parsing.to_date("11/04/26", "dmy") == "2026-04-11"
+
+
+def test_a_store_learns_its_date_order_from_the_first_approved_receipt(api, model):
+    model.receipt = dict(RECEIPT, store="Walmart", date_printed="10/04/26 12:19:13")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/1")[1]
+    assert (r["bucket"], r["purchase_date"]) == ("review", None)  # not a retake: the date is readable, two ways
+    [date_check] = [c for c in r["checks"] if c["name"] == "date"]
+    assert not date_check["ok"] and "this store's date order isn't known yet" in date_check["detail"]
+    assert date_check["choices"] == [{"order": "mdy", "date": "2026-10-04", "label": "month first"},
+                                     {"order": "dmy", "date": "2026-04-10", "label": "day first"}]
+    api("POST", "/api/receipts/1", {"purchase_date": "2026-10-04", "approve": True})
+    assert api.svc.known_stores()["walmart"] == "mdy"
+
+    model.receipt = dict(RECEIPT, store="WALMART", date_printed="10/05/26 09:02")
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/2")[1]
+    assert r["purchase_date"] == "2026-10-05" and r["bucket"] == "auto"
+    assert api("GET", "/api/receipts/2/runs")[1]["runs"][0]["date"] == "2026-10-05"
+
+
+def test_a_date_that_reads_one_way_teaches_the_order_too(api, model):
+    model.receipt = dict(RECEIPT, store="Tim Hortons", date_printed="25/10/26")  # only day first is a real date
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    assert api("GET", "/api/receipts/1")[1]["purchase_date"] == "2026-10-25"
+    api("POST", "/api/receipts/1", {"approve": True})
+    assert api.svc.known_stores()["timhortons"] == "dmy"
+    model.receipt = dict(RECEIPT, store="Tim Hortons", date_printed="04/10/26")
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()
+    assert api("GET", "/api/receipts/2")[1]["purchase_date"] == "2026-10-04"
+
+
+def test_the_same_date_both_ways_teaches_nothing(api, model):
+    model.receipt = dict(RECEIPT, store="Walmart", date_printed="10/10/26")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    api("POST", "/api/receipts/1", {"approve": True})
+    assert api.svc.known_stores()["walmart"] is None
+
+
+def test_review_page_offers_the_two_readings(api):
+    page = api("GET", "/review/1")[1].decode()
+    assert "c.choices" in page and "datepick" in page and "f_purchase_date" in page

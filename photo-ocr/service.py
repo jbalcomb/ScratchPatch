@@ -196,7 +196,8 @@ class Service:
     # ------------------------------------------------------------ parsing
 
     def known_stores(self):
-        return {r["norm_name"] for r in self.store.q("SELECT norm_name FROM stores")}
+        """{normalized store name: its date order (mdy / dmy, or None if not learned yet)}."""
+        return {r["norm_name"]: r["date_order"] for r in self.store.q("SELECT norm_name, date_order FROM stores")}
 
     def _read_batch(self, rows, photos_of, kind, engines):
         """Read a batch of receipts or products: engine by engine (all OCR first), so the GPU swaps models as
@@ -336,14 +337,15 @@ class Service:
         """Every reading of a receipt, newest first, in full: the prompt sent, the raw reply, what was parsed
         from it (including the date exactly as printed), the engine, the time taken. For debugging."""
         self._receipt_row(rid)
-        out = []
+        out, known = [], self.known_stores()
         for r in self.store.q("SELECT * FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC", rid):
             parsed = loads(r["parsed_json"], None)
             out.append({"id": r["id"], "at": r["created_at"], "engine": r["engine"], "seconds": r["seconds"],
                         "error": r["error"], "prompt_version": r["prompt_version"], "prompt": r["prompt"],
                         "raw": r["raw_output"],
                         "date_printed": parsed.get("date_printed") if isinstance(parsed, dict) else None,
-                        "date": parsing.normalize(parsed)["date"] if isinstance(parsed, dict) else None})
+                        "date": parsing.normalize(parsed, checks.store_date_order(parsed, known))["date"]
+                                if isinstance(parsed, dict) else None})
         return out
 
     def ask(self, rid, question):
@@ -416,8 +418,26 @@ class Service:
                         # The spelling the engine read is this store from now on, too.
                         self.store.x("INSERT OR IGNORE INTO stores (norm_name, name, location) VALUES (?, ?, ?)",
                                      norm_store(r["merchant_raw"]), r["merchant"], r["location"])
+                    self._learn_date_order(r)
         catalog.match_receipt_items(self.store, rid, self.text_engine)
         return self.receipt(rid)
+
+    def _learn_date_order(self, r):
+        """An approved receipt shows how its store prints dates: which reading of the printed date is the date
+        approved. Only when that is one reading (11/04/26 approved as 2026-11-04 is month first; 04/04/26 says
+        nothing)."""
+        run = self.store.one("SELECT parsed_json FROM engine_runs WHERE receipt_id = ? AND engine = ? AND parsed_json "
+                             "IS NOT NULL ORDER BY id DESC LIMIT 1", r["id"], r["engine"]) if r["engine"] else None
+        parsed = loads(run["parsed_json"], {}) if run else {}
+        printed = parsed.get("date_printed") if isinstance(parsed, dict) else None
+        options = parsing.date_options(printed)
+        orders = [o for o, d in options.items() if o and d == r["purchase_date"]]
+        if len(orders) != 1:  # unreadable, written one way only, or the same date both ways (04/04/26)
+            return
+        for name in {r["merchant"], r["merchant_raw"]} - {None}:
+            self.store.x("UPDATE stores SET date_order = ? WHERE norm_name = ? AND date_order IS NOT ?",
+                         orders[0], norm_store(name), orders[0])
+        log.info("store %s prints dates %s (%r on receipt %s)", r["merchant"], parsing.DATE_ORDERS[orders[0]], printed, r["id"])
 
     def counts(self):
         c = self.store.one(

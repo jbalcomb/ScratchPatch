@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS corrections (                -- every hand edit, so t
 CREATE TABLE IF NOT EXISTS stores (                     -- known stores: approved receipts' merchants
     norm_name TEXT PRIMARY KEY,
     name      TEXT NOT NULL,
-    location  TEXT
+    location  TEXT,
+    date_order TEXT                                     -- mdy / dmy: how its receipts print dates, learned on approval
 );
 CREATE TABLE IF NOT EXISTS bank_txns (
     id          INTEGER PRIMARY KEY,
@@ -154,7 +155,8 @@ class Store:
         self.lock = threading.RLock()
 
     # Columns added after the store was first made: (table, column, type). Added in place on startup.
-    ADDED = [("engine_runs", "prompt", "TEXT"), ("engine_runs", "prompt_version", "TEXT")]
+    ADDED = [("engine_runs", "prompt", "TEXT"), ("engine_runs", "prompt_version", "TEXT"),
+             ("stores", "date_order", "TEXT")]
 
     def _add_columns(self):
         for table, column, kind in self.ADDED:

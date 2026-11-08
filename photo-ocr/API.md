@@ -71,7 +71,7 @@ Receipt summary:
 `GET /api/receipts/{id}/runs` → `{"runs": [...]}`, newest first: each reading's `at`, `engine`, `seconds`,
 `error`, `prompt_version` (8 characters, changes whenever the prompt text changes), the full `prompt` sent with
 the photos, the model's `raw` reply, `date_printed` (the date as the model read it off the receipt) and the `date` the
-service converted it to (month first; the model is not asked to convert dates).
+service converted it to (the model is not asked to convert dates; see Dates below).
 
 `POST /api/receipts/{id}/ask` `{"question": "What month, day and year are printed?"}` → `{"answer", "engine",
 "seconds"}`: asks the vision model a free question about this receipt's photos. Nothing is saved; for debugging.
@@ -160,3 +160,13 @@ imported in budget, and new accounts or banks are added there; this service has 
 
 `/` home with counts · `/capture` camera PWA (receipt or product) · `/review` queue (receipts; `?products` for products) · `/review/{id}` photo beside the fields ·
 `/items` unmatched items · `/products` gallery · `/products/{id}` · `/shopping` · `/reconcile` · `/picker`
+
+
+## Dates
+
+The model reports the date exactly as printed (`date_printed`); the service converts it. A year first
+(2026-11-04) or a written month (Nov 4 2026) reads one way. Two numbers then a year (11/04/26) may read month
+first or day first: if only one is a real date (25/10/26) that is it; otherwise the store's learned date order
+decides (`stores.date_order`, `mdy` or `dmy`). A store with no order yet gets the receipt in review, its date
+check carrying `"choices": [{"order", "date", "label"}]`; approving the receipt with one of those dates teaches
+the store its order. A time or other text beside the date is ignored.

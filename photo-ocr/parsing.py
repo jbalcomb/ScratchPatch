@@ -14,7 +14,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 SUM_SLACK = 2          # cents: items + tax may differ from the total by this much (rounding)
@@ -42,26 +42,56 @@ def to_cents(value):
     return -cents if negative else cents
 
 
-DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d",
-                "%b %d %Y", "%b %d %y", "%B %d %Y", "%d %b %Y")
-NUMERIC_DATE = re.compile(r"(?<!\d)(\d{4}-\d{1,2}-\d{1,2}|\d{4}/\d{1,2}/\d{1,2}|\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2}))(?!\d)")
+TEXT_DATE_FORMATS = ("%b %d %Y", "%b %d %y", "%B %d %Y", "%B %d %y", "%d %b %Y", "%d %b %y", "%d %B %Y")
+NUMERIC_DATE = re.compile(r"(?<!\d)(?:(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2}))(?!\d)")
+MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+TEXT_DATE = re.compile(rf"\b(?:{MONTH} \d{{1,2}} \d{{4}}|{MONTH} \d{{1,2}} \d{{2}}|\d{{1,2}} {MONTH} \d{{2,4}})\b", re.I)
+DATE_ORDERS = {"mdy": "month first", "dmy": "day first"}
 
 
-def to_date(value):
-    """A receipt date as printed, in any common US form -> "YYYY-MM-DD", or None. Slashed and dashed dates are
-    month first (mm/dd/yyyy: month and day with or without a leading zero, year two or four digits); a time or
-    other text printed beside the date is ignored."""
-    if not value:
+def _day(y, m, d):
+    try:
+        return date(y, m, d).isoformat()
+    except ValueError:
         return None
-    s = re.sub(r"\s+", " ", str(value).strip().replace(",", ""))
-    found = NUMERIC_DATE.search(s)
-    s = found.group(1) if found else s
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
+
+
+def date_options(value) -> dict:
+    """Every way to read a printed receipt date -> {order: "YYYY-MM-DD"}, no guessing.
+
+    A year first (2026-11-04, 2026/11/04) or a written month (Nov 4 2026, 4 Nov 2026) has one reading, keyed "".
+    Two numbers then a year (11/04/26) are keyed "mdy" (month first) and "dmy" (day first), each only if it
+    is a real date: 25/04/26 is only "dmy", 11/04/26 is both. Month and day may have a leading zero or not,
+    the year two digits (20yy) or four. A time or other text printed beside the date is ignored."""
+    if not value:
+        return {}
+    s = re.sub(r"\s+", " ", str(value).strip().replace(",", " ").replace(".", " "))
+    m = NUMERIC_DATE.search(str(value))
+    if m:
+        if m.group(1):
+            iso = _day(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return {"": iso} if iso else {}
+        a, b, y = int(m.group(4)), int(m.group(5)), int(m.group(6))
+        y = y + 2000 if y < 100 else y
+        out = {"mdy": _day(y, a, b), "dmy": _day(y, b, a)}
+        return {k: v for k, v in out.items() if v}
+    t = TEXT_DATE.search(s)
+    if t:
+        for fmt in TEXT_DATE_FORMATS:
+            try:
+                return {"": datetime.strptime(t.group(0), fmt).date().isoformat()}
+            except ValueError:
+                pass
+    return {}
+
+
+def to_date(value, order=None):
+    """A printed receipt date -> "YYYY-MM-DD", or None when it isn't a date or could be read two ways and the
+    store's order (order: "mdy" or "dmy") isn't known."""
+    options = date_options(value)
+    if len(set(options.values())) == 1:
+        return next(iter(options.values()))
+    return options.get(order)
 
 
 def norm_store(name):
@@ -72,7 +102,7 @@ def norm_item(name):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).split())
 
 
-def normalize(record):
+def normalize(record, date_order=None):
     """Model output or a hand label -> {store, date, tax, total, items[{name, quantity, price}]}, amounts in cents."""
     record = record if isinstance(record, dict) else {}
     items = []
@@ -85,7 +115,7 @@ def normalize(record):
     return {
         "store": store if isinstance(store, list) else (str(store).strip() if store else None),
         # model readings give the date as printed and it is converted here; hand labels give "date" (YYYY-MM-DD)
-        "date": to_date(record.get("date_printed") or record.get("date")),
+        "date": to_date(record.get("date_printed") or record.get("date"), date_order),
         "tax": to_cents(record.get("tax")),
         "total": to_cents(record.get("total")),
         "items": items,

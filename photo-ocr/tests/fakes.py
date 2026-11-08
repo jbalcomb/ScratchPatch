@@ -65,7 +65,7 @@ class Server:
         self.httpd.server_close()  # so later connections are refused, not left waiting
 
 
-RECEIPT = {"store": "Giant Eagle", "location": "Mentor, OH", "date_printed": "10/12/26 14:03", "tax": 0.42, "total": 7.19,
+RECEIPT = {"store": "Giant Eagle", "location": "Mentor, OH", "date_printed": "Oct 12, 2026 14:03", "tax": 0.42, "total": 7.19,
            "items": [{"name": "BANANAS", "quantity": 1, "price": 1.29}, {"name": "MILK 2% GAL", "quantity": 1, "price": 3.99},
                      {"name": "BREAD WHT", "quantity": 1, "price": 2.49}, {"name": "BONUS SAVINGS", "price": -1.00}]}
 

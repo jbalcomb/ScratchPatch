@@ -40,8 +40,9 @@ def test_to_cents():
 
 def test_to_date():
     assert bakeoff.to_date("2026-10-12") == "2026-10-12"
-    assert bakeoff.to_date("10/12/2026") == "2026-10-12"
-    assert bakeoff.to_date("10/12/26") == "2026-10-12"
+    assert bakeoff.to_date("10/12/2026") is None  # Oct 12 or Dec 10: the store's date order decides
+    assert bakeoff.to_date("10/12/2026", "mdy") == "2026-10-12" and bakeoff.to_date("10/12/26", "dmy") == "2026-12-10"
+    assert bakeoff.to_date("10/13/26") == "2026-10-13"
     assert bakeoff.to_date("Oct 12, 2026") == "2026-10-12"
     assert bakeoff.to_date("2026-10-12T14:03:00") == "2026-10-12"
     assert bakeoff.to_date("13/45/2026") is None

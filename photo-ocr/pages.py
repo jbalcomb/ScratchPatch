@@ -216,7 +216,7 @@ async function load() {
     + (r.bucket === 'retake' ? '<p class="msg bad">The total or date couldn\\'t be read: add a new photo below, or type them in.</p>' : '')
     + FIELDS.map(([f, l]) => `<div class="${sus.has(f) ? 'suspect' : ''}"><label for="f_${f}">${l}${dis[f] ? ' · engines read: '
       + esc(Object.entries(dis[f]).map(([e, v]) => e + ' ' + ((f === 'total' || f === 'tax') ? money(v) : v)).join(', ')) : ''}</label>
-      <input id="f_${f}" value="${esc(val(f, r[f]))}" ${f === 'total' || f === 'tax' ? 'inputmode="decimal"' : ''}></div>`).join('')
+      <input id="f_${f}" value="${esc(val(f, r[f]))}" ${f === 'total' || f === 'tax' ? 'inputmode="decimal"' : ''}>${f === 'purchase_date' ? dateChoices() : ''}</div>`).join('')
     + `<h2 class="${sus.has('items') ? 'suspect' : ''}">Items</h2>
       <table class="items"><thead><tr><th>Text</th><th class="num">Qty</th><th class="num">Price</th><th></th></tr></thead>
       <tbody id="items"></tbody></table>
@@ -239,7 +239,15 @@ async function load() {
         <button class="primary" id="ask">Ask</button></div>
       <pre id="answer" class="card" style="white-space:pre-wrap;display:none"></pre>`;
   $('#items').innerHTML = r.items.map(rowHtml).join('');
+  document.querySelectorAll('.datepick').forEach(b => b.onclick = () => { $('#f_purchase_date').value = b.dataset.d; });
   bind(); sum();
+}
+function dateChoices() {
+  // a date that reads two ways (11/04/26): one button per reading; approving teaches the store its order
+  const c = (r.checks || []).find(c => c.choices);
+  if (!c) return '';
+  return '<div class="row" style="margin-top:4px">' + c.choices.map(x =>
+    `<button class="datepick" data-d="${esc(x.date)}">${esc(x.date)} (${esc(x.label)})</button>`).join('') + '</div>';
 }
 function rowHtml(i) {
   const m = i.product_name ? `<br><span class="muted">→ ${esc(i.product_name)}</span>` : (i.match === 'skip' ? '<br><span class="muted">not a product</span>' : '');
