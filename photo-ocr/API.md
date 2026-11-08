@@ -71,7 +71,10 @@ Receipt summary:
 photographed as separate album photos), removes this one and re-parses 16. → receipt 16.
 `DELETE /api/receipts/{id}` removes the record. The photos stay in Immich.
 
-`GET /api/images/{id}` → the photo (JPEG), from the local cache or from Immich.
+`GET /api/images/{id}` → the photo as stored (the original), from the local cache or from Immich.
+`GET /api/images/{id}?w=400` → a copy at most that wide, turned upright, as JPEG (sizes round up to 200, 400,
+800, 1200 or 1600). Made once and kept in the cache; pages use 400 for the gallery and 1200 for the photo beside
+the fields.
 
 ## Line items and the catalog
 

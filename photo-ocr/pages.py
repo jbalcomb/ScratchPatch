@@ -181,7 +181,7 @@ async function load() {
   r = await api('/api/receipts/' + id);
   $('#title').textContent = r.merchant || 'Receipt ' + id;
   $('#bucket').innerHTML = `<span class="tag ${r.bucket || r.status}">${r.status === 'approved' ? 'approved' : (r.bucket || r.status)}</span>`;
-  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}" alt="photo ${i.position}"></a>`).join('');
+  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}?w=1200" alt="photo ${i.position}" decoding="async"></a>`).join('');
   const sus = new Set(r.suspect);
   const val = (f, v) => (f === 'total' || f === 'tax') ? (v == null ? '' : (v / 100).toFixed(2)) : (v ?? '');
   const dis = r.disagreements || {};
@@ -289,7 +289,7 @@ let t;
 async function load() {
   const r = await api('/api/products?q=' + encodeURIComponent($('#q').value));
   $('#grid').innerHTML = r.products.map(p => `<a href="/products/${p.id}" style="color:inherit;text-decoration:none">
-    ${p.image_url ? `<img src="${p.image_url}" alt="" loading="lazy">` : '<img alt="">'}
+    ${p.image_url ? `<img src="${p.image_url}?w=400" alt="" loading="lazy" decoding="async">` : '<img alt="">'}
     <b>${esc(p.name || (p.status === 'pending' ? 'Reading…' : 'Unnamed'))}</b>${p.status === 'review' ? ' <span class="tag review">check</span>' : ''}<br><span class="muted">${esc([p.brand, p.size].filter(Boolean).join(' · '))}
     ${p.purchases ? `<br>${p.purchases}× · ${money(p.last_price)} at ${esc(p.last_store || '?')}` : ''}</span></a>`).join('') || '<p class="muted">No products yet.</p>';
 }
@@ -326,7 +326,7 @@ async function load() {
     <input id="f_${f}" value="${esc(p[f] || '')}"></div>`).join('');
   $('#checks').innerHTML = (p.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')
     || '<li class="muted">Named by hand, not read from a photo.</li>';
-  $('#photos').innerHTML = p.images.map(i => `<img src="${i.url}" alt="">`).join('');
+  $('#photos').innerHTML = p.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}?w=1200" alt="" decoding="async"></a>`).join('');
   $('#aliases').innerHTML = p.aliases.map(a => `<li>${esc(a)}</li>`).join('') || '<li class="muted">none yet</li>';
   $('#hist').innerHTML = p.history.map(h => `<tr><td><a href="/review/${h.receipt_id}">${esc(h.date)}</a></td><td>${esc(h.merchant || '')}${h.location ? ' · ' + esc(h.location) : ''}</td>
     <td class="num">${money(h.line_total)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No purchases yet.</td></tr>';

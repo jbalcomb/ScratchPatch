@@ -526,3 +526,30 @@ def test_export_labels_feeds_the_bakeoff(tmp_path, model, capsys):
     assert sorted(p.name for p in folder.iterdir()) == ["1.jpg", "2.jpg", "label.json", "tags.txt"]
     assert bakeoff.main(["--home", str(tmp_path / "bakeoff"), "check"]) == 0
     assert bakeoff.score(json.loads((folder / "label.json").read_text()), RECEIPT)["all"]
+
+
+def test_pages_get_smaller_copies_of_photos(api):
+    """A gallery of full-size phone photos loads a row at a time: pages ask for ?w=..., a copy made once and kept."""
+    import io
+    from PIL import Image
+    big = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored sideways, shown upright (as a phone camera saves portrait photos)
+    Image.new("RGB", (4000, 3000), (200, 30, 30)).save(big, "JPEG", exif=exif)
+    body, ctype = form([("photo", "big.jpg", big.getvalue())])
+    api("POST", "/api/products", body, ctype)
+    [img] = api.svc.store.q("SELECT id FROM images")
+
+    status, data = api("GET", f"/api/images/{img['id']}?w=400")
+    small = Image.open(io.BytesIO(data))
+    assert status == 200 and small.size == (400, 533)  # upright: portrait, 400 wide
+    assert len(data) < len(big.getvalue()) / 10
+    cached = api.svc.cache / "sized" / f"{img['id']}-400.jpg"
+    assert cached.exists()
+    assert api("GET", f"/api/images/{img['id']}?w=350")[1] == data  # rounds up to the same kept copy
+    assert api("GET", f"/api/images/{img['id']}")[1] == big.getvalue()  # no w: the original
+    assert api("GET", f"/api/images/{img['id']}?w=big")[0] == 400
+
+    gallery = api("GET", "/products")[1].decode()
+    assert '${p.image_url}?w=400' in gallery and 'loading="lazy"' in gallery
+    assert '?w=1200' in api("GET", "/review/1")[1].decode()

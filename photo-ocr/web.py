@@ -177,7 +177,11 @@ class App:
         return 200, self.s.receipt(into)
 
     def image(self, m, q, b, h):
-        path = self.s.image_path(int(m[1]))
+        """A stored photo; ``?w=400`` a copy at most that wide (thumbnails and page views), else the original."""
+        width = q.get("w")
+        if width is not None and not str(width).isdigit():
+            raise HttpError(400, "w must be a width in pixels")
+        path = self.s.image_resized(int(m[1]), int(width)) if width else self.s.image_path(int(m[1]))
         ctype = {".png": "image/png", ".webp": "image/webp", ".heic": "image/heic"}.get(path.suffix.lower(), "image/jpeg")
         return 200, (path.read_bytes(), ctype)
 

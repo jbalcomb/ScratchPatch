@@ -86,6 +86,34 @@ class Service:
         self.store.x("UPDATE images SET cache_path = ? WHERE id = ?", str(path), image_id)
         return path
 
+    SIZES = (200, 400, 800, 1200, 1600)  # widths a page can ask for; anything else rounds up to one of these
+
+    def image_resized(self, image_id, width):
+        """A smaller copy of a stored photo for a page: at most ``width`` wide, turned upright (EXIF), JPEG.
+        Made once, then kept in the cache. The original when Pillow can't (or the photo is already small)."""
+        original = self.image_path(image_id)
+        w = next((s for s in self.SIZES if s >= width), self.SIZES[-1])
+        sized = self.cache / "sized" / f"{image_id}-{w}.jpg"
+        if sized.exists():
+            return sized
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return original
+        try:
+            with Image.open(original) as im:
+                im = ImageOps.exif_transpose(im)
+                if im.width > w:
+                    im = im.resize((w, round(im.height * w / im.width)), Image.LANCZOS)
+                sized.parent.mkdir(exist_ok=True)
+                tmp = sized.with_suffix(".part")
+                im.convert("RGB").save(tmp, "JPEG", quality=82, optimize=True)
+                tmp.replace(sized)
+        except Exception as e:  # noqa: BLE001 - a photo Pillow can't read: send the original
+            log.warning("image %s: no smaller copy: %s", image_id, e)
+            return original
+        return sized
+
     def receipt_photos(self, receipt_id):
         return [self.image_path(i["id"]) for i in
                 self.store.q("SELECT id FROM images WHERE receipt_id = ? ORDER BY position, id", receipt_id)]
