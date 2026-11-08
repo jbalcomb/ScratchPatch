@@ -119,7 +119,7 @@ Reply with JSON only, in this shape:
 {"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "date": "YYYY-MM-DD", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
  "subtotal": 0.00, "tax": 0.00, "total": 0.00}
 
-- Dates on receipts are written as YYYY-MM-DD or MM/DD/YYYY (month first); give the date as YYYY-MM-DD.
+- Dates on receipts are written as YYYY-MM-DD or mm/dd/yyyy; give the date as YYYY-MM-DD.
 - price is the amount printed for that line (the line total, not the unit price).
 - Discounts, coupons and savings printed as their own lines are items with a negative price.
 - Bottle deposits and bag fees are items.

@@ -638,7 +638,7 @@ def test_readings_keep_their_prompt_and_the_date_as_printed(api, model):
     assert run["prompt"] == parsing.PROMPT and run["prompt_version"] == parsing.prompt_version(parsing.PROMPT)
     assert (run["date_printed"], run["date"]) == ("11/07/26", "2026-07-11")
     assert '"date_printed"' in run["raw"]
-    assert "MM/DD/YYYY (month first)" in run["prompt"]
+    assert "YYYY-MM-DD or mm/dd/yyyy;" in run["prompt"]
     last = api("GET", "/api/receipts/1")[1]["runs"][0]
     assert last["prompt_version"] == run["prompt_version"] and last["created_at"]
     assert api("GET", "/api/receipts/9/runs")[0] == 404
