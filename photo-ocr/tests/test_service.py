@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 import urllib.error
@@ -553,3 +554,76 @@ def test_pages_get_smaller_copies_of_photos(api):
     gallery = api("GET", "/products")[1].decode()
     assert '${p.image_url}?w=400' in gallery and 'loading="lazy"' in gallery
     assert '?w=1200' in api("GET", "/review/1")[1].decode()
+
+
+def test_load_times_are_logged_and_summarized(api, caplog):
+    import io
+    import logging
+    from PIL import Image
+    big = io.BytesIO()
+    Image.new("RGB", (3000, 4000), (10, 120, 200)).save(big, "JPEG")
+    body, ctype = form([("photo", "big.jpg", big.getvalue())])
+    api("POST", "/api/products", body, ctype)
+    [img] = api.svc.store.q("SELECT id FROM images")
+    caplog.set_level(logging.INFO, logger="photo-ocr")
+    import time as clock
+
+    def logged(text, n):
+        """The log lines with ``text``, once there are ``n``: the service logs a request just after sending it,
+        so the time to send is counted, which means the next step here can run first."""
+        for _ in range(100):
+            lines = [r.getMessage() for r in caplog.records if text in r.getMessage()]
+            if len(lines) >= n:
+                return lines
+            clock.sleep(0.02)
+        return lines
+
+    api("GET", f"/api/images/{img['id']}?w=400")
+    logged(f"/api/images/{img['id']}", 1)
+    api("GET", f"/api/images/{img['id']}?w=400")
+    lines = logged(f"/api/images/{img['id']}", 2)
+    assert len(lines) == 2
+    assert lines[0].startswith(f"GET /api/images/{img['id']}?w=400 200 ") and "(shrunk " in lines[0]
+    assert lines[1].endswith("(ready-made)")
+
+    status, ok = api("POST", "/api/timings", {"page": "/products", "page_ms": 1840, "items": [
+        {"u": "/api/products", "ms": 95, "kb": 3}, {"u": f"/api/images/{img['id']}?w=400", "ms": 2100, "kb": 41},
+        {"u": "/api/images/9?w=400", "ms": 300, "kb": 30}]})
+    assert status == 200 and ok == {"ok": True}
+    phone = [r.getMessage() for r in caplog.records if r.getMessage().startswith("phone ")]
+    assert phone == [f"phone /products: page 1.8 s; 2 photos median 1200 ms, slowest 2100 ms "
+                     f"(/api/images/{img['id']}?w=400, 41 KB); 1 request, slowest 95 ms (/api/products)"]
+
+    stats = api("GET", "/api/stats")[1]
+    assert stats["server"]["photo ?w=400"]["count"] == 2
+    assert stats["photo_parts"] == {"shrunk": 1, "ready-made": 1}
+    assert stats["phone"]["/products"]["page_load"]["median_ms"] == 1840
+    assert stats["phone"]["/products"]["photo"]["max_ms"] == 2100
+    assert any("shrunk" in r["parts"] for r in stats["slowest"])
+    assert api("GET", "/stats")[0] == 200
+
+
+def test_photo_fetched_from_immich_is_timed(tmp_path, model, immich_fake):
+    import timing
+    client = immich.Immich(immich_fake.url, "k1")
+    svc = make_service(tmp_path, model, photos=client)
+    rid = capture(svc, 1)
+    [img] = svc.store.q("SELECT id, cache_path FROM images WHERE receipt_id = ?", rid)
+    os.remove(img["cache_path"])
+    timing.start()
+    svc.image_path(img["id"])
+    assert [w for w, _ in timing.parts()] == ["photo from Immich"]
+
+
+def test_worker_makes_the_page_copies_ahead(tmp_path, model):
+    import io
+    from PIL import Image
+    svc = make_service(tmp_path, model)
+    b = io.BytesIO()
+    Image.new("RGB", (3000, 4000), (1, 2, 3)).save(b, "JPEG")
+    pid = svc.create_product([("p.jpg", b.getvalue())])
+    done = svc.work_once()
+    [img] = svc.store.q("SELECT id FROM images WHERE product_id = ?", pid)
+    assert done["page copies"] == 2
+    assert all((svc.cache / "sized" / f"{img['id']}-{w}.jpg").exists() for w in (400, 1200))
+    assert svc.work_once()["page copies"] == 0  # made once

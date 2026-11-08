@@ -154,6 +154,19 @@ re-reads with the current engines.
   approved receipt to a charge with the same amount, a similar merchant, and a bank date from one day before
   to five days after the purchase.
 
+### Load times
+
+Every request is logged with its time and where the time went, e.g.
+`GET /api/images/12?w=400 200 15 KB 9 ms (ready-made)` or `... 310 ms (photo from Immich 210 ms, shrunk 74 ms)`.
+The pages also report what the phone saw, network included, e.g.
+`phone /products: page 1.8 s; 24 photos median 120 ms, slowest 900 ms (/api/images/5?w=400, 41 KB)`.
+`/stats` (linked from the home page; JSON at `/api/stats`) sums up the last 2000 of each: median, 95th
+percentile and slowest per kind of request, how often photos were ready-made, shrunk or fetched from Immich,
+and the slowest requests. Watch them with `docker logs -f photo-ocr`.
+
+Pages never load the original photos: they ask for copies 400 or 1200 pixels wide (`/api/images/{id}?w=`),
+which the worker makes as soon as a photo arrives and keeps in `~/photo-ocr/cache/sized/`.
+
 ## The bake-off (phase 1)
 
 `bakeoff.py` runs each candidate engine on hand-labeled photos, 25 to 30 receipts plus some products, and

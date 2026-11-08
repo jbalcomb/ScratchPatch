@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 import catalog
+import timing
 import checks
 import immich
 import reconcile
@@ -82,7 +83,8 @@ class Service:
             return Path(img["cache_path"])
         suffix = Path(img["source_path"] or "").suffix.lower() or ".jpg"
         path = self.cache / f"{img['immich_asset_id']}{suffix}"
-        path.write_bytes(self.photos.download(img["immich_asset_id"]))
+        with timing.Timer("photo from Immich"):
+            path.write_bytes(self.photos.download(img["immich_asset_id"]))
         self.store.x("UPDATE images SET cache_path = ? WHERE id = ?", str(path), image_id)
         return path
 
@@ -95,13 +97,16 @@ class Service:
         w = next((s for s in self.SIZES if s >= width), self.SIZES[-1])
         sized = self.cache / "sized" / f"{image_id}-{w}.jpg"
         if sized.exists():
+            timing.note("ready-made")
             return sized
         try:
             from PIL import Image, ImageOps
         except ImportError:
             return original
         try:
-            with Image.open(original) as im:
+            with timing.Timer("shrunk"), Image.open(original) as im:
+                if im.format == "JPEG":
+                    im.draft("RGB", (w, w))  # decode at 1/2, 1/4 or 1/8 size when that is still at least w: far faster
                 im = ImageOps.exif_transpose(im)
                 if im.width > w:
                     im = im.resize((w, round(im.height * w / im.width)), Image.LANCZOS)
@@ -113,6 +118,24 @@ class Service:
             log.warning("image %s: no smaller copy: %s", image_id, e)
             return original
         return sized
+
+    PAGE_SIZES = (400, 1200)  # what the pages ask for: the gallery's tiles and the photo beside the fields
+
+    def make_page_copies(self, limit=50):
+        """Background work: the copies the pages will ask for, made before anyone opens a page."""
+        made = 0
+        for img in self.store.q("SELECT id FROM images ORDER BY id DESC"):
+            for w in self.PAGE_SIZES:
+                if made >= limit:
+                    return made
+                if not (self.cache / "sized" / f"{img['id']}-{w}.jpg").exists():
+                    try:
+                        self.image_resized(img["id"], w)
+                        made += 1
+                    except Exception as e:  # noqa: BLE001 - e.g. Immich down: the page makes it later
+                        log.warning("image %s: no copy for pages yet: %s", img["id"], e)
+                        break
+        return made
 
     def receipt_photos(self, receipt_id):
         return [self.image_path(i["id"]) for i in
@@ -541,7 +564,8 @@ class Service:
         done = {}
         with self.work_lock:
             for name, fn in (("library", self.sync_library), ("albums", self.poll_albums),
-                             ("receipts", self.parse_pending), ("products", self.parse_pending_products)):
+                             ("receipts", self.parse_pending), ("products", self.parse_pending_products),
+                             ("page copies", self.make_page_copies)):
                 try:
                     done[name] = fn()
                 except Exception as e:  # noqa: BLE001 - keep the worker alive; log and go on

@@ -73,6 +73,28 @@ async function api(path, opts = {}) {
 }
 function say(text, bad) { const m = $('#msg'); if (m) { m.textContent = text; m.className = 'msg' + (bad ? ' bad' : ''); } }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// Load times as the phone sees them (network included), sent to the service for its log and /stats.
+(() => {
+  let sent = 0, pageSent = false;
+  function report() {
+    if (!navigator.sendBeacon || location.pathname === '/stats') return;
+    const all = performance.getEntriesByType('resource'), fresh = all.slice(sent);
+    sent = all.length;
+    const items = fresh.filter(r => r.name.includes('/api/') && !r.name.includes('/api/timings')).map(r => {
+      const u = new URL(r.name);
+      return {u: u.pathname + u.search, ms: Math.round(r.duration), kb: Math.round((r.encodedBodySize || r.transferSize || 0) / 1024)};
+    });
+    const nav = performance.getEntriesByType('navigation')[0];
+    const pageMs = !pageSent && nav && nav.loadEventEnd ? Math.round(nav.loadEventEnd) : null;
+    if (!items.length && !pageMs) return;
+    pageSent = pageSent || !!pageMs;
+    navigator.sendBeacon('/api/timings', new Blob([JSON.stringify({page: location.pathname, page_ms: pageMs, items})],
+                                                   {type: 'application/json'}));
+  }
+  addEventListener('load', () => setTimeout(report, 3000));
+  addEventListener('pagehide', report);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') report(); });
+})();
 """
 
 BODIES = {}
@@ -81,6 +103,7 @@ BODIES[""] = ("Photo OCR", """
 <h1>Photo OCR</h1>
 <div class="counts" id="counts"></div>
 <p class="muted">Photos of receipts and products land in Immich; the service reads them with the local models. Readings that need a look are under Review.</p>
+<p class="muted"><a href="/stats">Load times</a></p>
 <script>
 api('/api/summary').then(c => {
   const tiles = [['Pending', c.pending, '/review'], ['To review', c.review, '/review'], ['Retake', c.retake, '/review'],
@@ -416,6 +439,31 @@ async function start(album) {
   } catch (e) { say(e.message, true); }
 }
 load().catch(e => say(e.message, true));
+</script>""")
+
+
+BODIES["stats"] = ("Load times", """
+<h1>Load times</h1>
+<p class="muted">Since the service started (the last 2000 requests). The phone's times include the network; the
+service's are its own share. Reload to update.</p>
+<div id="body"></div>
+<script>
+const ms = x => x == null ? '' : (x >= 1000 ? (x / 1000).toFixed(1) + ' s' : x + ' ms');
+const row = (name, s, extra) => s ? `<tr><td>${esc(name)}</td><td class="num">${s.count}</td><td class="num">${ms(s.median_ms)}</td>
+  <td class="num">${ms(s.p95_ms)}</td><td class="num">${ms(s.max_ms)}</td>${extra || ''}</tr>` : '';
+const head = (first, extra) => `<tr><th>${first}</th><th class="num">n</th><th class="num">median</th><th class="num">95%</th><th class="num">slowest</th>${extra || ''}</tr>`;
+api('/api/stats').then(s => {
+  let h = '<h2>On the phone</h2><table>' + head('Page') +
+    Object.entries(s.phone).map(([p, v]) => row(p + ' page', v.page_load) + row(p + ' photos', v.photo) + row(p + ' data', v.api)).join('') + '</table>';
+  if (!Object.keys(s.phone).length) h += '<p class="muted">No page has reported yet: open the gallery, then come back.</p>';
+  h += '<h2>In the service</h2><table>' + head('Request', '<th class="num">size</th>') +
+    Object.entries(s.server).map(([k, v]) => row(k, v, `<td class="num">${v.median_kb} KB</td>`)).join('') + '</table>';
+  const pp = Object.entries(s.photo_parts);
+  if (pp.length) h += '<p class="muted">Photos: ' + pp.map(([w, n]) => `${esc(w)} ${n}×`).join(' · ') + '</p>';
+  h += '<h2>Slowest requests</h2><table><tr><th>Request</th><th class="num">time</th><th>where it went</th></tr>' +
+    s.slowest.map(r => `<tr><td>${esc(r.request)}</td><td class="num">${ms(r.ms)}</td><td class="muted">${esc(r.parts)}</td></tr>`).join('') + '</table>';
+  $('#body').innerHTML = h;
+}).catch(e => $('#body').textContent = e.message);
 </script>""")
 
 
