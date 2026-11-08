@@ -4,6 +4,7 @@ Shared by the bake-off (bakeoff.py) and the service (web.py). Standard library o
 fixes phone-photo rotation and shrinks photos before they go to a vision model.
 """
 import base64
+import hashlib
 import io
 import json
 import mimetypes
@@ -115,7 +116,7 @@ PROMPT = """These photos are one store receipt, in order from top to bottom. The
 in two photos is still one line, so list it once.
 
 Reply with JSON only, in this shape:
-{"store": "store name as printed", "location": "city, state as printed, or null", "date": "YYYY-MM-DD", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
+{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "date": "YYYY-MM-DD", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
  "subtotal": 0.00, "tax": 0.00, "total": 0.00}
 
 - Dates on receipts are written as YYYY-MM-DD or MM/DD/YYYY (month first); give the date as YYYY-MM-DD.
@@ -136,6 +137,7 @@ SCHEMA = {
     "properties": {
         "store": {"type": ["string", "null"]},
         "location": {"type": ["string", "null"]},
+        "date_printed": {"type": ["string", "null"]},
         "date": {"type": ["string", "null"]},
         "items": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"}, "quantity": {"type": ["number", "null"]}, "price": {"type": ["number", "null"]}},
@@ -351,11 +353,14 @@ def parse_photos(engine, paths, kind="receipt", ocr=None):
     -> {"engine", "kind", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
     ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model)."""
     spec = KINDS[kind]
+    template = spec["prompt"] if engine["kind"] == "vlm" else spec["text_prompt"]
     run = {"engine": engine["name"], "kind": kind, "raw": None, "parsed": None, "error": None, "seconds": None,
-           "at": datetime.now().isoformat(timespec="seconds")}
+           "at": datetime.now().isoformat(timespec="seconds"), "prompt": None,
+           "prompt_version": prompt_version(template)}
     t0, extra = time.monotonic(), 0.0
     try:
         if engine["kind"] == "vlm":
+            run["prompt"] = spec["prompt"]
             content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": spec["prompt"]}]
         elif engine["kind"] == "ocr_llm":
             ocr = ocr or ocr_photos(engine, paths)
@@ -363,7 +368,7 @@ def parse_photos(engine, paths, kind="receipt", ocr=None):
             if ocr.get("error"):
                 raise RuntimeError(f"OCR failed: {ocr['error']}")
             run["ocr"] = ocr["lines"]
-            content = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
+            content = run["prompt"] = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
         else:
             raise ValueError(f"unknown engine kind {engine['kind']!r} (vlm or ocr_llm)")
         run["raw"], reply = chat(engine, content, spec["schema"])
@@ -408,3 +413,19 @@ def normalize_product(record):
     record = record if isinstance(record, dict) else {}
     clean = lambda v: str(v).strip() if v not in (None, "") and str(v).strip().lower() not in ("null", "none") else None  # noqa: E731
     return {"name": clean(record.get("name")), "brand": clean(record.get("brand")), "size": clean(record.get("size"))}
+
+
+def prompt_version(template: str) -> str:
+    """A short tag for a prompt's wording (8 hex characters): which prompt a reading was made with."""
+    return hashlib.sha1(template.encode("utf-8")).hexdigest()[:8]
+
+
+def ask(engine, paths, question: str) -> tuple[str, float]:
+    """Debugging: the photos and a free question to a vision engine; the reply as text, and the seconds taken.
+    No answer shape is imposed, so the model says what it sees in its own words."""
+    if engine.get("kind") != "vlm":
+        raise ValueError(f"{engine['name']} can't look at photos (it reads OCR text); ask a vision engine")
+    t0 = time.monotonic()
+    content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": question}]
+    reply, _ = chat(engine, content)
+    return (reply or "").strip(), round(time.monotonic() - t0, 2)

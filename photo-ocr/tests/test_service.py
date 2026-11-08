@@ -627,3 +627,44 @@ def test_worker_makes_the_page_copies_ahead(tmp_path, model):
     assert done["page copies"] == 2
     assert all((svc.cache / "sized" / f"{img['id']}-{w}.jpg").exists() for w in (400, 1200))
     assert svc.work_once()["page copies"] == 0  # made once
+
+
+def test_readings_keep_their_prompt_and_the_date_as_printed(api, model):
+    import parsing
+    model.receipt = dict(RECEIPT, date_printed="11/07/26", date="2026-07-11")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    [run] = api("GET", "/api/receipts/1/runs")[1]["runs"]
+    assert run["prompt"] == parsing.PROMPT and run["prompt_version"] == parsing.prompt_version(parsing.PROMPT)
+    assert (run["date_printed"], run["date"]) == ("11/07/26", "2026-07-11")
+    assert '"date_printed"' in run["raw"]
+    assert "MM/DD/YYYY (month first)" in run["prompt"]
+    last = api("GET", "/api/receipts/1")[1]["runs"][0]
+    assert last["prompt_version"] == run["prompt_version"] and last["created_at"]
+    assert api("GET", "/api/receipts/9/runs")[0] == 404
+
+
+def test_ask_the_model_about_a_receipt(api, model):
+    api.svc.create_receipt([("r.png", png(1)), ("s.png", png(2))])
+    status, a = api("POST", "/api/receipts/1/ask", {"question": "What date is printed on this receipt?"})
+    assert status == 200 and a["answer"] == model.ask_reply and a["engine"] == "vl-a"
+    asked = json.loads(model.requests[-1][2])
+    content = asked["messages"][0]["content"]
+    assert sum(1 for c in content if c.get("type") == "image_url") == 2
+    assert content[-1]["text"] == "What date is printed on this receipt?" and "response_format" not in asked
+    assert api("POST", "/api/receipts/1/ask", {"question": " "}) == (400, {"error": "type a question"})
+
+
+def test_an_existing_store_gets_the_new_columns(tmp_path):
+    import db
+    old = tmp_path / "old.db"
+    con = sqlite3.connect(old)
+    con.execute("CREATE TABLE engine_runs (id INTEGER PRIMARY KEY, receipt_id INTEGER, product_id INTEGER, engine TEXT "
+                "NOT NULL, raw_output TEXT, parsed_json TEXT, ocr_json TEXT, error TEXT, seconds REAL, created_at TEXT NOT NULL)")
+    con.execute("INSERT INTO engine_runs (engine, created_at) VALUES ('qwen3-vl-8b', '2026-11-06T10:00:00')")
+    con.commit()
+    con.close()
+    store = db.Store(old)
+    [row] = store.q("SELECT engine, prompt, prompt_version FROM engine_runs")
+    assert row == {"engine": "qwen3-vl-8b", "prompt": None, "prompt_version": None}
+    db.Store(old)  # opening again changes nothing

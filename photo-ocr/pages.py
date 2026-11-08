@@ -208,7 +208,11 @@ async function load() {
   const sus = new Set(r.suspect);
   const val = (f, v) => (f === 'total' || f === 'tax') ? (v == null ? '' : (v / 100).toFixed(2)) : (v ?? '');
   const dis = r.disagreements || {};
-  $('#form').innerHTML = (r.error ? `<p class="msg bad">${esc(r.error)}</p>` : '')
+  const last = r.runs[0];
+  $('#form').innerHTML = (last ? `<p class="muted" id="lastread">Read ${esc(last.created_at.replace('T', ' '))} by ${esc(last.engine)}`
+      + ` in ${last.seconds ?? '?'} s · prompt ${esc(last.prompt_version || 'not recorded')}</p>` : '')
+    + (r.status === 'pending' ? '<p class="msg">Reading… this page updates when it is done.</p>' : '')
+    + (r.error ? `<p class="msg bad">${esc(r.error)}</p>` : '')
     + (r.bucket === 'retake' ? '<p class="msg bad">The total or date couldn\\'t be read: add a new photo below, or type them in.</p>' : '')
     + FIELDS.map(([f, l]) => `<div class="${sus.has(f) ? 'suspect' : ''}"><label for="f_${f}">${l}${dis[f] ? ' · engines read: '
       + esc(Object.entries(dis[f]).map(([e, v]) => e + ' ' + ((f === 'total' || f === 'tax') ? money(v) : v)).join(', ')) : ''}</label>
@@ -224,7 +228,16 @@ async function load() {
       <div class="row"><input type="file" id="more" accept="image/*" capture="environment" hidden><button id="addphoto">Add a photo (retake)</button>
         <input id="into" placeholder="receipt #" inputmode="numeric" style="width:110px"><button id="merge">Merge into</button>
         <button class="danger" id="del">Delete</button></div>
-      <p class="muted">${r.runs.map(x => esc(x.engine) + ' ' + (x.seconds ?? '?') + ' s' + (x.error ? ' (' + esc(x.error) + ')' : '')).join(' · ')}</p>`;
+      <h2>Readings</h2>
+      <div id="runs"><button id="showruns">Show every reading, with the prompt sent and the model's reply</button></div>
+      <h2>Ask the model</h2>
+      <p class="muted">Sends this receipt's photos and your question to the vision model and shows its answer. Nothing is saved.</p>
+      <textarea id="q" rows="2" placeholder="Ask about the photo"></textarea>
+      <div class="row" style="margin-top:6px">
+        <button class="qp" data-q="What date is printed on this receipt? Write it exactly as it is printed.">Date as printed</button>
+        <button class="qp" data-q="Look at the date printed on this receipt. Which number is the month, which is the day, and which is the year? Explain how you can tell.">Month, day, year</button>
+        <button class="primary" id="ask">Ask</button></div>
+      <pre id="answer" class="card" style="white-space:pre-wrap;display:none"></pre>`;
   $('#items').innerHTML = r.items.map(rowHtml).join('');
   bind(); sum();
 }
@@ -250,7 +263,40 @@ function bind() {
   $('#addrow').onclick = () => { $('#items').insertAdjacentHTML('beforeend', rowHtml({raw_text: '', quantity: null, line_total: null})); bind(); };
   $('#save').onclick = () => send(false);
   $('#approve').onclick = () => send(true);
-  $('#reparse').onclick = async () => { await api(`/api/receipts/${id}/reparse`, {json: {}}); say('Reading again… reload in a minute.'); };
+  $('#reparse').onclick = async () => {
+    const before = r.runs.length ? r.runs[0].id : 0;
+    await api(`/api/receipts/${id}/reparse`, {json: {}});
+    say('Reading again… this page updates when the new reading is in.');
+    for (let i = 0; i < 120; i++) {  // up to 6 minutes: the model may have to be loaded first
+      await new Promise(ok => setTimeout(ok, 3000));
+      const now = await api('/api/receipts/' + id);
+      if (now.status !== 'pending' && (now.runs.length && now.runs[0].id !== before || now.error)) {
+        await load();
+        return say(`Read again: date ${now.purchase_date || 'not read'}, total ${money(now.total)}.`);
+      }
+    }
+    say('Still reading after 6 minutes: reload later.', true);
+  };
+  $('#showruns').onclick = async () => {
+    const runs = (await api(`/api/receipts/${id}/runs`)).runs;
+    $('#runs').innerHTML = runs.map(x => `<details class="card"><summary>${esc(x.at.replace('T', ' '))} · ${esc(x.engine)} ·
+      ${x.seconds ?? '?'} s · prompt ${esc(x.prompt_version || 'not recorded')} · date printed
+      “${esc(x.date_printed ?? '?')}” → ${esc(x.date ?? '?')}${x.error ? ' · ' + esc(x.error) : ''}</summary>
+      <h2>Prompt</h2><pre style="white-space:pre-wrap">${esc(x.prompt || 'not recorded (read before prompts were kept)')}</pre>
+      <h2>Reply</h2><pre style="white-space:pre-wrap">${esc(x.raw || '')}</pre></details>`).join('') || '<p class="muted">No readings yet.</p>';
+  };
+  document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('#q').value = b.dataset.q; });
+  $('#ask').onclick = async () => {
+    const question = $('#q').value.trim();
+    if (!question) return say('Type a question, or tap one of the ready-made ones.', true);
+    $('#ask').disabled = true; say('Asking… the model may have to be loaded first.');
+    try {
+      const a = await api(`/api/receipts/${id}/ask`, {json: {question}});
+      $('#answer').style.display = ''; $('#answer').textContent = `${a.answer}\n\n(${a.engine}, ${a.seconds} s)`;
+      say('');
+    } catch (e) { say(e.message, true); }
+    $('#ask').disabled = false;
+  };
   $('#addphoto').onclick = () => $('#more').click();
   $('#more').onchange = async e => { const fd = new FormData(); fd.append('photo', e.target.files[0]);
     try { await api(`/api/receipts/${id}/photos`, {method: 'POST', body: fd}); say('Photo added; reading again… reload in a minute.'); } catch (x) { say(x.message, true); } };

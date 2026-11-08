@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     raw_output  TEXT,
     parsed_json TEXT,
     ocr_json    TEXT,
+    prompt      TEXT,                               -- the prompt sent with the photos (or with the OCR text)
+    prompt_version TEXT,                            -- a short tag for the prompt's wording (parsing.prompt_version)
     error       TEXT,
     seconds     REAL,
     created_at  TEXT NOT NULL
@@ -148,7 +150,17 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._add_columns()
         self.lock = threading.RLock()
+
+    # Columns added after the store was first made: (table, column, type). Added in place on startup.
+    ADDED = [("engine_runs", "prompt", "TEXT"), ("engine_runs", "prompt_version", "TEXT")]
+
+    def _add_columns(self):
+        for table, column, kind in self.ADDED:
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     def q(self, sql, *args):
         with self.lock:

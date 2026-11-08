@@ -91,6 +91,8 @@ class App:
             ("POST", r"/api/receipts/(\d+)/photos", self.post_receipt_photos),
             ("POST", r"/api/receipts/(\d+)/reparse", self.reparse),
             ("POST", r"/api/receipts/(\d+)/merge", self.merge),
+            ("GET", r"/api/receipts/(\d+)/runs", lambda m, q, b, h: (200, {"runs": self.s.receipt_runs(int(m[1]))})),
+            ("POST", r"/api/receipts/(\d+)/ask", lambda m, q, b, h: (200, self.s.ask(int(m[1]), self.json(b).get("question")))),
             ("GET", r"/api/images/(\d+)", self.image),
             ("GET", r"/api/items/unmatched", lambda m, q, b, h: (200, {"items": self.s.unmatched_items(q.get("limit", 50))})),
             ("POST", r"/api/items/(\d+)/match", self.match_item),

@@ -18,6 +18,7 @@ import checks
 import immich
 import reconcile
 from db import Store, loads, now
+import parsing
 from parsing import load_engines, norm_store, ocr_photos, parse_photos
 
 log = logging.getLogger("photo-ocr")
@@ -226,10 +227,12 @@ class Service:
 
     def _save_runs(self, runs, receipt_id=None, product_id=None):
         for run in runs.values():
-            self.store.x("INSERT INTO engine_runs (receipt_id, product_id, engine, raw_output, parsed_json, ocr_json, error, "
-                         "seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", receipt_id, product_id, run["engine"],
-                         run["raw"], json.dumps(run["parsed"]) if run["parsed"] is not None else None,
-                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run["error"], run["seconds"], now())
+            self.store.x("INSERT INTO engine_runs (receipt_id, product_id, engine, raw_output, parsed_json, ocr_json, prompt, "
+                         "prompt_version, error, seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         receipt_id, product_id, run["engine"], run["raw"],
+                         json.dumps(run["parsed"]) if run["parsed"] is not None else None,
+                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run.get("prompt"),
+                         run.get("prompt_version"), run["error"], run["seconds"], now())
 
     def parse_pending(self, limit=20):
         """Read pending receipts."""
@@ -324,9 +327,37 @@ class Service:
                 "WHERE i.receipt_id = ? ORDER BY i.position", rid),
             "checks": loads(r["checks"], []), "confidence": loads(r["confidence"], {}),
             "disagreements": loads(r["disagreements"], {}),
-            "runs": self.store.q("SELECT engine, seconds, error FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC LIMIT 4", rid),
+            "runs": self.store.q("SELECT id, engine, seconds, error, prompt_version, created_at FROM engine_runs "
+                                 "WHERE receipt_id = ? ORDER BY id DESC LIMIT 4", rid),
         })
         return out
+
+    def receipt_runs(self, rid):
+        """Every reading of a receipt, newest first, in full: the prompt sent, the raw reply, what was parsed
+        from it (including the date exactly as printed), the engine, the time taken. For debugging."""
+        self._receipt_row(rid)
+        out = []
+        for r in self.store.q("SELECT * FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC", rid):
+            parsed = loads(r["parsed_json"], None)
+            out.append({"id": r["id"], "at": r["created_at"], "engine": r["engine"], "seconds": r["seconds"],
+                        "error": r["error"], "prompt_version": r["prompt_version"], "prompt": r["prompt"],
+                        "raw": r["raw_output"],
+                        "date_printed": parsed.get("date_printed") if isinstance(parsed, dict) else None,
+                        "date": parsed.get("date") if isinstance(parsed, dict) else None})
+        return out
+
+    def ask(self, rid, question):
+        """Debugging: the receipt's photos and a free question to a vision engine; nothing is saved."""
+        question = str(question or "").strip()
+        if not question:
+            raise ValueError("type a question")
+        engine = next((e for e in self.parse_engines + self.product_engines if e["kind"] == "vlm"),
+                      next((e for e in self.engines.values() if e["kind"] == "vlm"), None))
+        if engine is None:
+            raise ValueError("no vision engine in engines.json to ask")
+        answer, seconds = parsing.ask(engine, self.receipt_photos(rid), question)
+        log.info("asked %s about receipt %s (%.1f s): %r -> %r", engine["name"], rid, seconds, question[:200], answer[:500])
+        return {"engine": engine["name"], "seconds": seconds, "question": question, "answer": answer}
 
     def edit(self, rid, data):
         """Hand edits from the review page; every change is kept as a correction. approve: accept it."""
