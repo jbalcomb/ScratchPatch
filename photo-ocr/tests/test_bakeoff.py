@@ -261,3 +261,39 @@ def test_check_flags_bad_labels(tmp_path, capsys):
 def test_ocr_text_marks_photo_breaks():
     lines = [{"text": "A", "conf": 1}, None, {"text": "B", "conf": 1}, None]
     assert bakeoff.ocr_text(lines) == "--- photo 1 ---\nA\n--- photo 2 ---\nB"
+
+
+def test_another_prompt_runs_beside_the_current_one(tmp_path, llama):
+    home = tmp_path / "bakeoff"
+    (tmp_path / "IMG_1.png").write_bytes(PNG)
+    bakeoff.main(["--home", str(home), "add", str(tmp_path / "IMG_1.png")])
+    (home / "set" / "r001" / "label.json").write_text(json.dumps(LABEL))
+    engines = tmp_path / "engines.json"
+    engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
+    old = Path(bakeoff.HERE / "prompts").glob("receipt-*.txt")
+    old = next(p for p in old if p.read_text() != bakeoff.PROMPT)  # the prompt before the summary-line rule
+    assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)]) == 0
+    assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines), "--prompt", str(old)]) == 0
+    sent = [r["messages"][0]["content"][-1]["text"] for r in FakeLlama.requests]
+    assert sent == [bakeoff.PROMPT, old.read_text()]
+    version = bakeoff.prompt_version(old.read_text())
+    assert (home / "results" / f"fake-vl@{version}" / "r001.json").exists()
+    bakeoff.main(["--home", str(home), "score"])
+    report = (home / "results" / "report.md").read_text()
+    assert "## Errors by category" in report and f"| fake-vl@{version} | 1 |" in report
+
+
+def test_errors_by_category_in_the_report(tmp_path):
+    home = tmp_path / "bakeoff"
+    item = home / "set" / "r001"
+    item.mkdir(parents=True)
+    (item / "1.png").write_bytes(PNG)
+    (item / "label.json").write_text(json.dumps(LABEL))
+    reading = dict(LABEL, store="Giant Eagle", items=LABEL["items"] + [{"name": "TOTAL SAVINGS", "price": "-1.00"}])
+    (home / "results" / "vl").mkdir(parents=True)
+    (home / "results" / "vl" / "r001.json").write_text(json.dumps({"parsed": reading, "seconds": 3}))
+    bakeoff.main(["--home", str(home), "score"])
+    report = (home / "results" / "report.md").read_text()
+    header = next(line for line in report.splitlines() if line.startswith("| Engine | Receipts | summary"))
+    row = next(line for line in report.splitlines() if line.startswith("| vl | 1 | 1 |"))
+    assert header and row

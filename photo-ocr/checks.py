@@ -43,8 +43,23 @@ def run_checks(parsed, known_stores, today=None, receipt_source="in-store"):
     else:
         got = sum(i["price"] for i in rec["items"]) + (rec["tax"] or 0)
         ok = abs(got - rec["total"]) <= SUM_SLACK
-        out.append({"name": "sum", "ok": ok, "fields": [] if ok else ["total", "tax", "items"],
-                    "detail": f"items + tax = {got / 100:.2f}, total = {rec['total'] / 100:.2f}"})
+        check = {"name": "sum", "ok": ok, "fields": [] if ok else ["total", "tax", "items"],
+                 "detail": f"items + tax = {got / 100:.2f}, total = {rec['total'] / 100:.2f}"}
+        # Lines whose removal makes it add up (a summary line or a line read twice, usually): offer to remove one,
+        # each a button; when two lines would each do it (a coupon the same as the savings total) you pick.
+        # Only offered, never done; whether it was a mistake is logged when the receipt is approved.
+        fits = {(i["name"], i["price"]): None for i in rec["items"] if abs(got - i["price"] - rec["total"]) <= SUM_SLACK}
+        if not ok and fits:
+            check["fix"] = {"remove": [{"name": n, "price": p} for n, p in fits]}
+        out.append(check)
+
+    if rec["savings"] and any(i["price"] is not None and i["price"] < 0 for i in rec["items"]):
+        # the savings total printed against the discount lines read; a store that prints savings only inside
+        # its prices (no discount lines) has nothing to check
+        discounts = -sum(i["price"] for i in rec["items"] if i["price"] is not None and i["price"] < 0)
+        ok = abs(discounts - abs(rec["savings"])) <= SUM_SLACK
+        out.append({"name": "savings", "ok": ok, "fields": [] if ok else ["items"],
+                    "detail": f"discount lines = {discounts / 100:.2f}, savings printed = {abs(rec['savings']) / 100:.2f}"})
 
     printed = raw.get("date_printed") or raw.get("date")
     options = date_options(printed)
@@ -141,7 +156,7 @@ def assess(primary_parsed, others, known_stores, ocr_lines=None, today=None):
     else:
         bucket = "review"
     suspect = [f for f in FIELDS if conf[f] < 0.9]
-    return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail", "choices") if k in c} for c in checks],
+    return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail", "choices", "fix") if k in c} for c in checks],
             "disagreements": diff, "confidence": conf, "suspect": suspect, "bucket": bucket}
 
 

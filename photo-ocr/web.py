@@ -83,6 +83,7 @@ class App:
             ("GET", r"/api/summary", lambda m, q, b, h: (200, self.s.counts())),
             ("POST", r"/api/timings", self.phone_timings),
             ("GET", r"/api/stats", lambda m, q, b, h: (200, self.stats.summary())),
+            ("GET", r"/api/errors", lambda m, q, b, h: (200, self.s.error_report())),
             ("POST", r"/api/receipts", self.post_receipt),
             ("GET", r"/api/receipts", self.get_receipts),
             ("GET", r"/api/receipts/(\d+)", lambda m, q, b, h: (200, self.s.receipt(int(m[1])))),

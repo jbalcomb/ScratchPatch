@@ -118,6 +118,7 @@ def normalize(record, date_order=None):
         "date": to_date(record.get("date_printed") or record.get("date"), date_order),
         "tax": to_cents(record.get("tax")),
         "total": to_cents(record.get("total")),
+        "savings": to_cents(record.get("savings")),
         "items": items,
     }
 
@@ -153,10 +154,12 @@ in two photos is still one line, so list it once.
 
 Reply with JSON only, in this shape:
 {"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
- "subtotal": 0.00, "tax": 0.00, "total": 0.00}
+ "subtotal": 0.00, "tax": 0.00, "total": 0.00, "savings": 0.00}
 
 - price is the amount printed for that line (the line total, not the unit price).
 - Discounts, coupons and savings printed as their own lines are items with a negative price.
+- Summary lines are not items: subtotal, tax, total, total savings or "you saved", balance due.
+- savings is the total savings amount when the receipt prints one, otherwise null.
 - Bottle deposits and bag fees are items.
 - Leave out payment lines, change, card numbers and loyalty balances.
 - Use null for anything you can't read; don't guess."""
@@ -179,6 +182,7 @@ SCHEMA = {
         "subtotal": {"type": ["number", "null"]},
         "tax": {"type": ["number", "null"]},
         "total": {"type": ["number", "null"]},
+        "savings": {"type": ["number", "null"]},
     },
     "required": ["store", "date_printed", "items", "tax", "total"],
 }
@@ -381,12 +385,18 @@ def ocr_photos(engine, paths):
         return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.monotonic() - t0, 2)}
 
 
-def parse_photos(engine, paths, kind="receipt", ocr=None):
+def parse_photos(engine, paths, kind="receipt", ocr=None, prompt=None):
     """The photos of one receipt or one product (kind, see KINDS), in order, through one engine; never raises.
 
     -> {"engine", "kind", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
-    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model)."""
-    spec = KINDS[kind]
+    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model).
+    prompt: another vision prompt to try in place of the kind's (the bake-off, comparing prompt versions); an
+    OCR engine gets it with the OCR text in place of the photos."""
+    spec = dict(KINDS[kind])
+    if prompt:
+        rules = lambda p: p.split("\n\n", 1)[1]  # noqa: E731 - the part after the opening paragraph
+        spec["text_prompt"] = spec["text_prompt"].replace(rules(spec["prompt"]), rules(prompt))
+        spec["prompt"] = prompt
     template = spec["prompt"] if engine["kind"] == "vlm" else spec["text_prompt"]
     run = {"engine": engine["name"], "kind": kind, "raw": None, "parsed": None, "error": None, "seconds": None,
            "at": datetime.now().isoformat(timespec="seconds"), "prompt": None,

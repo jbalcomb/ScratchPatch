@@ -131,6 +131,25 @@ CREATE TABLE IF NOT EXISTS picker_sessions (
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS reading_reviews (            -- a reading checked against the receipt as approved by hand
+    run_id         INTEGER PRIMARY KEY,                 -- the engine_runs row compared
+    receipt_id     INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+    engine         TEXT,
+    prompt_version TEXT,
+    store          TEXT,
+    errors         INTEGER NOT NULL,
+    at             TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reading_errors (             -- what the model got wrong, by category (errors.py)
+    id          INTEGER PRIMARY KEY,
+    run_id      INTEGER NOT NULL,
+    receipt_id  INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+    category    TEXT NOT NULL,
+    detail      TEXT,
+    found_by    TEXT NOT NULL,                          -- review, or sum check suggestion (removed with its button)
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reading_errors_run ON reading_errors(run_id);
 CREATE INDEX IF NOT EXISTS images_receipt ON images(receipt_id, position);
 CREATE INDEX IF NOT EXISTS items_receipt ON receipt_items(receipt_id, position);
 CREATE INDEX IF NOT EXISTS items_product ON receipt_items(product_id);

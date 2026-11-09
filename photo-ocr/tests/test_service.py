@@ -737,3 +737,128 @@ def test_the_same_date_both_ways_teaches_nothing(api, model):
 def test_review_page_offers_the_two_readings(api):
     page = api("GET", "/review/1")[1].decode()
     assert "c.choices" in page and "datepick" in page and "f_purchase_date" in page
+
+
+TRUTH = {"store": "Meijer", "date": "2026-10-04", "tax": 42, "total": 619,
+         "items": [{"name": "BANANAS", "quantity": 1, "price": 129}, {"name": "MILK 2% GAL", "quantity": 1, "price": 399},
+                   {"name": "BREAD WHT", "quantity": 1, "price": 249}, {"name": "MPERKS COUPON", "quantity": None, "price": -200}]}
+
+
+def reading(**changes):
+    r = {"store": "Meijer", "date_printed": "10/04/26", "tax": 0.42, "total": 6.19,
+         "items": [{"name": "BANANAS", "price": 1.29}, {"name": "MILK 2% GAL", "price": 3.99},
+                   {"name": "BREAD WHT", "price": 2.49}, {"name": "MPERKS COUPON", "price": -2.00}]}
+    r.update(changes)
+    return r
+
+
+def cats(found):
+    return [e["category"] for e in found]
+
+
+def test_a_right_reading_has_no_errors():
+    import errors
+    assert errors.classify(reading(), TRUTH, "mdy") == []
+
+
+def test_a_summary_line_read_as_an_item():
+    import errors
+    savings = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -2.00}])
+    assert errors.classify(savings, TRUTH, "mdy") == [{"category": "summary_line", "detail": "'SAVINGS TOTAL' -2.00"}]
+    subtotal = reading(items=reading()["items"] + [{"name": "SUBTTL", "price": 5.77}])  # its amount says so
+    assert cats(errors.classify(subtotal, TRUTH, "mdy")) == ["summary_line"]
+    unnamed = reading(items=reading()["items"] + [{"name": "MPERKS", "price": -2.00}])  # the discounts' total
+    assert cats(errors.classify(unnamed, TRUTH, "mdy")) == ["summary_line"]
+    # its text alone says so too, even when another mistake keeps the sum from working out
+    worse = reading(total=9.99, items=reading()["items"] + [{"name": "YOU SAVED", "price": -2.00}])
+    assert cats(errors.classify(worse, TRUTH, "mdy")) == ["summary_line", "misread_total"]
+
+
+def test_line_errors_by_category():
+    import errors
+    items = reading()["items"]
+    twice = reading(items=items + [items[0]], total=7.48)
+    assert cats(errors.classify(twice, TRUTH, "mdy")) == ["duplicate_line", "misread_total"]
+    extra = reading(items=items + [{"name": "GUM", "price": 1.00}], total=7.19)  # its own sum balances with it
+    assert cats(errors.classify(extra, TRUTH, "mdy")) == ["extra_line", "misread_total"]
+    extra = reading(items=items + [{"name": "GUM", "price": 1.00}])
+    assert errors.classify(extra, TRUTH, "mdy") == [{"category": "extra_line", "detail": "'GUM' 1.00"}]
+    missed = reading(items=items[:3])
+    assert cats(errors.classify(missed, TRUTH, "mdy")) == ["missed_line"]
+    price = reading(items=[{"name": "BANANAS", "price": 1.92}] + items[1:])
+    assert errors.classify(price, TRUTH, "mdy") == [{"category": "misread_price", "detail": "BANANAS: read 1.92, is 1.29"}]
+    text = reading(items=[{"name": "BANAMAS", "price": 1.29}] + items[1:])
+    assert cats(errors.classify(text, TRUTH, "mdy")) == ["misread_text"]
+
+
+def test_field_and_date_errors():
+    import errors
+    assert cats(errors.classify(reading(tax=0.24), TRUTH, "mdy")) == ["misread_tax"]
+    assert errors.classify(reading(date_printed="10/07/26"), TRUTH, "mdy")[0]["category"] == "misread_date"
+    assert cats(errors.classify(reading(), TRUTH, "dmy")) == ["wrong_date_order"]  # the store's order, not the model
+    assert errors.classify(reading(), TRUTH, None) == []  # read two ways and asked: no one's mistake
+
+
+def test_the_sum_check_offers_to_remove_the_line_that_breaks_it():
+    known = {"meijer": "mdy"}
+    savings = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -3.00}])
+    [s] = [c for c in checks.assess(savings, {}, known)["checks"] if c["name"] == "sum"]
+    assert not s["ok"] and s["fix"] == {"remove": [{"name": "SAVINGS TOTAL", "price": -300}]}
+    one_coupon = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -2.00}])  # = the coupon
+    [s] = [c for c in checks.assess(one_coupon, {}, known)["checks"] if c["name"] == "sum"]
+    assert s["fix"]["remove"] == [{"name": "MPERKS COUPON", "price": -200}, {"name": "SAVINGS TOTAL", "price": -200}]
+    off = reading(total=9.99)  # no one line explains it
+    assert "fix" not in next(c for c in checks.assess(off, {}, known)["checks"] if c["name"] == "sum")
+
+
+def test_the_savings_printed_against_the_discount_lines():
+    known = {"meijer": "mdy"}
+    ok = checks.assess(reading(savings=2.00), {}, known)
+    assert next(c for c in ok["checks"] if c["name"] == "savings") == {
+        "name": "savings", "ok": True, "detail": "discount lines = 2.00, savings printed = 2.00"}
+    assert ok["bucket"] == "auto"
+    missed = checks.assess(reading(savings=5.00), {}, known)
+    assert not next(c for c in missed["checks"] if c["name"] == "savings")["ok"] and missed["bucket"] == "review"
+    none = reading(savings=1.50, items=reading()["items"][:3], total=8.19)  # savings inside the prices: no lines
+    assert not any(c["name"] == "savings" for c in checks.assess(none, {}, known)["checks"])
+
+
+def test_the_prompt_says_what_isnt_an_item():
+    import parsing
+    assert "Summary lines are not items" in parsing.PROMPT and '"savings"' in parsing.PROMPT
+    assert "savings" in parsing.SCHEMA["properties"]
+
+
+def test_errors_are_logged_on_approval_for_every_reading(api, model):
+    import parsing
+    model.receipt = dict(RECEIPT, items=RECEIPT["items"] + [{"name": "SAVINGS TOTAL", "price": -1.00}])
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/1")[1]
+    options = next(c for c in r["checks"] if c["name"] == "sum")["fix"]["remove"]
+    assert options == [{"name": "BONUS SAVINGS", "price": -100}, {"name": "SAVINGS TOTAL", "price": -100}]
+    fix = options[1]
+    api.svc.reparse(1)  # read again: the same mistake, a second reading
+    api.svc.parse_pending()
+    items = [{"raw_text": i["raw_text"], "quantity": i["quantity"], "line_total": i["line_total"]}
+             for i in api("GET", "/api/receipts/1")[1]["items"] if i["raw_text"] != "SAVINGS TOTAL"]
+    api("POST", "/api/receipts/1", {"items": items, "approve": True, "used_fixes": [fix]})
+    rows = api.svc.store.q("SELECT run_id, category, detail, found_by FROM reading_errors ORDER BY run_id")
+    assert [(x["category"], x["found_by"]) for x in rows] == [("summary_line", "review"), ("summary_line", "sum check suggestion")]
+    report = api("GET", "/api/errors")[1]
+    version = parsing.prompt_version(parsing.PROMPT)
+    assert report["by_prompt"] == {version: {"readings": 2, "with_errors": 2, "categories": {"summary_line": 2}}}
+    assert report["by_store"]["Giant Eagle"]["readings"] == 2
+    assert report["recent"][0]["url"] == "/review/1" and report["categories"]["summary_line"]
+    assert api.svc.log_reviewed_errors() == 0  # nothing left to compare
+
+
+def test_receipts_approved_before_the_error_log_are_compared(api, model):
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()  # a new store: both in review
+    api.svc.store.x("UPDATE receipts SET status = 'approved' WHERE id = 1")  # as if approved before this version
+    api.svc.store.x("UPDATE receipts SET status = 'approved', bucket = 'auto' WHERE id = 2")  # nobody checked it
+    assert api.svc.log_reviewed_errors() == 1
+    assert [x["receipt_id"] for x in api.svc.store.q("SELECT receipt_id FROM reading_reviews")] == [1]
+    assert "error log" in api.svc.work_once()

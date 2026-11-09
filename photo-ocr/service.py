@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 import catalog
+import errors
 import timing
 import checks
 import immich
@@ -418,16 +419,96 @@ class Service:
                         # The spelling the engine read is this store from now on, too.
                         self.store.x("INSERT OR IGNORE INTO stores (norm_name, name, location) VALUES (?, ?, ?)",
                                      norm_store(r["merchant_raw"]), r["merchant"], r["location"])
+                    self._record_errors(r, data.get("used_fixes") or [])  # before learning: as it was read
                     self._learn_date_order(r)
         catalog.match_receipt_items(self.store, rid, self.text_engine)
         return self.receipt(rid)
+
+    def _primary_run(self, r):
+        """The reading a receipt's fields came from: its engine's latest run with JSON."""
+        if not r["engine"]:
+            return None
+        return self.store.one("SELECT id, engine, prompt_version, parsed_json FROM engine_runs WHERE receipt_id = ? AND "
+                              "engine = ? AND parsed_json IS NOT NULL ORDER BY id DESC LIMIT 1", r["id"], r["engine"])
+
+    def _truth(self, r):
+        """The receipt as approved, in the normalized shape errors.classify compares with."""
+        return {"store": r["merchant"], "date": r["purchase_date"], "tax": r["tax"], "total": r["total"],
+                "items": [{"name": i["raw_text"], "quantity": i["quantity"], "price": i["line_total"]} for i in
+                          self.store.q("SELECT raw_text, quantity, line_total FROM receipt_items WHERE receipt_id = ? "
+                                       "ORDER BY position", r["id"])]}
+
+    def _record_errors(self, r, used_fixes=(), known=None):
+        """Compare every reading of a receipt with it as approved by hand, and log each error by category.
+
+        Every reading: the one its fields came from, a second engine's, and earlier ones (an older prompt, before
+        Read again), each under its own engine and prompt version. -> the errors of the reading used."""
+        primary = self._primary_run(r)
+        if not primary:
+            return None
+        truth, known, at = self._truth(r), self.known_stores() if known is None else known, now()
+        # lines removed with the sum check's button, as errors.classify describes a line
+        fixed = {errors.line(f.get("name"), f.get("price")) for f in used_fixes if isinstance(f, dict)}
+        used = []
+        for run in self.store.q("SELECT id, engine, prompt_version, parsed_json FROM engine_runs WHERE receipt_id = ? "
+                                "AND parsed_json IS NOT NULL", r["id"]):
+            parsed = loads(run["parsed_json"], {})
+            found = errors.classify(parsed, truth, checks.store_date_order(parsed, known))
+            self.store.x("DELETE FROM reading_errors WHERE run_id = ?", run["id"])
+            self.store.x("INSERT OR REPLACE INTO reading_reviews (run_id, receipt_id, engine, prompt_version, store, errors, "
+                         "at) VALUES (?, ?, ?, ?, ?, ?, ?)", run["id"], r["id"], run["engine"], run["prompt_version"],
+                         r["merchant"], len(found), at)
+            mine = run["id"] == primary["id"]
+            for e in found:
+                self.store.x("INSERT INTO reading_errors (run_id, receipt_id, category, detail, found_by, at) "
+                             "VALUES (?, ?, ?, ?, ?, ?)", run["id"], r["id"], e["category"], e["detail"],
+                             "sum check suggestion" if mine and e["detail"] in fixed else "review", at)
+            if mine:
+                used = found
+        if used:
+            log.info("receipt %s reading errors: %s", r["id"], errors.counts(used))
+        return used
+
+    def log_reviewed_errors(self):
+        """Receipts approved by hand before the error log existed (or since a re-read): compare them now.
+        Receipts approved automatically are left out: nobody checked them."""
+        todo = self.store.q("SELECT r.* FROM receipts r WHERE r.status = 'approved' AND r.bucket != 'auto' AND EXISTS "
+                            "(SELECT 1 FROM engine_runs e LEFT JOIN reading_reviews v ON v.run_id = e.id WHERE "
+                            "e.receipt_id = r.id AND e.parsed_json IS NOT NULL AND v.run_id IS NULL)")
+        known = self.known_stores()
+        with self.store.tx():
+            done = [r for r in todo if self._record_errors(r, known=known) is not None]
+        return len(done)
+
+    def error_report(self):
+        """Reading errors per prompt version, engine and store: readings checked, how many had errors, by category."""
+        reviews = self.store.q("SELECT * FROM reading_reviews")
+        errs = self.store.q("SELECT e.*, v.prompt_version, v.engine, v.store FROM reading_errors e "
+                            "JOIN reading_reviews v ON v.run_id = e.run_id")
+
+        def group(key):
+            out = {}
+            for v in reviews:
+                g = out.setdefault(v[key] or "not recorded", {"readings": 0, "with_errors": 0, "categories": {}})
+                g["readings"] += 1
+                g["with_errors"] += v["errors"] > 0
+            for e in errs:
+                c = out[e[key] or "not recorded"]["categories"]
+                c[e["category"]] = c.get(e["category"], 0) + 1
+            return out
+
+        recent = self.store.q("SELECT e.receipt_id, e.category, e.detail, e.found_by, v.store, v.engine, v.prompt_version "
+                              "FROM reading_errors e JOIN reading_reviews v ON v.run_id = e.run_id "
+                              "ORDER BY e.id DESC LIMIT 50")
+        return {"categories": errors.CATEGORIES, "by_prompt": group("prompt_version"), "by_engine": group("engine"),
+                "by_store": group("store"),
+                "recent": [dict(e, url=f"/review/{e['receipt_id']}") for e in recent]}
 
     def _learn_date_order(self, r):
         """An approved receipt shows how its store prints dates: which reading of the printed date is the date
         approved. Only when that is one reading (11/04/26 approved as 2026-11-04 is month first; 04/04/26 says
         nothing)."""
-        run = self.store.one("SELECT parsed_json FROM engine_runs WHERE receipt_id = ? AND engine = ? AND parsed_json "
-                             "IS NOT NULL ORDER BY id DESC LIMIT 1", r["id"], r["engine"]) if r["engine"] else None
+        run = self._primary_run(r)
         parsed = loads(run["parsed_json"], {}) if run else {}
         printed = parsed.get("date_printed") if isinstance(parsed, dict) else None
         options = parsing.date_options(printed)
@@ -616,7 +697,7 @@ class Service:
         with self.work_lock:
             for name, fn in (("library", self.sync_library), ("albums", self.poll_albums),
                              ("receipts", self.parse_pending), ("products", self.parse_pending_products),
-                             ("page copies", self.make_page_copies)):
+                             ("page copies", self.make_page_copies), ("error log", self.log_reviewed_errors)):
                 try:
                     done[name] = fn()
                 except Exception as e:  # noqa: BLE001 - keep the worker alive; log and go on

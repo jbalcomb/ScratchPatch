@@ -103,7 +103,7 @@ BODIES[""] = ("Photo OCR", """
 <h1>Photo OCR</h1>
 <div class="counts" id="counts"></div>
 <p class="muted">Photos of receipts and products land in Immich; the service reads them with the local models. Readings that need a look are under Review.</p>
-<p class="muted"><a href="/stats">Load times</a></p>
+<p class="muted"><a href="/stats">Reading errors and load times</a></p>
 <script>
 api('/api/summary').then(c => {
   const tiles = [['Pending', c.pending, '/review'], ['To review', c.review, '/review'], ['Retake', c.retake, '/review'],
@@ -221,7 +221,7 @@ async function load() {
       <table class="items"><thead><tr><th>Text</th><th class="num">Qty</th><th class="num">Price</th><th></th></tr></thead>
       <tbody id="items"></tbody></table>
       <div class="row" style="margin-top:6px"><button id="addrow">Add item</button><span class="grow muted" id="sum"></span></div>
-      <h2>Checks</h2><ul class="checks">${(r.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')}</ul>
+      <h2>Checks</h2><ul class="checks">${(r.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')}</ul>${sumFix()}
       <div class="row" style="margin-top:14px"><button class="primary" id="approve">Approve</button><button id="save">Save</button>
         <button id="reparse">Read again</button></div>
       <h2>More</h2>
@@ -239,8 +239,26 @@ async function load() {
         <button class="primary" id="ask">Ask</button></div>
       <pre id="answer" class="card" style="white-space:pre-wrap;display:none"></pre>`;
   $('#items').innerHTML = r.items.map(rowHtml).join('');
+  usedFixes = [];
+  document.querySelectorAll('.sumfix').forEach(b => b.onclick = () => {
+    const row = [...document.querySelectorAll('#items tr')].reverse().find(tr =>
+      tr.querySelector('.t').value === b.dataset.name && toCents(tr.querySelector('.p').value) === Number(b.dataset.price));
+    if (!row) return say('That line is no longer in the list.', true);
+    row.remove(); sum();
+    document.querySelectorAll('.sumfix').forEach(x => x.disabled = true);
+    b.textContent = 'Removed: approve to keep it that way';
+    usedFixes = [{name: b.dataset.name, price: Number(b.dataset.price)}];  // logged as found by the suggestion
+  });
   document.querySelectorAll('.datepick').forEach(b => b.onclick = () => { $('#f_purchase_date').value = b.dataset.d; });
   bind(); sum();
+}
+let usedFixes = [];
+function sumFix() {
+  // the sum check found one line whose removal makes items + tax equal the total: offer to remove it
+  const c = (r.checks || []).find(c => c.fix);
+  if (!c) return '';
+  return '<p class="muted">Without one of these lines, items + tax = total:</p><div class="row">' + c.fix.remove.map(x =>
+    `<button class="sumfix" data-name="${esc(x.name)}" data-price="${x.price}">Remove “${esc(x.name)}” (${money(x.price)})</button>`).join('') + '</div>';
 }
 function dateChoices() {
   // a date that reads two ways (11/04/26): one button per reading; approving teaches the store its order
@@ -314,7 +332,7 @@ function bind() {
     await api('/api/receipts/' + id, {method: 'DELETE'}); location.href = '/review'; };
 }
 async function send(approve) {
-  const body = {items: items(), approve};
+  const body = {items: items(), approve, used_fixes: usedFixes};
   for (const [f] of FIELDS) { const v = $('#f_' + f).value.trim(); body[f] = (f === 'total' || f === 'tax') ? toCents(v) : (v || null); }
   if (Number.isNaN(body.total) || Number.isNaN(body.tax) || body.items.some(i => Number.isNaN(i.line_total))) return say('A price isn\\'t a number.', true);
   try {
@@ -496,7 +514,11 @@ load().catch(e => say(e.message, true));
 </script>""")
 
 
-BODIES["stats"] = ("Load times", """
+BODIES["stats"] = ("Stats", """
+<h1>Reading errors</h1>
+<p class="muted">What the model got wrong, from its own reading compared with the receipt as you approved it.
+Receipts approved automatically aren't counted: nobody checked them.</p>
+<div id="errors"></div>
 <h1>Load times</h1>
 <p class="muted">Since the service started (the last 2000 requests). The phone's times include the network; the
 service's are its own share. Reload to update.</p>
@@ -506,6 +528,20 @@ const ms = x => x == null ? '' : (x >= 1000 ? (x / 1000).toFixed(1) + ' s' : x +
 const row = (name, s, extra) => s ? `<tr><td>${esc(name)}</td><td class="num">${s.count}</td><td class="num">${ms(s.median_ms)}</td>
   <td class="num">${ms(s.p95_ms)}</td><td class="num">${ms(s.max_ms)}</td>${extra || ''}</tr>` : '';
 const head = (first, extra) => `<tr><th>${first}</th><th class="num">n</th><th class="num">median</th><th class="num">95%</th><th class="num">slowest</th>${extra || ''}</tr>`;
+function errorTable(title, groups, cats) {
+  const used = Object.keys(cats).filter(c => Object.values(groups).some(g => g.categories[c]));
+  return `<h2>${title}</h2><div style="overflow-x:auto"><table><tr><th></th><th class="num">readings</th><th class="num">with errors</th>`
+    + used.map(c => `<th class="num">${esc(cats[c])}</th>`).join('') + '</tr>'
+    + Object.entries(groups).map(([k, g]) => `<tr><td>${esc(k)}</td><td class="num">${g.readings}</td><td class="num">${g.with_errors}</td>`
+      + used.map(c => `<td class="num">${g.categories[c] || ''}</td>`).join('') + '</tr>').join('') + '</table></div>';
+}
+api('/api/errors').then(e => {
+  if (!Object.keys(e.by_prompt).length) return $('#errors').innerHTML = '<p class="muted">No receipt approved by hand yet.</p>';
+  $('#errors').innerHTML = errorTable('By prompt version', e.by_prompt, e.categories) + errorTable('By engine', e.by_engine, e.categories)
+    + errorTable('By store', e.by_store, e.categories)
+    + '<h2>Latest</h2><ul class="checks">' + e.recent.map(x => `<li><a href="${x.url}">#${x.receipt_id}</a> ${esc(x.store || '')}
+      · ${esc(e.categories[x.category] || x.category)}: ${esc(x.detail)} <span class="muted">(${esc(x.engine)}, prompt ${esc(x.prompt_version || '?')}${x.found_by !== 'review' ? ', ' + esc(x.found_by) : ''})</span></li>`).join('') + '</ul>';
+}).catch(err => $('#errors').textContent = err.message);
 api('/api/stats').then(s => {
   let h = '<h2>On the phone</h2><table>' + head('Page') +
     Object.entries(s.phone).map(([p, v]) => row(p + ' page', v.page_load) + row(p + ' photos', v.photo) + row(p + ' data', v.api)).join('') + '</table>';

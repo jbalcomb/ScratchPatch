@@ -131,14 +131,45 @@ Every reading, receipt or product, lands in one of three buckets:
 
 | Bucket | Receipt | Product |
 |---|---|---|
-| **auto** (saved without review) | items + tax = total, plausible date, known store, prices look like prices, engines agree | the name says what it is, the size has an amount and a unit, engines agree |
+| **auto** (saved without review) | items + tax = total, discount lines = the savings printed (if any), plausible date, known store, prices look like prices, engines agree | the name says what it is, the size has an amount and a unit, engines agree |
 | **review** | a check failed (including a store seen for the first time) or the engines disagree | a check failed or the engines disagree on name, brand or size |
-| **retake** | total or date unreadable | no name readable |
+| **retake** | total or date unreadable (a date that reads two ways goes to review) | no name readable |
 
 `/review` shows receipts that need a look and, under *Products to check*, products. Suspect fields are
 highlighted and each engine's reading is shown where they differ. *Approve* saves the edits, keeps every
 change as a correction (so `export-labels` grows the bake-off set) and moves to the next one. *Read again*
 re-reads with the current engines.
+
+When items + tax don't equal the total and leaving out one line would fix it, the sum check offers a
+*Remove* button for that line (one per line when two would each do it). It only offers; you decide.
+
+**Dates** are converted in code from the date as printed, never by the model. One that reads one way
+(2026-11-04, Nov 4 2026, 25/10/26) is used as is. One that reads two ways (11/04/26) uses the store's learned
+order (month or day first); a store with none yet sends the receipt to review with a button per reading, and
+approving it teaches the store.
+
+### Reading errors
+
+To tune the model you have to measure it, so every receipt you approve by hand is compared with what the model
+read: every reading of it (an earlier one before *Read again*, a second engine's), each under its engine and
+prompt version. Each difference gets a category by a fixed rule (`errors.py`), and what no rule explains is
+counted as an extra line, a missed line, or a misread field, never guessed:
+
+| Category | Rule |
+|---|---|
+| summary line read as an item | a line not on the receipt whose amount is the other lines' total (subtotal) or the discount lines' total (savings), or whose text says subtotal, total, savings, saved or balance |
+| line listed twice | a line not on the receipt with the same text and price as another (photo overlap) |
+| line not on the receipt / line left out | any other line added, or missing |
+| price misread / line text misread | the same text with another price, or the same price with other text |
+| total, tax, date misread | the field differs; the date approved isn't any reading of what the model says is printed |
+| date order | the model read the date right but the store's learned order picked the other reading (code, not model) |
+
+Errors come from the model's own reading, before anything is fixed, so fixes can't flatter the numbers. Lines
+removed with the sum check's button are marked as found by it. Receipts approved automatically aren't counted:
+nobody checked them. Receipts approved before this was added are compared by the worker once.
+
+`/stats` shows the errors by prompt version, engine and store (readings, how many had errors, each category)
+and the latest ones with links; JSON at `/api/errors`. The log is `reading_reviews` and `reading_errors`.
 
 ### Catalog, shopping, reconciliation
 
@@ -272,6 +303,20 @@ The report has a section per kind:
 - **Products:** name at least 80% similar, brand and size equal once normalized. Per engine: name, brand,
   size, all right, seconds; then per product.
 
+Receipts also get **errors by category**, the same categories the service logs (see *Reading errors*), and
+the date counts as right when the date labeled is a reading of the date the model says is printed.
+
+**Comparing prompts** before deploying one: past prompts are kept in `prompts/receipt-<version>.txt` (the
+version is what the review page shows). Run the current prompt and an older one over the same set; the older
+one's results go to `results/<engine>@<version>`, a column of its own in the report:
+
+```bash
+python web.py export-labels                     # every receipt approved so far joins the set
+python bakeoff.py run qwen3-vl-8b               # the current prompt
+python bakeoff.py run qwen3-vl-8b --prompt prompts/receipt-17d7e433.txt   # the one before
+python bakeoff.py score
+```
+
 ### Bake-off with Docker
 
 ```bash
@@ -314,6 +359,11 @@ These were written from the services' documentation and tested only against the 
   only as good as the readings; the bake-off measures that.
 
 ## Later
+
+- **Lines a store prints that aren't items, learned from review** (option 4, noted 2026-11-09): when a line is
+  deleted in review, remember its text as not an item for that store and drop it from later readings in code.
+  Wait until the error log shows tuning the prompt has stopped helping: dropping lines in code would also hide
+  them from the errors measured.
 
 - **Budget on Postgres, with receipt tags** (noted 2026-11-02): migrate the budget project to a Postgres
   database, and have budget read this project's receipt data so it can tag each bank transaction as having a

@@ -8,4 +8,5 @@ RUN pip install --no-cache-dir Pillow $EXTRAS
 ENV PYTHONUNBUFFERED=1 PHOTO_OCR_HOME=/data PHOTO_OCR_BAKEOFF_HOME=/data/bakeoff
 WORKDIR /app
 COPY *.py engines.json ./
+COPY prompts ./prompts
 CMD ["python", "web.py", "--host", "127.0.0.1", "--port", "8093"]

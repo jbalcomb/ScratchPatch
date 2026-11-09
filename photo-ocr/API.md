@@ -170,3 +170,16 @@ first or day first: if only one is a real date (25/10/26) that is it; otherwise 
 decides (`stores.date_order`, `mdy` or `dmy`). A store with no order yet gets the receipt in review, its date
 check carrying `"choices": [{"order", "date", "label"}]`; approving the receipt with one of those dates teaches
 the store its order. A time or other text beside the date is ignored.
+
+## Reading errors
+
+`GET /api/errors` → `{"categories": {key: label}, "by_prompt", "by_engine", "by_store", "recent"}`. Each of
+the three `by_` maps is `{name: {"readings", "with_errors", "categories": {key: count}}}`; `recent` is the
+latest 50 errors, `{receipt_id, category, detail, found_by, store, engine, prompt_version, url}`. Only receipts
+approved by hand are counted (see README, Reading errors).
+
+A receipt's sum check may carry `"fix": {"remove": [{"name", "price"}]}`: lines whose removal would make items +
+tax equal the total. An approval (`POST /api/receipts/{id}` with `approve`) may send `"used_fixes": [{"name",
+"price"}]`, the lines removed with that button, so their errors are logged as found by it.
+
+Readings now also have `savings`, the total savings printed (or null), checked against the discount lines.
