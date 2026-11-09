@@ -2,3 +2,4 @@
 !Dockerfile
 !*.py
 !engines.json
+!prompts
