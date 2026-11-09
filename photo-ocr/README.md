@@ -287,7 +287,8 @@ python bakeoff.py score                    # writes ~/photo-ocr/bakeoff/results/
 The model server comes from `PHOTO_OCR_LLM_URL`, falling back to `LLM_URL`; the OCR engines' text model from
 `PHOTO_OCR_TEXT_MODEL`, default `qwen3-vl-8b`; and the key from `LLM_API_KEY`.
 
-Each engine's output is saved per item in `results/<engine>/<item>.json`, holding the raw reply, the parsed
+Each engine's output is saved per item in `results/<engine>@<prompt version>/<item>.json` (a changed prompt is
+run afresh), holding the raw reply, the parsed
 JSON, the seconds taken and any OCR lines with confidence (the `engine_runs` table of the PRD). Re-running
 skips items that are already done; use `--force` to redo them, or `--receipt r007` (or `p002`) for one. OCR
 engines first OCR every item and then structure every item, so the GPU swaps models once per run. Because
@@ -307,8 +308,8 @@ Receipts also get **errors by category**, the same categories the service logs (
 the date counts as right when the date labeled is a reading of the date the model says is printed.
 
 **Comparing prompts** before deploying one: past prompts are kept in `prompts/receipt-<version>.txt` (the
-version is what the review page shows). Run the current prompt and an older one over the same set; the older
-one's results go to `results/<engine>@<version>`, a column of its own in the report:
+version is what the review page shows). Run the current prompt and an older one over the same set; each
+prompt's results are a column of their own in the report:
 
 ```bash
 python web.py export-labels                     # every receipt approved so far joins the set

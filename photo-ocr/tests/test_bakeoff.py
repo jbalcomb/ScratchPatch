@@ -159,7 +159,7 @@ def test_add_run_score_end_to_end(tmp_path, llama, capsys):
     engines = tmp_path / "engines.json"
     engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
     assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)]) == 0
-    run = json.loads((home / "results" / "fake-vl" / "r002.json").read_text())
+    run = json.loads((home / "results" / bakeoff.results_name("fake-vl") / "r002.json").read_text())
     assert run["error"] is None and run["parsed"]["total"] == "9.99"
     # Both photos of r002 went in one request, with the schema and the model name.
     assert len(FakeLlama.requests) == 2
@@ -179,7 +179,7 @@ def test_add_run_score_end_to_end(tmp_path, llama, capsys):
     capsys.readouterr()
     bakeoff.main(["--home", str(home), "score"])
     report = (home / "results" / "report.md").read_text()
-    row = next(line for line in report.splitlines() if line.startswith("| fake-vl |"))
+    row = next(line for line in report.splitlines() if line.startswith(f"| {bakeoff.results_name('fake-vl')} |"))
     cells = [c.strip() for c in row.strip("|").split("|")]
     assert cells[1:4] == ["2", "0", "50%"]  # 2 receipts, none failed, total right on 1
     assert "T✗" in report and "thermal" in report
@@ -220,7 +220,7 @@ def test_products_in_the_bakeoff(tmp_path, llama, capsys):
     engines = tmp_path / "engines.json"
     engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
     bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)])
-    run = json.loads((home / "results" / "fake-vl" / "p001.json").read_text())
+    run = json.loads((home / "results" / bakeoff.results_name("fake-vl") / "p001.json").read_text())
     assert run["kind"] == "product" and run["parsed"]["brand"] == "GREAT VALUE"
 
     bakeoff.main(["--home", str(home), "label", "fake-vl"])
@@ -234,7 +234,7 @@ def test_products_in_the_bakeoff(tmp_path, llama, capsys):
     report = (home / "results" / "report.md").read_text()
     assert "# Receipts" in report and "# Products" in report
     products = report[report.index("# Products"):]
-    row = next(line for line in products.splitlines() if line.startswith("| fake-vl |"))
+    row = next(line for line in products.splitlines() if line.startswith(f"| {bakeoff.results_name('fake-vl')} |"))
     assert [c.strip() for c in row.strip("|").split("|")][3:7] == ["100%", "100%", "0%", "0%"]  # 128 fl oz isn't 1 gal
     assert "N✓B✓S✗" in report
 

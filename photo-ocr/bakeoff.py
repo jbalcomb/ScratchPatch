@@ -198,6 +198,8 @@ def cmd_check(args):
 def cmd_label(args):
     """Start labels from an engine's output, so hand-labeling is correcting rather than typing."""
     engine_dir = args.home / "results" / args.engine
+    if not engine_dir.is_dir():  # an engine's name: its results with the current prompt
+        engine_dir = args.home / "results" / results_name(args.engine)
     n = 0
     for r in receipts(args.home / "set"):
         run_file = engine_dir / f"{r.name}.json"
@@ -251,6 +253,10 @@ def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print, prom
     return len(todo)
 
 
+def results_name(engine, prompt=None):
+    return f"{engine}@{prompt_version(prompt or PROMPT)}"
+
+
 def cmd_run(args):
     engines = load_engines(args.engines)
     names = list(engines) if args.all else args.engine
@@ -261,8 +267,8 @@ def cmd_run(args):
             sys.exit(f"no engine {name!r} in {args.engines} ({', '.join(engines)})")
     prompt = Path(args.prompt).read_text() if args.prompt else None
     for name in names:
-        # another prompt's results go beside the engine's own: results/<engine>@<prompt version>
-        out = name + (f"@{prompt_version(prompt)}" if prompt else "")
+        # each prompt's results apart, so a changed prompt is run again: results/<engine>@<receipt prompt version>
+        out = results_name(name, prompt)
         print(f"{out}:")
         n = run_engine(engines[name], args.home / "set", args.home / "results" / out, args.force, args.receipt,
                        prompt=prompt)
@@ -461,7 +467,7 @@ def main(argv=None):
     r.add_argument("--force", action="store_true")
     r.add_argument("--receipt", action="append", help="only this item (repeatable), e.g. r007 or p002")
     r.add_argument("--prompt", help="a receipt prompt file to try instead of the current one (see prompts/); "
-                   "its results are kept as <engine>@<prompt version>")
+                   "results are kept per prompt as <engine>@<prompt version>")
     r.add_argument("--engines", default=os.environ.get("PHOTO_OCR_ENGINES") or HERE / "engines.json")
     r.set_defaults(func=cmd_run)
     lb = sub.add_parser("label", help="draft label.draft.json for unlabeled items from an engine's output")
