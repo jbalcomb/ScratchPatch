@@ -10,13 +10,13 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from courier.__main__ import main
-from courier.agent import Seen, receive
-from courier.envelope import make_submission
-from courier.ntfy import PublishFailed, publisher
-from courier.screen import Ruleset
-from courier.server import RateLimit, Service, make_server
-from courier.store import Senders, load_gateway_key, private_key_from, public_key_from
+from crossmess.__main__ import main
+from crossmess.agent import Seen, receive
+from crossmess.envelope import make_submission
+from crossmess.ntfy import PublishFailed, publisher
+from crossmess.screen import Ruleset
+from crossmess.server import RateLimit, Service, make_server
+from crossmess.store import Senders, load_gateway_key, private_key_from, public_key_from
 
 RULES = Ruleset.load()
 
@@ -173,7 +173,7 @@ class NtfyTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Ntfy)
         url = serve(server)
         try:
-            from courier.gateway import Token, admit
+            from crossmess.gateway import Token, admit
             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
             key, gw = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
@@ -187,7 +187,7 @@ class NtfyTests(unittest.TestCase):
         self.assertEqual((path, auth, body["id"]), ("/clip", "Bearer tk", env.id))
 
     def test_unreachable_broker(self):
-        from courier.envelope import Envelope
+        from crossmess.envelope import Envelope
 
         env = Envelope(1, "0" * 26, "clip", "fanout", "", "", "", "text/plain", "hi")
         with self.assertRaises(PublishFailed):

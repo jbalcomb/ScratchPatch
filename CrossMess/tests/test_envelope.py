@@ -5,10 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from courier.agent import Seen, native_text, receive
-from courier.envelope import ULID, Invalid, canonical, make_submission, new_id, sign
-from courier.gateway import Token, admit
-from courier.screen import Rejected, Ruleset
+from crossmess.agent import Seen, native_text, receive
+from crossmess.envelope import ULID, Invalid, canonical, make_submission, new_id, sign
+from crossmess.gateway import Token, admit
+from crossmess.screen import Rejected, Ruleset
 
 RULES = Ruleset.load()
 NOW = datetime(2026, 10, 31, 14, 0, 0, tzinfo=timezone.utc)

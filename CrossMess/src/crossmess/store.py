@@ -19,7 +19,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from courier.gateway import ORIGIN_KINDS, Token
+from crossmess.gateway import ORIGIN_KINDS, Token
 
 CONFIG_DIR = Path.home() / ".config" / "courier"
 NAME = r"[a-z0-9][a-z0-9_-]{0,47}"

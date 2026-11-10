@@ -55,7 +55,7 @@ if (-not (Test-Path (Join-Path $config "device.toml"))) {
         }
         $Ntfy = "https://" + ((& $tailscale status --json | ConvertFrom-Json).Self.DNSName).TrimEnd(".") + ":2586"
     }
-    $initArgs = @("-m", "courier", "device-init", "--ntfy", $Ntfy)
+    $initArgs = @("-m", "crossmess", "device-init", "--ntfy", $Ntfy)
     if ($GatewayKey) { $initArgs += @("--gateway-key", $GatewayKey) }
     Push-Location $src
     try { & $venvPython @initArgs | Out-Null } finally { Pop-Location }
@@ -67,7 +67,7 @@ if (-not (Test-Path (Join-Path $config "device.toml"))) {
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) { Stop-ScheduledTask -TaskName $TaskName }
 $action = New-ScheduledTaskAction -Execute $pythonw `
-    -Argument "-m courier device --data `"$data`" --log-file `"$data\device.log`"" -WorkingDirectory $src
+    -Argument "-m crossmess device --data `"$data`" --log-file `"$data\device.log`"" -WorkingDirectory $src
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME),
     (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5))
@@ -88,6 +88,6 @@ if (-not $up) { throw "The agent didn't subscribe within 15 s. See $log." }
 Write-Host "Courier Device is running and subscribed (task '$TaskName')."
 Write-Host ""
 Write-Host "Policy:  $config\device.toml   (restart the task after editing it)"
-Write-Host "Inbox:   cd $src; ..\.venv\Scripts\python -m courier inbox"
+Write-Host "Inbox:   cd $src; ..\.venv\Scripts\python -m crossmess inbox"
 Write-Host "Logs:    $log, $data\device.jsonl"
 Write-Host "Remove:  .\scripts\uninstall-device-windows.ps1"

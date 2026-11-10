@@ -18,20 +18,20 @@ sender ──make_submission──▶ gateway.admit ──signed envelope──�
 
 | Module | What it does |
 |---|---|
-| `courier/ruleset.toml` | The fixed screening rules. Its SHA-256 is stamped into every envelope; agents can pin the hashes they accept. |
-| `courier/screen.py` | `screen()`: reject, or normalize and label a body. Stages only add labels; the optional AI classifier runs last and can't vouch for anything. |
-| `courier/envelope.py` | The envelope dataclass, canonical JSON, Ed25519 signing, ULIDs, `make_submission()` for senders. |
-| `courier/gateway.py` | `admit()`: token scope, timestamps, sender signature, screening, gateway signature. |
-| `courier/agent.py` | `receive()`: gateway signature, ruleset pin, expiry, replay window, re-screen with the local ruleset. `native_text()`: the only place LF becomes CRLF (Windows). |
-| `courier/server.py` | The Phase A gateway HTTP API: `POST /messages`, per-sender rate limit, duplicate-ID handling, an audit log with no bodies. |
-| `courier/store.py` | Gateway key and `senders.json` (public keys and secret hashes only; re-read when it changes). |
-| `courier/ntfy.py` | Publishes admitted envelopes to a self-hosted ntfy topic per channel. |
-| `courier/device.py` | The device agent: `device.toml` policy, toppings, action tiers and their guards, inbox, and the ntfy subscriber that resumes after the last message. |
-| `courier/desktop.py` | Clipboard and notifications on Windows (Win32, kept out of clipboard history and cloud sync; WinRT toasts), macOS (pbcopy, osascript) and Linux (wl-copy or xclip, notify-send). |
-| `courier/client.py` | Sending side: loads a credentials file, signs, posts, and turns gateway refusals into plain reasons. |
-| `courier/mcp.py` | MCP server (stdio) with one tool, `send_to_devices`, so an AI agent can send as its own sender. |
-| `courier/ntfy_setup.py` | Writes ntfy's private `server.yml`: no anonymous access, a write-only gateway token, a read-only device token. |
-| `courier/__main__.py` | `python -m courier serve · gateway-key · add-sender · remove-sender · senders · send · mcp · ntfy-setup · ntfy-run · device-init · device · inbox`. |
+| `crossmess/ruleset.toml` | The fixed screening rules. Its SHA-256 is stamped into every envelope; agents can pin the hashes they accept. |
+| `crossmess/screen.py` | `screen()`: reject, or normalize and label a body. Stages only add labels; the optional AI classifier runs last and can't vouch for anything. |
+| `crossmess/envelope.py` | The envelope dataclass, canonical JSON, Ed25519 signing, ULIDs, `make_submission()` for senders. |
+| `crossmess/gateway.py` | `admit()`: token scope, timestamps, sender signature, screening, gateway signature. |
+| `crossmess/agent.py` | `receive()`: gateway signature, ruleset pin, expiry, replay window, re-screen with the local ruleset. `native_text()`: the only place LF becomes CRLF (Windows). |
+| `crossmess/server.py` | The Phase A gateway HTTP API: `POST /messages`, per-sender rate limit, duplicate-ID handling, an audit log with no bodies. |
+| `crossmess/store.py` | Gateway key and `senders.json` (public keys and secret hashes only; re-read when it changes). |
+| `crossmess/ntfy.py` | Publishes admitted envelopes to a self-hosted ntfy topic per channel. |
+| `crossmess/device.py` | The device agent: `device.toml` policy, toppings, action tiers and their guards, inbox, and the ntfy subscriber that resumes after the last message. |
+| `crossmess/desktop.py` | Clipboard and notifications on Windows (Win32, kept out of clipboard history and cloud sync; WinRT toasts), macOS (pbcopy, osascript) and Linux (wl-copy or xclip, notify-send). |
+| `crossmess/client.py` | Sending side: loads a credentials file, signs, posts, and turns gateway refusals into plain reasons. |
+| `crossmess/mcp.py` | MCP server (stdio) with one tool, `send_to_devices`, so an AI agent can send as its own sender. |
+| `crossmess/ntfy_setup.py` | Writes ntfy's private `server.yml`: no anonymous access, a write-only gateway token, a read-only device token. |
+| `crossmess/__main__.py` | `python -m crossmess serve · gateway-key · add-sender · remove-sender · senders · send · mcp · ntfy-setup · ntfy-run · device-init · device · inbox`. |
 
 Line endings: LF is canonical everywhere inside Courier (stored, signed, hashed, sent), like git's
 object store. Agents convert to the host's form only when text leaves Courier.
@@ -61,8 +61,8 @@ Phase B.
 
 ```powershell
 cd src
-..\.venv\Scripts\python -m courier add-sender laptop-agent --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
-..\.venv\Scripts\python -m courier send clip "git status" --creds $HOME\.config\courier\laptop-agent.sender.json
+..\.venv\Scripts\python -m crossmess add-sender laptop-agent --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
+..\.venv\Scripts\python -m crossmess send clip "git status" --creds $HOME\.config\courier\laptop-agent.sender.json
 ```
 
 `add-sender` writes the sender's credentials file once (private key + bearer secret); the gateway
@@ -122,7 +122,7 @@ bash scripts/install-device-macos.sh https://<broker>.<tailnet>.ts.net:2586 <gat
 ```
 
 Copy `ntfy-device.token` from the broker machine's `~/.config/courier` first. On the broker
-machine itself both arguments can be left out. `python -m courier inbox` shows what arrived.
+machine itself both arguments can be left out. `python -m crossmess inbox` shows what arrived.
 
 | Action | What it does | Refused when |
 |---|---|---|
@@ -144,7 +144,7 @@ TaskDeck's **Send to Devices** job signs submissions on the phone and posts them
 Create its sender with `--paste-string` and paste the printed line into the job's settings:
 
 ```powershell
-..\.venv\Scripts\python -m courier add-sender phone --kind human --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766 --paste-string
+..\.venv\Scripts\python -m crossmess add-sender phone --kind human --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766 --paste-string
 ```
 
 The line is the credentials file in one line (`courier-sender:` + base64), so treat it as a secret.
@@ -154,13 +154,13 @@ The line is the credentials file in one line (`courier-sender:` + base64), so tr
 Give each agent its own sender, so it can be revoked on its own and devices can tell it apart:
 
 ```powershell
-..\.venv\Scripts\python -m courier add-sender claude --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
+..\.venv\Scripts\python -m crossmess add-sender claude --kind agent --channels clip,agent-inbox --gateway https://<machine>.<tailnet>.ts.net:8766
 ```
 
 Then register it as a stdio MCP server. For Claude Code:
 
 ```powershell
-claude mcp add courier --scope user --env PYTHONPATH=C:\path\to\CrossMess\src -- C:\path\to\CrossMess\.venv\Scripts\python.exe -m courier mcp --creds C:\Users\you\.config\courier\claude.sender.json
+claude mcp add courier --scope user --env PYTHONPATH=C:\path\to\CrossMess\src -- C:\path\to\CrossMess\.venv\Scripts\python.exe -m crossmess mcp --creds C:\Users\you\.config\courier\claude.sender.json
 ```
 
 The tool, `send_to_devices`, offers only the sender's channels and takes plain text up to 3,000

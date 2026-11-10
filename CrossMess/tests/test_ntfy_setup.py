@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from courier.ntfy_setup import new_token, write_config
+from crossmess.ntfy_setup import new_token, write_config
 
 FAKE_HASH = "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234"
 

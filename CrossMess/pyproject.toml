@@ -1,5 +1,5 @@
 [project]
-name = "courier"
+name = "crossmess"
 version = "0.1.0"
 description = "Cross-device message bus: signed envelopes and fixed screening before any device acts on a message."
 readme = "README.md"
@@ -10,7 +10,7 @@ dependencies = ["cryptography>=42"]
 dev = ["pytest>=8"]
 
 [tool.setuptools.package-data]
-courier = ["ruleset.toml"]
+crossmess = ["ruleset.toml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

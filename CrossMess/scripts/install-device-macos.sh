@@ -43,7 +43,7 @@ if [ ! -f "$config/device.toml" ]; then
     [ -n "$ntfy" ] || { echo "Usage: $0 https://<broker>.<tailnet>.ts.net:2586 [gateway key]" >&2; exit 1; }
     args=(device-init --ntfy "$ntfy")
     [ -n "$gateway_key" ] && args+=(--gateway-key "$gateway_key")
-    (cd "$src" && "$venv_python" -m courier "${args[@]}" >/dev/null)
+    (cd "$src" && "$venv_python" -m crossmess "${args[@]}" >/dev/null)
     echo "Wrote $config/device.toml."
 else
     echo "Kept $config/device.toml."
@@ -61,7 +61,7 @@ cat > "$plist" <<EOF
     <array>
         <string>$(xml "$venv_python")</string>
         <string>-m</string>
-        <string>courier</string>
+        <string>crossmess</string>
         <string>device</string>
         <string>--data</string>
         <string>$(xml "$data")</string>
@@ -92,7 +92,7 @@ cat <<EOF
 Courier Device is installed (LaunchAgent $label, started at login).
 
 Policy:  $config/device.toml   (launchctl kickstart -k $domain/$label after editing it)
-Inbox:   cd $src && ../.venv/bin/python -m courier inbox
+Inbox:   cd $src && ../.venv/bin/python -m crossmess inbox
 Logs:    $data/device.err.log, $data/device.jsonl
 Remove:  scripts/uninstall-device-macos.sh
 

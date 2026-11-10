@@ -8,8 +8,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from courier.envelope import make_submission
-from courier.store import private_key_from
+from crossmess.envelope import make_submission
+from crossmess.store import private_key_from
 
 # What a sender should be told for each gateway refusal (see server.py).
 REASONS = {

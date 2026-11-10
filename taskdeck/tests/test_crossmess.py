@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 import pytest
 
 from taskdeck.core import StepError
-from taskdeck.jobs import courier as courier_job
-from taskdeck.jobs.courier import client
+from taskdeck.jobs import crossmess as courier_job
+from taskdeck.jobs.crossmess import client
 from taskdeck.shared import ed25519
 from taskdeck.shared.http import HttpError
 

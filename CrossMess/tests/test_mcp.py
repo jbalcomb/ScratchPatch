@@ -8,12 +8,12 @@ import threading
 import unittest
 from pathlib import Path
 
-from courier import client, mcp
-from courier.__main__ import main
-from courier.agent import Seen, receive
-from courier.screen import Ruleset
-from courier.server import Service, make_server
-from courier.store import Senders, load_gateway_key
+from crossmess import client, mcp
+from crossmess.__main__ import main
+from crossmess.agent import Seen, receive
+from crossmess.screen import Ruleset
+from crossmess.server import Service, make_server
+from crossmess.store import Senders, load_gateway_key
 
 RULES = Ruleset.load()
 SRC = Path(__file__).resolve().parents[1] / "src"
@@ -106,7 +106,7 @@ class ProtocolTests(unittest.TestCase):
 
 
 class EndToEndTests(unittest.TestCase):
-    """`python -m courier mcp` over real stdio, against a gateway running in this process."""
+    """`python -m crossmess mcp` over real stdio, against a gateway running in this process."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -135,7 +135,7 @@ class EndToEndTests(unittest.TestCase):
         ]
         stdin = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in requests).encode("utf-8")
         env = {**os.environ, "PYTHONPATH": str(SRC)}
-        proc = subprocess.run([sys.executable, "-m", "courier", "mcp", "--creds", str(self.dir / "claude.json")],
+        proc = subprocess.run([sys.executable, "-m", "crossmess", "mcp", "--creds", str(self.dir / "claude.json")],
                               input=stdin, capture_output=True, env=env, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
         self.assertNotIn(b"\r\n", proc.stdout)

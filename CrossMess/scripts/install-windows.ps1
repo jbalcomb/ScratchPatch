@@ -87,8 +87,8 @@ New-Item -ItemType Directory -Force $config, $data | Out-Null
 icacls $config /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" | Out-Null
 Push-Location $src
 try {
-    $gatewayKey = & $venvPython -m courier gateway-key
-    & $venvPython -m courier ntfy-setup --ntfy-exe $ntfy --listen "127.0.0.1:$NtfyPort" | Out-Null
+    $gatewayKey = & $venvPython -m crossmess gateway-key
+    & $venvPython -m crossmess ntfy-setup --ntfy-exe $ntfy --listen "127.0.0.1:$NtfyPort" | Out-Null
     if ($LASTEXITCODE) { throw "ntfy-setup failed (above)." }
 } finally { Pop-Location }
 
@@ -117,13 +117,13 @@ function Wait-Healthy($Url, $Field) {
 
 Stop-CourierNtfy  # picks up the new server.yml on start
 Register-CourierTask "Courier ntfy" `
-    "-m courier ntfy-run --ntfy-exe `"$ntfy`" --log-file `"$data\ntfy.log`"" `
+    "-m crossmess ntfy-run --ntfy-exe `"$ntfy`" --log-file `"$data\ntfy.log`"" `
     "Courier's message broker (ntfy, private: tokens only)."
 if (-not (Wait-Healthy "http://127.0.0.1:$NtfyPort/v1/health" "healthy")) {
     throw "ntfy didn't come up on port $NtfyPort. See $data\ntfy.log."
 }
 Register-CourierTask "Courier Gateway" `
-    ("-m courier serve --port $GatewayPort --ntfy http://127.0.0.1:$NtfyPort " +
+    ("-m crossmess serve --port $GatewayPort --ntfy http://127.0.0.1:$NtfyPort " +
      "--ntfy-token-file `"$config\ntfy-gateway.token`" --data `"$data`" --log-file `"$data\gateway.log`"") `
     "Courier gateway: screens, signs and publishes messages to ntfy."
 if (-not (Wait-Healthy "http://127.0.0.1:$GatewayPort/health" "ok")) {
@@ -161,6 +161,6 @@ Write-Host "ntfy URL:      ${base}:$NtfyPort   (devices subscribe here)"
 Write-Host "Gateway key:   $gatewayKey   (devices verify envelopes with this)"
 Write-Host "Device token:  $config\ntfy-device.token   (read-only; copy it to each device agent)"
 Write-Host ""
-Write-Host "Add a sender:  cd $src; ..\.venv\Scripts\python -m courier add-sender NAME --kind script --channels clip --gateway ${base}:$GatewayPort"
+Write-Host "Add a sender:  cd $src; ..\.venv\Scripts\python -m crossmess add-sender NAME --kind script --channels clip --gateway ${base}:$GatewayPort"
 Write-Host "Logs:          $data\ntfy.log, $data\gateway.log, $data\audit.jsonl"
 Write-Host "Remove:        .\scripts\uninstall-windows.ps1"

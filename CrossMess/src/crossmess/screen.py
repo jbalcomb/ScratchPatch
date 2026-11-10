@@ -39,7 +39,7 @@ class Ruleset:
     @classmethod
     def load(cls, path: Path | None = None) -> Ruleset:
         if path is None:
-            raw = resources.files("courier").joinpath("ruleset.toml").read_bytes()
+            raw = resources.files("crossmess").joinpath("ruleset.toml").read_bytes()
         else:
             raw = path.read_bytes()
         # LF is canonical, as in git's object store: a CRLF checkout on Windows hashes the same.

@@ -41,10 +41,10 @@ from typing import Callable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from courier.agent import Delivery, Seen, native_text, receive
-from courier.envelope import Invalid
-from courier.screen import Rejected, Ruleset, screen
-from courier.store import public_key_from
+from crossmess.agent import Delivery, Seen, native_text, receive
+from crossmess.envelope import Invalid
+from crossmess.screen import Rejected, Ruleset, screen
+from crossmess.store import public_key_from
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ class DeviceConfig:
         try:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            raise ConfigError(f"{path} not found; create it with: python -m courier device-init") from None
+            raise ConfigError(f"{path} not found; create it with: python -m crossmess device-init") from None
         except tomllib.TOMLDecodeError as error:
             raise ConfigError(f"{path}: {error}") from None
         try:

@@ -1,4 +1,4 @@
-"""`python -m courier <command>`.
+"""`python -m crossmess <command>`.
 
   serve           start the gateway (default 127.0.0.1:8766; put `tailscale serve` in front of it)
   gateway-key     print the gateway's public key, creating the key first if needed
@@ -24,22 +24,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-from courier import client
-from courier import mcp as mcp_server
-from courier.desktop import Clipboard, Notifier
-from courier.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
-from courier.gateway import ORIGIN_KINDS
-from courier.ntfy import publisher
-from courier.ntfy_setup import ntfy_hasher, write_config
-from courier.screen import Ruleset
-from courier.server import RateLimit, Service, make_server
-from courier.store import CONFIG_DIR, Senders, load_gateway_key, public_key_text, write_private
+from crossmess import client
+from crossmess import mcp as mcp_server
+from crossmess.desktop import Clipboard, Notifier
+from crossmess.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
+from crossmess.gateway import ORIGIN_KINDS
+from crossmess.ntfy import publisher
+from crossmess.ntfy_setup import ntfy_hasher, write_config
+from crossmess.screen import Ruleset
+from crossmess.server import RateLimit, Service, make_server
+from crossmess.store import CONFIG_DIR, Senders, load_gateway_key, public_key_text, write_private
 
 PROJECT = Path(__file__).resolve().parents[2]
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="courier")
+    parser = argparse.ArgumentParser(prog="crossmess")
     parser.add_argument("--config", type=Path, default=CONFIG_DIR, help="key and senders folder (default %(default)s)")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -131,7 +131,7 @@ def main(argv=None) -> int:
         try:
             creds = senders.add(args.name, args.kind, channels)
         except ValueError as error:
-            print(f"courier: {error}", file=sys.stderr)
+            print(f"crossmess: {error}", file=sys.stderr)
             return 2
         creds["gateway"] = args.gateway
         creds["channels"] = sorted(set(channels))
@@ -147,7 +147,7 @@ def main(argv=None) -> int:
 
     if args.command == "remove-sender":
         if not senders.remove(args.name):
-            print(f"courier: no sender named {args.name!r}", file=sys.stderr)
+            print(f"crossmess: no sender named {args.name!r}", file=sys.stderr)
             return 1
         print(f"removed {args.name!r}; its secret stops working at once")
         return 0
@@ -236,17 +236,17 @@ action = "notify"
 def device_init(args) -> int:
     path = args.config / "device.toml"
     if path.exists() and not args.force:
-        print(f"courier: {path} exists; pass --force to replace it", file=sys.stderr)
+        print(f"crossmess: {path} exists; pass --force to replace it", file=sys.stderr)
         return 1
     key = args.gateway_key
     if not key:
         try:
             key = public_key_text(load_gateway_key(args.config / "gateway.key", create=False))
         except FileNotFoundError:
-            print("courier: no gateway on this machine; pass --gateway-key", file=sys.stderr)
+            print("crossmess: no gateway on this machine; pass --gateway-key", file=sys.stderr)
             return 2
     if not (args.config / args.token_file).is_file():
-        print(f"courier: warning: {args.config / args.token_file} doesn't exist yet; copy the device token there",
+        print(f"crossmess: warning: {args.config / args.token_file} doesn't exist yet; copy the device token there",
               file=sys.stderr)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(DEVICE_TOML.format(ntfy=json.dumps(args.ntfy.rstrip("/")), token_file=json.dumps(args.token_file),
@@ -259,14 +259,14 @@ def send_message(args) -> int:
     try:
         creds = client.Credentials.load(args.creds, args.gateway)
     except (OSError, ValueError, KeyError) as error:
-        print(f"courier: {error}", file=sys.stderr)
+        print(f"crossmess: {error}", file=sys.stderr)
         return 2
     text = sys.stdin.read() if args.text == "-" else args.text
     try:
         reply = client.send(creds, args.channel, text, content_type=args.content_type, mode=args.mode,
                             ttl_s=args.ttl)
     except client.SendFailed as failure:
-        print(f"courier: {failure}", file=sys.stderr)
+        print(f"crossmess: {failure}", file=sys.stderr)
         return 1
     print(json.dumps(reply))
     return 0
@@ -277,7 +277,7 @@ def run_mcp(args) -> int:
     try:
         creds = client.Credentials.load(args.creds, args.gateway)
     except (OSError, ValueError, KeyError) as error:
-        print(f"courier: {error}", file=sys.stderr)
+        print(f"crossmess: {error}", file=sys.stderr)
         return 2
     channels = [c.strip() for c in args.channels.split(",") if c.strip()] if args.channels else creds.channels
     # JSON-RPC lines are UTF-8 and end in LF on every platform.

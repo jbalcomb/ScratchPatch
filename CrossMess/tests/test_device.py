@@ -7,12 +7,12 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from courier.__main__ import main
-from courier.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
-from courier.envelope import make_submission
-from courier.gateway import Token, admit
-from courier.screen import Ruleset
-from courier.store import public_key_text
+from crossmess.__main__ import main
+from crossmess.device import ConfigError, DeviceAgent, DeviceConfig, subscribe
+from crossmess.envelope import make_submission
+from crossmess.gateway import Token, admit
+from crossmess.screen import Ruleset
+from crossmess.store import public_key_text
 
 RULES = Ruleset.load()
 

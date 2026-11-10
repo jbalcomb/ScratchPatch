@@ -24,11 +24,11 @@ from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from courier.envelope import Invalid, parse_time
-from courier.gateway import admit
-from courier.ntfy import PublishFailed, Publisher, envelope_bytes
-from courier.screen import Classifier, Rejected, Ruleset
-from courier.store import Senders, public_key_text
+from crossmess.envelope import Invalid, parse_time
+from crossmess.gateway import admit
+from crossmess.ntfy import PublishFailed, Publisher, envelope_bytes
+from crossmess.screen import Classifier, Rejected, Ruleset
+from crossmess.store import Senders, public_key_text
 
 log = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from courier.store import write_private
+from crossmess.store import write_private
 
 GATEWAY_USER = "courier-gateway"
 DEVICE_USER = "courier-device"
@@ -66,7 +66,7 @@ def write_config(config_dir: Path, hasher: Hasher, listen: str = "127.0.0.1:2586
     # Forward slashes: ntfy reads them on Windows too, and YAML needs no escaping.
     d = ntfy_dir.resolve().as_posix()
     text = f"""\
-# Written by `python -m courier ntfy-setup`. Rerun that instead of editing: it keeps the tokens.
+# Written by `python -m crossmess ntfy-setup`. Rerun that instead of editing: it keeps the tokens.
 listen-http: "{listen}"
 behind-proxy: true
 web-root: "disable"

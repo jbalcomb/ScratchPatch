@@ -4,7 +4,7 @@ import unittest
 from importlib import resources
 from pathlib import Path
 
-from courier.screen import Rejected, Ruleset, screen
+from crossmess.screen import Rejected, Ruleset, screen
 
 RULES = Ruleset.load()
 
@@ -168,14 +168,14 @@ class OriginAndRulesetTests(unittest.TestCase):
         self.assertEqual(labels("hi", origin="human"), frozenset())
 
     def test_any_change_to_the_ruleset_changes_its_digest(self):
-        raw = resources.files("courier").joinpath("ruleset.toml").read_bytes()
+        raw = resources.files("crossmess").joinpath("ruleset.toml").read_bytes()
         path = Path(tempfile.mkdtemp()) / "ruleset.toml"
         path.write_bytes(raw + b"\n# edited\n")
         self.assertNotEqual(Ruleset.load(path).digest, RULES.digest)
         self.assertTrue(RULES.digest.startswith("sha256:"))
 
     def test_line_endings_of_the_checkout_do_not_change_the_digest(self):
-        lf = resources.files("courier").joinpath("ruleset.toml").read_bytes().replace(b"\r\n", b"\n")
+        lf = resources.files("crossmess").joinpath("ruleset.toml").read_bytes().replace(b"\r\n", b"\n")
         folder = Path(tempfile.mkdtemp())
         (folder / "lf.toml").write_bytes(lf)
         (folder / "crlf.toml").write_bytes(lf.replace(b"\n", b"\r\n"))

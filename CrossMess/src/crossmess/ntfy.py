@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
-from courier.envelope import Envelope
+from crossmess.envelope import Envelope
 
 Publisher = Callable[[Envelope], None]
 

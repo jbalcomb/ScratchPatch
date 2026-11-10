@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-from courier.envelope import SUBMISSION_FIELDS, ULID, VERSION, Envelope, Invalid, parse_time, sign, verify
-from courier.screen import Classifier, Ruleset, screen
+from crossmess.envelope import SUBMISSION_FIELDS, ULID, VERSION, Envelope, Invalid, parse_time, sign, verify
+from crossmess.screen import Classifier, Ruleset, screen
 
 ORIGIN_KINDS = frozenset({"human", "script", "agent", "web"})
 

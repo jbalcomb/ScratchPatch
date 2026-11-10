@@ -1,4 +1,4 @@
-"""Sending through Courier (courier/ in this repo): sign a submission and post it to the gateway.
+"""Sending through Courier (CrossMess/ in this repo): sign a submission and post it to the gateway.
 
 The submission matches Courier's envelope format: the same fields, the same canonical JSON (sorted
 keys, no whitespace, UTF-8) and an Ed25519 signature over it, made here in pure Python.
@@ -37,7 +37,7 @@ def parse_credentials(text: str) -> dict[str, str]:
             raise ValueError
     except (ValueError, KeyError, TypeError, binascii.Error):
         raise StepError("The sender credentials aren't readable. On the gateway machine run "
-                        "`python -m courier add-sender NAME ... --paste-string` and paste the line it prints.") from None
+                        "`python -m crossmess add-sender NAME ... --paste-string` and paste the line it prints.") from None
     return {"sender": creds["sender"], "secret": creds["secret"], "private_key": creds["private_key"],
             "gateway": creds.get("gateway") or ""}
 

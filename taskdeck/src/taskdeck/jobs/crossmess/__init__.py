@@ -72,7 +72,7 @@ class SendToDevices(JobPlugin):
     )
     settings = (
         Field.text("credentials", "Sender credentials", secret=True, required=True,
-                   help="On the gateway machine: python -m courier add-sender phone --kind human "
+                   help="On the gateway machine: python -m crossmess add-sender phone --kind human "
                         "--channels clip,agent-inbox --paste-string. Paste the line it prints."),
         Field.text("gateway_url", "Gateway URL",
                    help="e.g. https://workstation.your-tailnet.ts.net:8766. Blank uses the one in the credentials."),

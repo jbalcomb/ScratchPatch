@@ -4,7 +4,7 @@ It is just another sender: it signs with its own credentials file, the gateway s
 `origin_agent` from that sender's token, screening runs as for anything else, and each device's
 policy decides what happens. Nothing the agent writes can choose an action or a label.
 
-    python -m courier mcp --creds ~/.config/courier/claude.sender.json
+    python -m crossmess mcp --creds ~/.config/courier/claude.sender.json
 
 Messages are newline-delimited JSON-RPC 2.0 on stdin/stdout; logs go to stderr.
 """
@@ -17,9 +17,9 @@ import re
 import sys
 from typing import IO, Callable
 
-from courier import client
+from crossmess import client
 
-log = logging.getLogger("courier.mcp")
+log = logging.getLogger("crossmess.mcp")
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 CHANNEL = re.compile(r"^[a-z0-9-]{1,48}$")

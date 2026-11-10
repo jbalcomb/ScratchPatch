@@ -41,7 +41,7 @@ if [ ! -f "$config/device.toml" ]; then
     [ -n "$ntfy" ] || { echo "Usage: $0 https://<broker>.<tailnet>.ts.net:2586 [gateway key]" >&2; exit 1; }
     args=(device-init --ntfy "$ntfy")
     [ -n "$gateway_key" ] && args+=(--gateway-key "$gateway_key")
-    (cd "$src" && "$venv_python" -m courier "${args[@]}" >/dev/null)
+    (cd "$src" && "$venv_python" -m crossmess "${args[@]}" >/dev/null)
     echo "Wrote $config/device.toml."
 else
     echo "Kept $config/device.toml."
@@ -55,7 +55,7 @@ After=graphical-session.target
 
 [Service]
 WorkingDirectory=$src
-ExecStart=$venv_python -m courier device --data $data
+ExecStart=$venv_python -m crossmess device --data $data
 Restart=always
 RestartSec=10
 
@@ -70,7 +70,7 @@ cat <<EOF
 Courier Device is installed (systemd user service courier-device, started with your desktop session).
 
 Policy:  $config/device.toml   (systemctl --user restart courier-device after editing it)
-Inbox:   cd $src && ../.venv/bin/python -m courier inbox
+Inbox:   cd $src && ../.venv/bin/python -m crossmess inbox
 Logs:    journalctl --user -u courier-device, $data/device.jsonl
 Remove:  scripts/uninstall-device-linux.sh
 EOF

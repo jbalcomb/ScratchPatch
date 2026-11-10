@@ -14,8 +14,8 @@ from typing import Iterable
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from courier.envelope import Envelope, Invalid, parse_time, verify
-from courier.screen import Ruleset, screen
+from crossmess.envelope import Envelope, Invalid, parse_time, verify
+from crossmess.screen import Ruleset, screen
 
 
 @dataclass(frozen=True)

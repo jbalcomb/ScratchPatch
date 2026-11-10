@@ -68,8 +68,8 @@ fi
 # 3. Keys, tokens and ntfy's config, readable only by you
 mkdir -p "$config" "$data" "$units"
 chmod 700 "$config"
-gateway_key="$(cd "$src" && "$venv_python" -m courier gateway-key)"
-(cd "$src" && "$venv_python" -m courier ntfy-setup --ntfy-exe "$ntfy" --listen "127.0.0.1:$ntfy_port" >/dev/null)
+gateway_key="$(cd "$src" && "$venv_python" -m crossmess gateway-key)"
+(cd "$src" && "$venv_python" -m crossmess ntfy-setup --ntfy-exe "$ntfy" --listen "127.0.0.1:$ntfy_port" >/dev/null)
 
 # 4. systemd user services
 cat > "$units/courier-ntfy.service" <<EOF
@@ -93,7 +93,7 @@ Wants=courier-ntfy.service
 
 [Service]
 WorkingDirectory=$src
-ExecStart=$venv_python -m courier serve --port $gateway_port --ntfy http://127.0.0.1:$ntfy_port --ntfy-token-file $config/ntfy-gateway.token --data $data --log-file $data/gateway.log
+ExecStart=$venv_python -m crossmess serve --port $gateway_port --ntfy http://127.0.0.1:$ntfy_port --ntfy-token-file $config/ntfy-gateway.token --data $data --log-file $data/gateway.log
 Restart=always
 RestartSec=10
 
@@ -143,7 +143,7 @@ ntfy URL:      $base:$ntfy_port   (devices subscribe here)
 Gateway key:   $gateway_key   (devices verify envelopes with this)
 Device token:  $config/ntfy-device.token   (read-only; copy it to each device agent)
 
-Add a sender:  cd $src && ../.venv/bin/python -m courier add-sender NAME --kind script --channels clip --gateway $base:$gateway_port
+Add a sender:  cd $src && ../.venv/bin/python -m crossmess add-sender NAME --kind script --channels clip --gateway $base:$gateway_port
 Logs:          journalctl --user -u courier-ntfy -u courier-gateway, $data/gateway.log, $data/audit.jsonl
 Remove:        scripts/uninstall-linux.sh
 EOF
