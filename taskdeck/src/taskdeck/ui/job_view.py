@@ -4,13 +4,21 @@ live pipeline progress and the result."""
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from taskdeck.core import Context, JobPlugin, Problem, RunReport, Stage
+from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.shared import photos
+from taskdeck.shared.gdrive import DriveLocation
 
+from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
+from .file_browser import FileBrowser
+from .camera_capture import CameraCapture
+from .photo_picker import PhotoPicker
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -23,6 +31,9 @@ STAGE_COLOR = {
     Stage.PRESENT: ft.Colors.PURPLE,
 }
 
+
+
+URL = re.compile(r"https?://[^\s<>\"')]+[^\s<>\"').,;:!?]")
 
 class JobScreen:
     def __init__(self, app: "TaskDeckApp", plugin: JobPlugin, preset: dict[str, Any] | None = None):
@@ -39,9 +50,13 @@ class JobScreen:
         initial = preset or draft
 
         self.fields = {
-            f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run)
+            f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run,
+                                 browse=self._browse_file, camera=self._take_photos)
             for f in plugin.fields
         }
+        # Notes under fields that depend on the inputs (JobPlugin.field_notes), e.g. where the output goes.
+        self.notes = {name: ft.Text("", size=13, color=ft.Colors.ON_SURFACE_VARIANT, selectable=True, visible=False)
+                      for name in self.fields}
         restored = any(initial.get(f.name) not in (None, "", f.default) for f in plugin.fields) and bool(draft)
         self.run_button = ft.FilledButton(plugin.run_label, icon=ft.Icons.PLAY_ARROW, on_click=self.run, height=52)
         # Readiness: problems found before running (missing settings, unreadable key, sheet headers...).
@@ -54,6 +69,13 @@ class JobScreen:
         self.status = ft.Text("Restored what you entered last time." if restored else "", size=12,
                               color=ft.Colors.ON_SURFACE_VARIANT)
         self.output = ft.Column(spacing=8)
+        # Long work a job handed to a background task (e.g. a Google Drive upload): its progress, then outcome.
+        self.task_box = ft.Column(spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        tasks = getattr(app, "tasks", None)
+        latest = tasks.latest(plugin.id) if tasks else None
+        self.task: Task | None = latest if latest and latest.running else None
+        if tasks:
+            tasks.listeners.append(self._on_task)
         self.steps_list = ft.Column([self._step_row(s) for s in self.pipeline], spacing=2)
 
         self.pin_button = ft.IconButton(
@@ -79,11 +101,12 @@ class JobScreen:
                     ]
                 ),
                 self.readiness,
-                *[fc.control for fc in self.fields.values()],
+                *[c for name, fc in self.fields.items() for c in (fc.control, self.notes[name])],
                 ft.Row([self.run_button, self.cancel_button, self.clear_button]),
                 self.progress,
                 ft.Semantics(content=self.status, live_region=True),
                 ft.Semantics(content=self.output, live_region=True),
+                self.task_box,
                 ft.ExpansionTile(
                     title=ft.Text("Pipeline", size=14),
                     subtitle=ft.Text(" › ".join(s.value for s in self.pipeline.shape), size=12),
@@ -92,18 +115,32 @@ class JobScreen:
                 ),
             ],
         )
+        self._render_task()
+        self._render_notes()
 
     # ---- readiness ------------------------------------------------------------------
 
     @property
     def blocked(self) -> bool:
-        return self.checking or any(p.blocking for p in self.problems)
+        return self.checking or any(p.blocking for p in self.problems) or bool(self.task and self.task.running)
 
     def check_ready(self) -> None:
         """Run the job's checks: offline ones now, network ones in the background."""
+        self._render_notes()  # also called on return from the job's settings, which notes may use
+        vault = getattr(self.app, "vault", None)
+        if vault and vault.needs_unlock(self.plugin.settings_id):
+            self.problems = [Problem("Your saved credentials are locked. Unlock them with your fingerprint.", fix="unlock")]
+            self.checking = False
+            self._render_readiness()
+            return
         settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
         self.problems = self.plugin.check_ready(settings)
         has_online = type(self.plugin).check_ready_online is not JobPlugin.check_ready_online
+        network = getattr(self.app, "network", None)
+        if has_online and network and network.wifi_only(self.plugin.settings_id) and not network.on_wifi:
+            has_online = False  # Wi-Fi only: the online checks wait too
+            self.problems = self.problems + [Problem("Wi-Fi only is on: connect to Wi-Fi to check the connection. "
+                                                     "Running waits for Wi-Fi.", blocking=False, fix="recheck")]
         self.checking = has_online and not any(p.blocking for p in self.problems)
         self._render_readiness()
         if self.checking:
@@ -112,7 +149,10 @@ class JobScreen:
                     found = self.plugin.check_ready_online(settings)
                 except Exception as exc:  # a broken check must not lock the job
                     found = [Problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}", blocking=False, fix="recheck")]
-                self.problems = self.problems + found
+                fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
+                if fixes:  # settings the check found that work: keep them, so the next run needs no lookup
+                    self.app.save_job_settings(self.plugin.id, {**self.app.job_settings(self.plugin.id), **fixes})
+                self.problems = self.problems + [p for p in found if not p.ok]
                 self.checking = False
                 self._render_readiness()
                 self._update()
@@ -131,6 +171,9 @@ class JobScreen:
         blocking = [p for p in self.problems if p.blocking]
         title = "Before you can run this job:" if blocking else "Heads up:"
         buttons = []
+        if any(p.fix == "unlock" for p in self.problems):
+            buttons.append(ft.FilledButton("Unlock", icon=ft.Icons.FINGERPRINT,
+                                           on_click=lambda e: self.app.page.run_task(self.app.unlock, self.recheck)))
         if any(p.fix == "settings" for p in self.problems) and self.plugin.settings:
             buttons.append(ft.FilledTonalButton("Open settings", icon=ft.Icons.TUNE,
                                                 on_click=lambda e: self.app.open_settings(self.plugin.id)))
@@ -170,6 +213,8 @@ class JobScreen:
     def invalidate(self, e=None) -> None:
         """Inputs changed: keep a draft, and drop the result so a stale preview can never be committed."""
         self.app.drafts.save(self.plugin.id, self.raw_inputs())
+        self._render_notes()
+        self._update()
         self.generation += 1
         self.payload = None
         if self.has_output:
@@ -177,6 +222,55 @@ class JobScreen:
             self.output.controls = []
             self.status.value = ""
             self.view.update()
+
+    def _render_notes(self) -> None:
+        try:
+            settings = self.plugin.resolve_settings(self.app.job_settings(self.plugin.id))
+            notes = self.plugin.field_notes(self.raw_inputs(), settings)
+        except Exception:  # a broken note must not break the screen
+            notes = {}
+        for name, text in self.notes.items():
+            text.value = notes.get(name, "")
+            text.visible = bool(text.value)
+
+    def _browse_file(self, fc: FieldControl) -> None:
+        """Browse for a FILE(S) field with TaskDeck's own browser (real paths), starting where its (last) file
+        is, else where another file field's file is (e.g. Supporting DLLs: the executable's folder)."""
+        exts = tuple(e.lower() for e in fc.field.extensions)
+        if fc.field.preview:  # a photo field: the photo grid, starting at the camera's photos (DCIM)
+            PhotoPicker.pick(self.app, lambda paths, separate: fc.picked_many([str(p) for p in paths], separate),
+                             title=f"Choose {fc.field.label}", noun=fc.field.grouped,
+                             accept=(lambda name: name.lower().endswith(exts)) if exts else photos.is_image)
+            return
+        candidates = [line.strip() for line in str(fc.value or "").splitlines() if line.strip()][-1:] + \
+            [str(other.value) for other in self.fields.values()
+             if other is not fc and other.field.kind == FieldKind.FILE and other.value]
+        folders = [Path(c).expanduser().parent for c in candidates]
+        FileBrowser.pick_file(self.app, lambda path: fc.picked(str(path)),
+                              start=next((f for f in folders if f.is_dir()), None),
+                              title=f"Choose {fc.field.label}",
+                              accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
+                              kind=" or ".join(exts) + " files" if exts else "files")
+
+    def _linked(self, text: str) -> list[ft.TextSpan]:
+        """Text with every web address in it a tappable link (opens in the browser)."""
+        spans: list[ft.TextSpan] = []
+        at = 0
+        for m in URL.finditer(text):
+            if m.start() > at:
+                spans.append(ft.TextSpan(text[at:m.start()]))
+            url = m.group(0)
+            spans.append(ft.TextSpan(url, style=ft.TextStyle(color=ft.Colors.PRIMARY, decoration=ft.TextDecoration.UNDERLINE),
+                                     on_click=lambda e, url=url: self.app.open_url(url)))
+            at = m.end()
+        if at < len(text):
+            spans.append(ft.TextSpan(text[at:]))
+        return spans
+
+    def _take_photos(self, fc: FieldControl) -> None:
+        """Take photos (fields with Field.camera): TaskDeck's camera; the photos join the field in order."""
+        CameraCapture.open(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
+                           title=fc.field.label, guides=fc.field.camera)
 
     def clear(self, e=None) -> None:
         for fc in self.fields.values():
@@ -224,8 +318,10 @@ class JobScreen:
             return
         raw = self.raw_inputs()
         self.app.drafts.save(self.plugin.id, raw)
+        if not await self._unlock_accounts(raw):
+            return
         generation = self.generation
-        self.ctx = Context({})
+        self.ctx = Context({}, services={**self.app.services(), "start_task": self._start_task})
         self._set_running(True)
         steps = list(self.pipeline)
 
@@ -236,10 +332,11 @@ class JobScreen:
             self.steps_list.controls = [
                 self._step_row(st, "ok" if j < i else "run" if j == i else "") for j, st in enumerate(steps)
             ]
-            self.app.page.schedule_update()
+            self.app.page.update()
 
         settings = self.app.job_settings(self.plugin.id)
-        report = await asyncio.to_thread(self.plugin.run, raw, on_progress, self.ctx, settings)
+        report = await asyncio.to_thread(self._network_scoped(self.plugin.run, self.ctx), raw, on_progress,
+                                         self.ctx, settings)
         if generation != self.generation:  # inputs were edited while this was running
             self._set_running(False)
             self.status.value = "Input changed while running; run again."
@@ -253,6 +350,97 @@ class JobScreen:
         self.app.history.add(self.plugin.id, report.ok, _summary(report), self.plugin.history_inputs(raw))
         self.app.on_history_changed()
         self.view.update()
+
+    # ---- background tasks ------------------------------------------------------------
+
+    def _start_task(self, title: str, work) -> Task:
+        """``Context.services["start_task"]``: run work(task) in the background under the job's Wi-Fi-only
+        setting, shown on this screen (and in the notification) like Extract Archive."""
+        network, settings_id = getattr(self.app, "network", None), self.plugin.settings_id
+
+        def run(t: Task) -> str:
+            if network is None:
+                return work(t)
+            with network.scope(settings_id, lambda: t.cancel_requested, t.set_note):  # Wi-Fi only
+                return work(t)
+
+        # The task's inputs go to History when it ends, so private fields are left out here.
+        self.task = self.app.tasks.start(title, self.plugin.id, run,
+                                         inputs=self.plugin.history_inputs(self.raw_inputs()))
+        return self.task
+
+    def _on_task(self, task: Task) -> None:
+        if task.job_id != self.plugin.id or (self.task and task is not self.task and self.task.running):
+            return
+        self.task = task
+        self._render_task()
+        self._render_readiness()
+        self._update()
+
+    def _render_task(self) -> None:
+        t = self.task
+        if not t:
+            self.task_box.controls = []
+        elif t.running:
+            self.task_box.controls = task_view.running_rows(t, self.cancel_task)
+        else:
+            buttons: list[ft.Control] = [ft.TextButton("Close", on_click=self.dismiss_task)]
+            if isinstance(t.result, DriveLocation):
+                url = task_view.drive_url(t.result)
+                buttons.insert(0, ft.FilledTonalButton("Open in Drive", icon=ft.Icons.OPEN_IN_NEW,
+                                                       on_click=lambda e: self.app.open_url(url)))
+            self.task_box.controls = [task_view.finished_card(t, buttons)]
+
+    def cancel_task(self, e=None) -> None:
+        task = self.task
+        if not task or not task.running:
+            return
+
+        def stop(e=None):
+            self.app.page.pop_dialog()
+            self.app.tasks.cancel(task)
+
+        self.app.page.show_dialog(ft.AlertDialog(
+            title=ft.Text(f"Stop {task.title[:1].lower()}{task.title[1:]}?"),
+            content=ft.Text("What's already done stays."),
+            actions=[ft.TextButton("Keep going", on_click=lambda e: self.app.page.pop_dialog()),
+                     ft.FilledButton("Stop", on_click=stop)]))
+
+    def dismiss_task(self, e=None) -> None:
+        if self.task and not self.task.running:
+            self.app.tasks.forget(self.task)
+            self.task = None
+        self._render_task()
+        self._update()
+
+    async def _unlock_accounts(self, raw: dict[str, Any]) -> bool:
+        """Ask for the fingerprint when the run signs in with an account whose credentials are locked
+        (e.g. Parse executable with "Push to Google Drive" on). False if they stay locked."""
+        vault = getattr(self.app, "vault", None)
+        if not vault or not any(vault.needs_unlock(a) for a in self.plugin.accounts_needed(raw)):
+            return True
+        if await self.app.unlock():
+            return True
+        self.status.value = "Your credentials are still locked: unlock them to sign in to your account."
+        self._update()
+        return False
+
+    def _network_scoped(self, fn, ctx):
+        """fn, run under the job's Wi-Fi-only setting (in the worker thread): network requests wait for Wi-Fi,
+        with "Waiting for Wi-Fi…" in the status line, and Cancel stops the wait."""
+        network = getattr(self.app, "network", None)
+        if network is None:
+            return fn
+
+        def on_wait(text: str) -> None:
+            self.status.value = text or "Continuing…"
+            self.app.page.update()
+
+        def run(*args):
+            cancelled = (lambda: ctx._cancelled) if ctx else (lambda: False)
+            with network.scope(self.plugin.settings_id, cancelled, on_wait):
+                return fn(*args)
+        return run
 
     def _set_running(self, running: bool) -> None:
         self.run_button.disabled = running or self.blocked
@@ -282,6 +470,9 @@ class JobScreen:
         parts: list[ft.Control] = []
         if result.title:
             parts.append(ft.Text(result.title, weight=ft.FontWeight.W_600))
+        images = thumbnails.strip(result.images) if result.images else None
+        if images:
+            parts.append(images)
         if result.rows:
             parts.append(
                 ft.Column(
@@ -289,7 +480,8 @@ class JobScreen:
                         ft.Row(
                             [
                                 ft.Text(k, color=ft.Colors.ON_SURFACE_VARIANT, width=150),
-                                ft.Text(v, selectable=True, expand=True, weight=ft.FontWeight.W_500),
+                                ft.Text(spans=self._linked(v), selectable=True, expand=True,
+                                        weight=ft.FontWeight.W_500),
                             ],
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         )
@@ -298,8 +490,17 @@ class JobScreen:
                     spacing=6,
                 )
             )
+        if result.table:
+            if result.table_title:
+                parts.append(ft.Text(result.table_title, weight=ft.FontWeight.W_600))
+            parts.append(ft.Column(
+                [ft.Row([ft.Text(k, selectable=True, expand=True),
+                         ft.Text(v, selectable=True, text_align=ft.TextAlign.RIGHT, weight=ft.FontWeight.W_500)],
+                        vertical_alignment=ft.CrossAxisAlignment.START)
+                 for k, v in result.table],
+                spacing=4))
         if result.text is not None:
-            parts.append(ft.Text(result.text, selectable=True, font_family="monospace"))
+            parts.append(ft.Text(spans=self._linked(result.text), selectable=True, font_family="monospace"))
         if result.warning:
             parts.append(ft.Text(result.warning, color=ft.Colors.ERROR))
         text = result.as_plain_text()
@@ -328,7 +529,8 @@ class JobScreen:
         self.commit_button.content = "Saving…"
         self.commit_error.controls = []
         self.view.update()
-        outcome = await asyncio.to_thread(self.plugin.attempt_commit, payload, self.app.job_settings(self.plugin.id))
+        outcome = await asyncio.to_thread(self._network_scoped(self.plugin.attempt_commit, None), payload,
+                                          self.app.job_settings(self.plugin.id))
         ok, message = outcome.ok, outcome.message
         if ok:
             self.commit_button.content = self.plugin.committed_label

@@ -48,6 +48,11 @@ class Result:
     rows: list[tuple[str, str]] = field(default_factory=list)
     title: str | None = None
     warning: str | None = None  # shown under the result, e.g. "Not found: Batch count."
+    # Images shown as thumbnails above the rows: local image files, or image bytes (a file already deleted).
+    images: list[str | bytes] = field(default_factory=list)
+    # A titled list under the rows, its amounts right-aligned (e.g. a receipt's line items and prices).
+    table_title: str | None = None
+    table: list[tuple[str, str]] = field(default_factory=list)
     # Machine-readable data for a later commit step (see JobPlugin.commit); not displayed.
     payload: Any = None
 
@@ -58,6 +63,10 @@ class Result:
         if self.rows:
             width = max(len(k) for k, _ in self.rows)
             parts.extend(f"{k.ljust(width)}  {v}" for k, v in self.rows)
+        if self.table:
+            parts.append(self.table_title or "")
+            width = max(len(k) for k, _ in self.table)
+            parts.extend(f"{k.ljust(width)}  {v:>10}" for k, v in self.table)
         if self.text:
             parts.append(self.text)
         if self.warning:
@@ -74,6 +83,9 @@ class Context:
     settings: dict[str, Any] = field(default_factory=dict)
     result: Result | None = None
     log: list[str] = field(default_factory=list)
+    # What the app offers jobs that need more than their inputs, e.g. "google_drive": a function returning
+    # a signed-in DriveClient (only there while Google Drive is connected and unlocked).
+    services: dict[str, Any] = field(default_factory=dict)
     _cancelled: bool = False
 
     def __getitem__(self, key: str) -> Any:

@@ -1,0 +1,20 @@
+[project]
+name = "taskdeck-background"
+version = "0.1.0"
+description = "TaskDeck: keeps long jobs running while the app is in the background (Android foreground service)."
+requires-python = ">=3.10"
+dependencies = ["flet==1.0.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The Flutter side (Dart + Android Java) ships inside the wheel under flutter/taskdeck_background,
+# where `flet build` looks for extensions, like flet's own extension packages.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["taskdeck_background", "flutter*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["**/*", "*"]

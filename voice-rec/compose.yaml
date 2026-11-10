@@ -1,0 +1,52 @@
+# Voice notes server + its Postgres. Set up by setup.sh, which writes .env (next to this file).
+# From this folder: docker compose up -d --build
+services:
+  db:
+    image: postgres:16
+    container_name: voice-rec-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voicerec
+      POSTGRES_DB: voicerec
+      POSTGRES_PASSWORD: ${VOICE_REC_DB_PASSWORD:?run setup.sh first (it writes .env)}
+    # Only on the workstation's localhost. setup.sh picks a free port (from 5433) and saves it in .env.
+    ports: ["127.0.0.1:${VOICE_REC_DB_PORT:-5433}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voicerec -d voicerec"]
+      interval: 5s
+      retries: 20
+
+  voice-rec:
+    build:
+      context: .
+      args:
+        GPU: ${VOICE_REC_GPU:-0}
+    container_name: voice-rec
+    restart: unless-stopped
+    # Host networking, like budget: reaches llama.cpp (and Neo4j, if any) on localhost, and listens on the
+    # workstation's localhost only, on the port setup.sh picked (from 8095). Tailscale Serve makes it reachable from your own devices.
+    network_mode: host
+    user: "${UID:-1000}:${GID:-1000}"  # notes written into the vault belong to you
+    env_file: ${HOME}/.config/secrets.env  # VOICE_REC_TOKEN, LLM_URL, LLM_API_KEY, LLM_MODEL, GRAPH_*
+    environment:
+      DATABASE_URL: postgresql://voicerec:${VOICE_REC_DB_PASSWORD}@127.0.0.1:${VOICE_REC_DB_PORT:-5433}/voicerec
+      VOICE_REC_HOST: 127.0.0.1
+      VOICE_REC_PORT: "${VOICE_REC_PORT:-8095}"
+      OBSIDIAN_VAULT: /vault
+      VOICE_REC_CATEGORIES: /config/categories.txt
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      HF_HOME: /models
+    volumes:
+      - ${HOME}/voice-rec/models:/models            # Whisper models, downloaded once
+      - ${OBSIDIAN_VAULT_DIR:?run setup.sh first}:/vault
+      - ./categories.txt:/config/categories.txt:ro  # edit, then: python voicerec.py rearchive --all
+      - /etc/localtime:/etc/localtime:ro            # note times in your time zone
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

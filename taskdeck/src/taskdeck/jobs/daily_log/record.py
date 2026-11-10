@@ -23,25 +23,26 @@ class Column:
     field: str  # key in the record
     label: str  # shown in the preview
     optional: bool = False  # missing value is normal (not listed under "Not found")
+    short: str = ""  # for compact lists on a phone screen (e.g. the reconcile "Missing:" lines)
 
 
 # The single source of truth for the sheet layout: validates headers and builds the row.
 COLUMNS: tuple[Column, ...] = (
     Column(1, None, "date", "Date"),
-    Column(2, "Departure Time", "departure_time", "Departure time"),
-    Column(3, "Departure Mileage", "departure_mileage", "Departure mileage"),
-    Column(4, "Online Time", "online_time", "Online time"),
-    Column(5, "Offline Time", "offline_time", "Offline time"),
-    Column(6, "Arrival Time", "arrival_time", "Arrival time"),
-    Column(7, "Arrival Mileage", "arrival_mileage", "Arrival mileage"),
-    Column(8, "Batch Count", "batches", "Batch count"),
-    Column(9, "Order Count", "orders", "Order count"),
-    Column(10, "Earnings", "earnings", "Earnings"),
-    Column(11, "Online Hours", "online_hours", "Online hours"),
-    Column(12, "Onclock Hours", "onclock_hours", "Onclock hours"),
-    Column(13, "Gas At Mileage", "gas_at", "Gas at mileage", optional=True),
-    Column(14, "Post-Gas Mileage", "gas_after", "Post-gas mileage", optional=True),
-    Column(15, "Miles Driven", "miles_driven", "Miles driven"),
+    Column(2, "Departure Time", "departure_time", "Departure time", short="Dep time"),
+    Column(3, "Departure Mileage", "departure_mileage", "Departure mileage", short="Dep mi"),
+    Column(4, "Online Time", "online_time", "Online time", short="Online"),
+    Column(5, "Offline Time", "offline_time", "Offline time", short="Offline"),
+    Column(6, "Arrival Time", "arrival_time", "Arrival time", short="Arr time"),
+    Column(7, "Arrival Mileage", "arrival_mileage", "Arrival mileage", short="Arr mi"),
+    Column(8, "Batch Count", "batches", "Batch count", short="Batches"),
+    Column(9, "Order Count", "orders", "Order count", short="Orders"),
+    Column(10, "Earnings", "earnings", "Earnings", short="Earnings"),
+    Column(11, "Online Hours", "online_hours", "Online hours", short="Online hrs"),
+    Column(12, "Onclock Hours", "onclock_hours", "Onclock hours", short="Onclock hrs"),
+    Column(13, "Gas At Mileage", "gas_at", "Gas at mileage", optional=True, short="Gas at"),
+    Column(14, "Post-Gas Mileage", "gas_after", "Post-gas mileage", optional=True, short="Gas after"),
+    Column(15, "Miles Driven", "miles_driven", "Miles driven", short="Miles"),
 )
 
 
@@ -108,6 +109,37 @@ def miles_driven(start: float | None, end: float | None, fills: list[dict]) -> i
         total += prev - f["at"]
         prev = f["after"]
     return num(total + prev - end)
+
+
+# Calculated columns and the columns they are calculated from (the gas columns also feed
+# Miles Driven when there was a gas stop). Used to check and complete rows already in the sheet.
+DERIVED: dict[str, tuple[str, ...]] = {
+    "online_hours": ("online_time", "offline_time"),
+    "onclock_hours": ("departure_time", "arrival_time"),
+    "miles_driven": ("departure_mileage", "arrival_mileage"),
+}
+
+
+def calculate(field: str, values: dict[str, Any]) -> int | float | None:
+    """A calculated column from sheet cells (``values`` by record field), or None if it can't be."""
+    if field in ("online_hours", "onclock_hours"):
+        start, end = DERIVED[field]
+        return hours_between(norm_time(values.get(start)), norm_time(values.get(end)))
+    if field == "miles_driven":
+        fills = sheet_gas_fills(values.get("gas_at"), values.get("gas_after"))
+        if fills is None:
+            return None
+        return miles_driven(num(values.get("departure_mileage")), num(values.get("arrival_mileage")), fills)
+    raise KeyError(field)
+
+
+def sheet_gas_fills(at: Any, after: Any) -> list[dict] | None:
+    """The gas columns as written to the sheet ("32, 40" / "540, 520"); None if they don't pair up."""
+    ats = [num(x) for x in str(at if at is not None else "").split(",") if x.strip()]
+    afters = [num(x) for x in str(after if after is not None else "").split(",") if x.strip()]
+    if len(ats) != len(afters) or None in ats or None in afters:
+        return None
+    return [{"at": a, "after": b} for a, b in zip(ats, afters)]
 
 
 def gas_fills(raw: Any) -> list[dict]:

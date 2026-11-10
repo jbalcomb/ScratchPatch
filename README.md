@@ -5,10 +5,13 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 | Project | What it is |
 |---|---|
 | [taskdeck/](taskdeck/) | TaskDeck: an Android app (Python/Flet) that runs pluggable jobs, with a command palette and pinned tiles. First real job: Daily Log → Google Sheet. |
+| [budget/](budget/) | Budget: upload Bank of America exports from the phone; transactions land in SQLite, categorized by a hand-edited rules file, with balance checks and undo. Runs in Docker on the AI Workstation behind Tailscale. |
+| [voice-rec/](voice-rec/) | Voice notes: recorded in TaskDeck on the phone, then transcribed (Whisper), categorized (llama.cpp) and archived in Postgres, an Obsidian vault and the knowledge graph on the AI Workstation. |
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
 | [home-runner/](home-runner/) | Home Runner: a small authenticated HTTP service on the workstation that runs a fixed list of jobs, so TaskDeck can start them over Tailscale. |
 | [discord-capture/](discord-capture/) | Discord Capture: pulls Discord server messages into SQLite, with a resumable historic backfill and a scheduled sync that stays far inside the rate limits. |
 | [CrossMess/](CrossMess/) | Courier: a cross-device message bus. So far, the signed envelope, the fixed screening stage every message passes before any device acts on it, and the gateway and private ntfy broker with install scripts. |
+| [photo-ocr/](photo-ocr/) | Photo OCR: phone photos of receipts and products read by local models on the AI Workstation, checked and reviewed, then used for a shopping list and for matching receipts to the bank transactions in budget. Immich holds the photos; one Docker service behind Tailscale; TaskDeck jobs on the phone. |
 
 ## Conventions
 
@@ -16,3 +19,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 * GitHub Actions workflows must live in `.github/workflows/` at the root, so each is named after its
   project (`taskdeck-ci.yml`, ...), runs with `working-directory` set to the project folder, and only
   triggers on changes under that folder.
+* Services on the AI Workstation are reached from other devices as a **Tailscale Service** with its own name,
+  `https://<service>.tailc54221.ts.net` (like `budget`), forwarding to the service's `localhost` port. Don't
+  give them a port on the workstation's own Tailscale Serve name (`imustai...:8445`): a name needs no port and
+  doesn't clash. Each service listens on `localhost` only, on a port no other service uses.

@@ -15,6 +15,7 @@ from typing import Any
 
 from taskdeck.core import StepError
 
+from . import tailscale
 from .http import HttpError, post_json, reachable
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -140,7 +141,8 @@ def ping(endpoint: ModelEndpoint, probe_timeout: float = 3) -> str:
         return f"{endpoint.label}: not set up"
     started = time.time()
     if not reachable(endpoint.url, probe_timeout):
-        return f"{endpoint.label}: not reachable ({endpoint.url.strip()})"
+        why = tailscale.why_unreachable(endpoint.url)
+        return f"{endpoint.label}: not reachable ({endpoint.url.strip()})" + (f": {why}" if why else "")
     try:
         chat_json(endpoint, 'Reply with the JSON object {"ok": true}.', "ping")
     except StepError as exc:
@@ -161,7 +163,8 @@ def chat_json_with_fallback(endpoints: list[ModelEndpoint], system: str, user: s
     errors = []
     for i, endpoint in enumerate(candidates):
         if not reachable(endpoint.url, probe_timeout):
-            errors.append(f"{endpoint.label}: not reachable")
+            why = tailscale.why_unreachable(endpoint.url)
+            errors.append(f"{endpoint.label}: not reachable" + (f" ({why})" if why else ""))
             continue
         # A stalled model (Gemini sometimes hangs instead of answering, e.g. when its quota
         # is used up) is only retried if nothing else is left to try.

@@ -1,0 +1,10 @@
+# Added by setup.sh (COMPOSE_FILE in .env) when Docker has the NVIDIA runtime: Whisper runs on the GPU.
+services:
+  voice-rec:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

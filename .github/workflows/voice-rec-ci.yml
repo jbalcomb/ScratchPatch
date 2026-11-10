@@ -1,0 +1,37 @@
+name: voice-rec CI
+
+on:
+  push:
+    paths:
+      - "voice-rec/**"
+      - ".github/workflows/voice-rec-ci.yml"
+  pull_request:
+    paths:
+      - "voice-rec/**"
+      - ".github/workflows/voice-rec-ci.yml"
+
+defaults:
+  run:
+    working-directory: voice-rec
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "psycopg[binary]>=3.2,<4" pytest  # faster-whisper isn't needed: tests use a fake transcriber
+      - run: bash -n setup.sh
+      - run: python -m pytest -q tests
+        env:
+          VOICE_REC_TEST_DSN: postgresql://postgres:test@127.0.0.1:5432/postgres

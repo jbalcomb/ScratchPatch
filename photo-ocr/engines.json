@@ -1,0 +1,41 @@
+{
+  "_comment": "Bake-off candidates (PRD.md). url: the workstation's llama.cpp server in router mode; 'model' must be a section name in its preset file (one model on the GPU at a time). ${VAR:-default} comes from the environment. qwen3-vl-8b and paddleocr-vl are both in the preset.",
+  "engines": [
+    {
+      "name": "qwen3-vl-8b",
+      "kind": "vlm",
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "qwen3-vl-8b",
+      "max_side": 2048
+    },
+    {
+      "name": "paddleocr-vl+llm",
+      "kind": "ocr_llm",
+      "ocr": "vlm",
+      "ocr_engine": {"model": "paddleocr-vl", "prompt": "OCR:", "max_side": 2048, "json_schema": false},
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
+    },
+    {
+      "name": "paddleocr+llm",
+      "kind": "ocr_llm",
+      "ocr": "paddleocr",
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
+    },
+    {
+      "name": "doctr+llm",
+      "kind": "ocr_llm",
+      "ocr": "doctr",
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
+    },
+    {
+      "name": "tesseract+llm",
+      "kind": "ocr_llm",
+      "ocr": "tesseract",
+      "url": "${PHOTO_OCR_LLM_URL:-${LLM_URL}}",
+      "model": "${PHOTO_OCR_TEXT_MODEL:-qwen3-vl-8b}"
+    }
+  ]
+}

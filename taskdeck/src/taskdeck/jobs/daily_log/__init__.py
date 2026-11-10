@@ -3,6 +3,7 @@ preview the row, and append it to the sheet on confirmation (see docs/jobs/daily
 
 from taskdeck.core import Field, JobPlugin, Pipeline, Problem, Result, SettingsAction, Stage, StepError, step
 from taskdeck.shared.google import GoogleError
+from taskdeck.shared import tailscale
 from taskdeck.shared.http import HttpError, reachable
 from taskdeck.shared import steps
 
@@ -90,9 +91,14 @@ class DailyLog(JobPlugin):
         url = (settings.get("llm_url") or "").strip()
         if url and not reachable(url, 3):
             has_gemini = bool((settings.get("fallback_api_key") or "").strip())
-            problems.append(Problem("The AI Workstation isn't reachable right now" +
-                                    (", so Gemini will parse the log." if has_gemini else ". Turn it on, or add a Gemini key."),
-                                    blocking=not has_gemini, fix="recheck" if has_gemini else "settings"))
+            why = tailscale.why_unreachable(url)  # e.g. the phone isn't on Tailscale
+            if why:
+                text = f"The AI Workstation isn't reachable: {why}." + (" Until then Gemini parses the log."
+                                                                         if has_gemini else "")
+            else:
+                text = "The AI Workstation isn't reachable right now" + (
+                    ", so Gemini will parse the log." if has_gemini else ". Turn it on, or add a Gemini key.")
+            problems.append(Problem(text, blocking=not has_gemini, fix="recheck"))
         return problems
 
     def build_pipeline(self):

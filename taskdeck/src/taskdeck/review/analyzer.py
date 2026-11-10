@@ -129,8 +129,25 @@ class _Normalizer(ast.NodeTransformer):
         return node
 
 
+MIN_STATEMENTS = 2  # one-line functions (a step storing one call's result) are not duplicated code
+
+
+def _body(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.stmt]:
+    """The statements that do the work: no docstring. (Decorators and the signature are left out of the
+    comparison: every @step(...) looks alike, which made one-line steps look 87% similar.)"""
+    body = list(fn_node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    return body
+
+
 def _tokens(fn_node: ast.AST) -> list[str]:
-    norm = _Normalizer().visit(fn_node)
+    body = _body(fn_node) if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)) else [fn_node]
+    if len(body) < MIN_STATEMENTS and not any(isinstance(n, (ast.If, ast.For, ast.While, ast.With, ast.Try))
+                                              for n in body):
+        return []  # too small to be worth sharing
+    norm = _Normalizer().visit(ast.Module(body=body, type_ignores=[]))
     return _TOKEN.findall(ast.dump(norm, annotate_fields=False, include_attributes=False))
 
 

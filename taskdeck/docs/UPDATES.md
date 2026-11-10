@@ -4,7 +4,7 @@ There are two kinds of update.
 
 ## Live updates (most changes)
 
-Every push that touches `src/` runs the **Live update** workflow (`.github/workflows/taskdeck-ota.yml` at the repo root):
+Every push to `main` (or the TaskDeck working branch) that touches `src/` runs the **Live update** workflow (`.github/workflows/taskdeck-ota.yml` at the repo root):
 tests, an import smoke test, then the `taskdeck` package is zipped and published with a manifest
 (version, build time, SHA-256, required shell API) to the `taskdeck-ota` GitHub release.
 

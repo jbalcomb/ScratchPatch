@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, ClassVar, Iterable
 
+from .copying import JobNature
 from .pipeline import Context, Pipeline, ProgressFn, RunReport, StepError
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,23 @@ class FieldKind(str, Enum):
     NUMBER = "number"
     CHOICE = "choice"
     TOGGLE = "toggle"
+    FILE = "file"  # a path on the device, with a Browse button
+    FILES = "files"  # several paths, one per line, with an Add button; coerced to a list
+
+
+def split_groups(text: Any) -> list[list[str]]:
+    """A FILES value as groups of paths: one path per line, groups separated by blank lines."""
+    groups: list[list[str]] = [[]]
+    for line in str(text or "").splitlines():
+        if line.strip():
+            groups[-1].append(line.strip())
+        elif groups[-1]:
+            groups.append([])
+    return [g for g in groups if g]
+
+
+def join_groups(groups: list[list[str]]) -> str:
+    return "\n\n".join("\n".join(g) for g in groups if g)
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,12 @@ class Field:
     lines: int = 3  # visible lines for MULTILINE fields
     importable: bool = False  # offer "Import file" to fill the value from a file
     private: bool = False  # never kept in run history (e.g. text sent to another device's clipboard)
+    extensions: tuple[str, ...] = ()  # FILE(S) fields: the files Browse offers (".exe", ...); empty = any file
+    preview: bool = False  # FILE(S) fields: show thumbnails of the chosen image files under the field
+    # FILES fields: the files come in groups, one per thing (e.g. "product"), separated by a blank line;
+    # the value is then a list of groups (lists of paths), and the photo picker offers "1 product" / "N products".
+    grouped: str = ""
+    camera: str = ""  # FILES fields: "receipt" adds Take photos, TaskDeck's camera with receipt edge guides
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":
@@ -64,6 +88,15 @@ class Field:
         return cls(name, label, FieldKind.CHOICE, choices=choices, **kw)
 
     @classmethod
+    def file(cls, name: str, label: str, **kw: Any) -> "Field":
+        return cls(name, label, FieldKind.FILE, **kw)
+
+    @classmethod
+    def files(cls, name: str, label: str, **kw: Any) -> "Field":
+        kw.setdefault("default", "")
+        return cls(name, label, FieldKind.FILES, **kw)
+
+    @classmethod
     def toggle(cls, name: str, label: str, **kw: Any) -> "Field":
         kw.setdefault("default", False)
         return cls(name, label, FieldKind.TOGGLE, **kw)
@@ -72,6 +105,11 @@ class Field:
         """Convert a raw UI value into the field's Python type."""
         if self.kind == FieldKind.TOGGLE:
             return bool(raw)
+        if self.kind == FieldKind.FILES:
+            groups = split_groups(raw)
+            if self.required and not groups:
+                raise StepError(f"{self.label} is required")
+            return groups if self.grouped else [p for g in groups for p in g]
         if raw is None or (isinstance(raw, str) and raw.strip() == ""):
             if self.required:
                 raise StepError(f"{self.label} is required")
@@ -84,6 +122,16 @@ class Field:
         if self.kind == FieldKind.CHOICE and raw not in self.choices:
             raise StepError(f"{self.label} must be one of: {', '.join(self.choices)}")
         return raw
+
+
+# The Google account (Drive) jobs sign in with: its settings id, for ``JobPlugin.accounts``.
+GOOGLE_ACCOUNT = "account:google"
+
+# For jobs that use the internet: add to the job's ``settings``. On mobile data the job's network
+# work waits for Wi-Fi (the app's NetworkMonitor enforces it).
+WIFI_ONLY = Field.toggle("wifi_only", "Wi-Fi only",
+                         help="Only use the internet on Wi-Fi, not mobile data. On mobile data the job waits "
+                              "for Wi-Fi and then carries on by itself.")
 
 
 @dataclass(frozen=True)
@@ -102,13 +150,27 @@ class Problem:
     """Something that would make the job fail, found before it runs.
 
     ``blocking`` problems disable the run button. ``fix`` names where to fix it:
-    "settings" adds an "Open settings" button, "recheck" only "Check again", and
-    "job:<id>" a button that opens that job (e.g. a clean-up job).
+    "settings" adds an "Open settings" button, "recheck" only "Check again",
+    "unlock" an "Unlock" (fingerprint) button, and "job:<id>" a button that opens
+    that job (e.g. a clean-up job).
+
+    ``settings``: when the check found settings that work (a corrected address, say), the
+    host saves them into the job's settings; ``message`` then says what was changed.
+
+    ``ok``: not a problem but something checked that works (see :meth:`passed`). Shown by
+    the settings screen's test; the job screen leaves them out.
     """
 
     message: str
     blocking: bool = True
     fix: str = "settings"
+    settings: dict[str, Any] | None = None
+    ok: bool = False
+
+    @classmethod
+    def passed(cls, message: str) -> "Problem":
+        """Something checked that works, e.g. "Budget sheet: SnapShot tab, 15 expenses"."""
+        return cls(message, blocking=False, fix="", ok=True)
 
 
 class NeedsConfirmation(StepError):
@@ -134,12 +196,22 @@ class SettingsAction:
     """A button on the job's settings screen, e.g. "Test connection".
 
     ``run`` receives the settings as currently entered (saved or not) and returns
-    text to show under the button. It runs off the UI thread.
+    text to show under the button, or a :class:`SettingsResult` to also fill in fields.
+    It runs off the UI thread.
     """
 
     label: str
     run: Callable[[dict[str, Any]], str]
     icon: str = "PLAY_ARROW"
+
+
+@dataclass(frozen=True)
+class SettingsResult:
+    """What a settings action found: ``text`` shown under the button, and field values put into the
+    form (the user still taps Save)."""
+
+    text: str
+    values: dict[str, Any] = field(default_factory=dict)
 
 
 class JobPlugin:
@@ -159,6 +231,13 @@ class JobPlugin:
     settings_actions: ClassVar[tuple[SettingsAction, ...]] = ()
     # Use another job's stored settings (same fields) instead of keeping a separate copy.
     settings_from: ClassVar[str] = ""
+    # Accounts the job signs in with (their settings ids, e.g. GOOGLE_ACCOUNT), each with the toggle field
+    # that turns its use on ("" = always). Their credentials are unlocked (fingerprint) before the job runs,
+    # like the job's own secret settings are when it opens. See docs/CREDENTIALS.md.
+    accounts: ClassVar[tuple[tuple[str, str], ...]] = ()
+    # Jobs that copy files somewhere declare which kind of copy they are; it decides what happens to a
+    # same-named file already at the destination (see taskdeck.core.copying and docs/JOB_KINDS.md).
+    nature: ClassVar[JobNature | None] = None
     run_label: ClassVar[str] = "Run"
     # Two-phase jobs: the pipeline must be side-effect free and produce a preview whose
     # ``Result.payload`` is passed to :meth:`commit` once the user confirms.
@@ -179,6 +258,11 @@ class JobPlugin:
         """
         raise NotImplementedError
 
+    def field_notes(self, raw: dict[str, Any], settings: dict[str, Any]) -> dict[str, str]:
+        """Text shown under fields that depends on what's entered, e.g. where the output will go.
+        Field name -> note; refreshed as the inputs and the job's settings change."""
+        return {}
+
     def check_ready(self, settings: dict[str, Any]) -> list[Problem]:
         """Fast, offline checks run when the job opens. Override and extend ``super()``."""
         return [Problem(f"Set “{f.label}” in this job's settings.")
@@ -195,8 +279,17 @@ class JobPlugin:
         private = {f.name for f in self.fields if f.private}
         return {k: v for k, v in raw.items() if k not in private}
 
+    def accounts_needed(self, raw: dict[str, Any]) -> list[str]:
+        """The accounts a run with these inputs signs in with (see ``accounts``)."""
+        return [account for account, toggle in self.accounts if not toggle or bool(raw.get(toggle))]
+
     def collect_inputs(self, raw: dict[str, Any]) -> dict[str, Any]:
         return {f.name: f.coerce(raw.get(f.name, f.default)) for f in self.fields}
+
+    def clean_settings(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Tidy settings as entered, before they are saved (fast, offline): e.g. add a missing https://.
+        Override to fix what can be fixed instead of reporting it later."""
+        return values
 
     def resolve_settings(self, stored: dict[str, Any] | None) -> dict[str, Any]:
         """Stored values merged over defaults. Not validated: steps check what they need."""
@@ -238,6 +331,36 @@ class JobPlugin:
     @property
     def search_text(self) -> str:
         return " ".join([self.title, self.category, self.description, *self.tags])
+
+
+@dataclass
+class SettingsCheck:
+    """The outcome of testing a job's settings (see :func:`check_settings`)."""
+
+    settings: dict[str, Any]                       # as tested, with the fixes applied
+    passed: list[str] = field(default_factory=list)
+    problems: list[Problem] = field(default_factory=list)
+    fixes: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not any(p.blocking for p in self.problems)
+
+
+def check_settings(plugin: "JobPlugin", values: dict[str, Any]) -> SettingsCheck:
+    """Test settings as entered: tidy them (clean_settings), run the job's offline checks and, if
+    those pass, its online ones. Fixes the checks found are applied to ``settings``. May use the
+    network: call it off the UI thread."""
+    settings = plugin.resolve_settings(plugin.clean_settings(dict(values)))
+    found = list(plugin.check_ready(settings))
+    if not any(p.blocking for p in found):
+        try:
+            found += plugin.check_ready_online(settings)
+        except Exception as exc:  # a broken check must not hide the others
+            found.append(Problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}", fix="recheck"))
+    fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
+    return SettingsCheck({**settings, **fixes}, [p.message for p in found if p.ok],
+                         [p for p in found if not p.ok], fixes)
 
 
 class PluginRegistry:

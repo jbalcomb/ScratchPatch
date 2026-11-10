@@ -3,6 +3,8 @@ History, Settings, the command palette and keyboard shortcuts."""
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any
 
@@ -15,13 +17,21 @@ import flet as ft
 
 from taskdeck.core import (
     Command, CommandKind, CommandRegistry, Drafts, Favorites, History, JobPlugin, JsonStore,
-    PluginRegistry, default_data_dir,
+    PluginRegistry, SecretBackend, Task, TaskManager, Vault, VaultError, default_data_dir,
 )
+from taskdeck.core.tasks import DONE
+from taskdeck.core.trace import TraceStore
+from taskdeck.shared import http
 
 from .common import empty_state, plugin_icon, section_title
 from .job_view import JobScreen
 from .settings_view import JobSettingsScreen
+from . import accounts
+from .background import BackgroundKeeper
+from .diagnostics import DiagnosticsSync
+from .network import NetworkMonitor
 from .palette import CommandPalette
+from .vault_backend import make_backend
 
 TABS = [
     ("home", "Home", ft.Icons.HOME_OUTLINED, ft.Icons.HOME),
@@ -31,16 +41,40 @@ TABS = [
 ]
 THEMES = {"system": ft.ThemeMode.SYSTEM, "light": ft.ThemeMode.LIGHT, "dark": ft.ThemeMode.DARK}
 TILE_WIDTH = 96
+LOCK_AFTER = 5 * 60  # seconds in the background before credentials lock again
+CHECK_LIMIT = 30  # seconds before "Check for updates" says it got no answer
+_AUTO = object()
 
 
 class TaskDeckApp:
-    def __init__(self, page: ft.Page, registry: PluginRegistry | None = None, store: JsonStore | None = None):
+    def __init__(self, page: ft.Page, registry: PluginRegistry | None = None, store: JsonStore | None = None,
+                 vault_backend: SecretBackend | None | object = _AUTO):
         self.page = page
         self.registry = registry or PluginRegistry().discover()
         self.store = store or JsonStore(default_data_dir() / "state.json")
+        secret_fields: dict[str, set[str]] = {}
+        for p in self.registry:
+            secret_fields.setdefault(p.settings_id, set()).update(f.name for f in p.settings if f.secret)
+        secret_fields.update(accounts.SECRET_FIELDS)  # connected accounts' secrets are credentials too
+        self.vault = Vault(make_backend(page) if vault_backend is _AUTO else vault_backend, self.store, secret_fields)
+        self._hidden_at: float | None = None
         self.favorites = Favorites(self.store)
         self.history = History(self.store)
         self.drafts = Drafts(self.store)
+        traces = TraceStore(self.store.path.parent / "diagnostics")  # one trace file per task, for analysis
+        # Each task gets its own thread: a long upload must not hold one of the few threads of Flet's shared
+        # pool (page.run_thread) for hours, or other background work (e.g. checking for updates) never runs.
+        self.tasks = TaskManager(traces=traces,
+                                 around=lambda task: http.scope(trace=task.trace))  # every request is recorded
+        self.tasks.notify_in_background = True  # uploads never wait for the screen to redraw
+        self.tasks.listeners.append(self.on_task)
+        self.background = BackgroundKeeper(self)  # foreground service while tasks run (APK with the extension)
+        self.tasks.listeners.append(self.background.on_task)
+        self.diagnostics = DiagnosticsSync(self, traces)  # traces are copied to Google Drive as they grow
+        self.tasks.listeners.append(self.diagnostics.on_task)
+        self.network = NetworkMonitor(self)  # Wi-Fi or mobile data, for the jobs' Wi-Fi-only setting
+        self.google = accounts.GoogleAccount(self)
+        self._housekeeping()
         self.favorites.prune({p.id for p in self.registry})
         if not self.store.get("initialized"):
             for pid in ("unit_convert", "text_stats", "json_format"):  # sensible first-run pins
@@ -59,6 +93,10 @@ class TaskDeckApp:
         page.theme_mode = THEMES.get(self.store.get("theme", "system"), ft.ThemeMode.SYSTEM)
         page.on_keyboard_event = self.on_key
         page.on_view_pop = self.on_view_pop
+        page.on_app_lifecycle_state_change = self.on_lifecycle
+        if getattr(page, "run_task", None):
+            page.run_task(self.network.start)
+        self.diagnostics.sync_soon()  # anything a closed or killed app didn't get to upload
 
         self.body = ft.Container(expand=True, padding=ft.Padding.symmetric(horizontal=16))
         self.nav = ft.NavigationBar(
@@ -74,11 +112,25 @@ class TaskDeckApp:
         page.views.clear()
         page.views.append(self.root)
         self.register_commands()
-        self.render()
         self.update_status = ""
+        self.reload_pending = False  # "Reload when it finishes" was chosen
+        self._forget_old_rejection()
+        self.render()
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
+        self._start_plugins()
+
+    def _start_plugins(self) -> None:
+        """Jobs with work that runs without their screen (e.g. Voice notes sending queued recordings)
+        define ``on_app_start(app)``. A failing one is logged and skipped."""
+        for plugin in self.registry:
+            start = getattr(plugin, "on_app_start", None)
+            if start:
+                try:
+                    start(self)
+                except Exception:
+                    logging.getLogger(__name__).exception("on_app_start failed for %s", plugin.id)
 
     # ---- navigation ---------------------------------------------------------------
 
@@ -96,14 +148,21 @@ class TaskDeckApp:
         if plugin is None:
             self.toast(f"Job {job_id!r} is not installed")
             return
-        screen = JobScreen(self, plugin, preset)
+        make_screen = getattr(plugin, "make_screen", None)
+        screen = make_screen(self, preset) if make_screen else JobScreen(self, plugin, preset)
         self.push(screen)
         screen.check_ready()
         self.page.update()
+        if self.vault.needs_unlock(plugin.settings_id):
+            self.page.run_task(self.unlock, screen.recheck)
 
     def open_settings(self, job_id: str) -> None:
         plugin = self.registry.get(job_id)
-        if plugin and plugin.settings:
+        if not (plugin and plugin.settings):
+            return
+        if self.vault.needs_unlock(plugin.settings_id):  # never show (or save over) locked secrets
+            self.page.run_task(self.unlock, lambda: self.push(JobSettingsScreen(self, plugin)))
+        else:
             self.push(JobSettingsScreen(self, plugin))
 
     def push(self, screen) -> None:
@@ -140,15 +199,124 @@ class TaskDeckApp:
 
     # ---- job settings -------------------------------------------------------------
 
-    def _settings_key(self, job_id: str) -> str:
+    def _settings_id(self, job_id: str) -> str:
         plugin = self.registry.get(job_id)
-        return f"settings:{plugin.settings_id if plugin else job_id}"
+        return plugin.settings_id if plugin else job_id
+
+    def services(self) -> dict[str, Any]:
+        """What a job's steps can use beyond their inputs (``Context.services``)."""
+        google = self.google
+        return {"google_drive": google.drive} if google.connected and not google.locked else {}
 
     def job_settings(self, job_id: str) -> dict[str, Any]:
-        return dict(self.store.get(self._settings_key(job_id), {}))
+        """Stored settings plus, when unlocked, the job's credentials from the vault."""
+        sid = self._settings_id(job_id)
+        values = dict(self.store.get(f"settings:{sid}", {}))
+        if self.vault.protects(sid):
+            for name in self.vault.secret_fields[sid]:
+                values.pop(name, None)  # a copy from before the vault is moved into it on unlock
+            values.update(self.vault.secrets_for(sid))
+        return values
 
     def save_job_settings(self, job_id: str, values: dict[str, Any]) -> None:
-        self.store.set(self._settings_key(job_id), values)
+        sid = self._settings_id(job_id)
+        plain, secret = self.vault.split(sid, values)
+        self.store.set(f"settings:{sid}", plain)
+        ops = self.vault.stage(sid, secret)
+        if ops:
+            self.page.run_task(self._persist_secrets, ops)
+
+    async def _persist_secrets(self, ops) -> None:
+        try:
+            await self.vault.persist(ops)
+        except Exception as exc:
+            self.toast(f"Couldn't save your credentials securely: {exc}")
+
+    # ---- credentials vault ------------------------------------------------------------
+
+    async def unlock(self, then=None) -> bool:
+        """Ask for the fingerprint; on success run ``then`` (e.g. re-check the open job)."""
+        try:
+            await self.vault.unlock()
+        except VaultError as exc:
+            self.toast(str(exc))
+            return False
+        if self.vault.lost:
+            self.vault.lost = []
+            self.toast("Android erased your saved credentials (the phone's fingerprints changed). "
+                       "Enter them again in the job's settings.")
+        if then:
+            then()
+        self.render()
+        self.page.update()
+        return True
+
+    def lock_credentials(self) -> None:
+        if not self.vault.available or not self.vault.unlocked:
+            return
+        self.vault.lock()
+        while self.stack and isinstance(self.stack[-1], JobSettingsScreen):  # don't leave secrets on screen
+            self.page.views.pop()
+            self.stack.pop()
+        top = self.top_job_screen
+        if top:
+            top.check_ready()
+        self.render()
+        self.page.update()
+        self.toast("Credentials locked")
+
+    @property
+    def hidden(self) -> bool:
+        """TaskDeck isn't on screen (another app, or the phone is locked)."""
+        return self._hidden_at is not None
+
+    def on_lifecycle(self, e) -> None:
+        self.tasks.log_running("app", state=getattr(e.state, "value", str(e.state)))
+        if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE):
+            self._hidden_at = self._hidden_at or time.time()
+        elif e.state in (ft.AppLifecycleState.SHOW, ft.AppLifecycleState.RESUME):
+            away = time.time() - self._hidden_at if self._hidden_at else 0
+            self._hidden_at = None
+            if away > LOCK_AFTER and self.vault.available and self.vault.unlocked:
+                self.lock_credentials()
+                top = self.top_job_screen
+                if top and self.vault.needs_unlock(top.plugin.settings_id):
+                    self.page.run_task(self.unlock, top.recheck)
+
+    def credentials_section(self) -> list[ft.Control]:
+        if not any(f.secret for p in self.registry for f in p.settings):
+            return []
+        v = self.vault
+        switch = ft.Switch(label="Fingerprint lock", value=v.available, disabled=not v.supported,
+                           on_change=lambda e: self.page.run_task(self.set_fingerprint_lock, e.control.value))
+        if not v.supported:
+            note = "Install the latest APK to protect your API keys and Google key with your fingerprint."
+        elif not v.available:
+            note = "Off. API keys and the Google key are kept in the app's own settings file."
+        else:
+            note = (f"{'Unlocked' if v.unlocked else 'Locked'}. API keys and the Google key are encrypted by Android "
+                    f"and need your fingerprint (or phone PIN) after each app start, and after "
+                    f"{LOCK_AFTER // 60} minutes away.")
+        controls = [section_title("Credentials"), switch, ft.Text(note, color=ft.Colors.ON_SURFACE_VARIANT)]
+        if v.available:
+            controls.append(ft.Row([
+                ft.OutlinedButton("Lock now", icon=ft.Icons.LOCK, on_click=lambda e: self.lock_credentials())
+                if v.unlocked else
+                ft.FilledTonalButton("Unlock", icon=ft.Icons.FINGERPRINT, on_click=lambda e: self.page.run_task(self.unlock))]))
+        return controls
+
+    async def set_fingerprint_lock(self, on: bool) -> None:
+        try:
+            await (self.vault.enable() if on else self.vault.disable())
+        except VaultError as exc:
+            self.toast(str(exc))
+        else:
+            self.toast("Fingerprint lock on" if on else "Fingerprint lock off")
+        top = self.top_job_screen
+        if top:
+            top.check_ready()
+        self.render()  # the switch shows what actually happened
+        self.page.update()
 
     # ---- rendering ----------------------------------------------------------------
 
@@ -188,6 +356,7 @@ class TaskDeckApp:
             [
                 ft.Container(height=8),
                 self.search_pill(),
+                *self.running_strip(),
                 section_title("Pinned", ft.TextButton("All jobs  ›", on_click=lambda e: self.go("jobs"))),
                 tiles,
                 section_title("Recent"),
@@ -197,6 +366,55 @@ class TaskDeckApp:
             spacing=14,
             expand=True,
         )
+
+    def running_strip(self) -> list[ft.Control]:
+        """One line per background task while it runs; tap to open its job."""
+        out = []
+        for t in self.tasks.running():
+            pct = f" · {t.fraction * 100:.0f}%" if t.fraction is not None else ""
+            out.append(ft.Container(
+                ft.Row([ft.ProgressRing(width=18, height=18, stroke_width=2, value=t.fraction),
+                        ft.Text(f"{t.title}{pct}", expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Icon(ft.Icons.CHEVRON_RIGHT)]),
+                bgcolor=ft.Colors.SECONDARY_CONTAINER, border_radius=12, padding=12,
+                on_click=lambda e, j=t.job_id: self.open_job(j)))
+        return out
+
+    def on_task(self, task: Task) -> None:
+        """Background task changed (worker thread): refresh Home, announce the end, add it to History."""
+        if not task.running:
+            if not task.in_history:  # background jobs (e.g. Extract Archive) don't go through JobScreen.run
+                task.in_history = True
+                self.history.add(task.job_id, task.status == DONE, task.message, task.inputs)
+                self.on_history_changed()
+            self._reload_if_pending()
+        if not self.stack and self.tab == "home":
+            self.render()
+        if not task.running:
+            top = self.stack[-1] if self.stack else None
+            if getattr(getattr(top, "plugin", None), "id", None) != task.job_id:  # its screen isn't showing it
+                self.toast(task.message if task.status == DONE else f"{task.title}: {task.message}")
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _housekeeping(self) -> None:
+        """One-time clean-ups of things older versions left behind (in the background)."""
+        import shutil
+        import threading
+
+        import os
+
+        leftovers = [self.store.path.parent / "extract-test"]  # the old 7-Zip engine check's test extractions
+        if self.temp_dir.is_dir():  # scratch space from an interrupted run, but not this process's: after a
+            # reload, a task of the previous app instance may still be using its folder (task-<id>-<pid>)
+            leftovers += [p for p in self.temp_dir.iterdir()
+                          if not p.name.endswith(f"-{os.getpid()}") and p.name != "diagnostics"]
+        for leftover in leftovers:
+            if leftover.exists():
+                threading.Thread(target=shutil.rmtree, args=(leftover,), kwargs={"ignore_errors": True},
+                                 daemon=True).start()
 
     def tile(self, plugin: JobPlugin) -> ft.Control:
         """A Windows-11-style pinned tile: icon over label; long-press for options."""
@@ -317,6 +535,9 @@ class TaskDeckApp:
                          spacing=2, expand=True)
 
     def settings_tab(self) -> ft.Control:
+        # The App updates section is its own column, so its status changes redraw only it: rebuilding the
+        # whole tab sent you back to the top after "Check for updates".
+        self.updates_box = ft.Column(self.updates_section(), spacing=12)
         theme = ft.SegmentedButton(
             segments=[ft.Segment(value=k, label=ft.Text(k.title())) for k in THEMES],
             selected=[self.store.get("theme", "system")],
@@ -335,9 +556,13 @@ class TaskDeckApp:
                 *([section_title("Job settings")] if configurable else []),
                 *[ft.ListTile(leading=ft.Icon(plugin_icon(p)), title=ft.Text(p.title), trailing=ft.Icon(ft.Icons.CHEVRON_RIGHT),
                               on_click=lambda e, pid=p.id: self.open_settings(pid)) for p in configurable],
+                section_title("Accounts"),
+                *self.google.settings_rows(),
+                *self.credentials_section(),
+                *([section_title("Background work"), *self.background.settings_rows()] if self.background.enabled else []),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
-                *self.updates_section(),
+                self.updates_box,
                 section_title("About"),
                 ft.Text(f"{len(self.registry)} jobs installed · {len(self.commands)} palette commands"),
             ],
@@ -353,16 +578,18 @@ class TaskDeckApp:
             return []
         st = boot.status()
         running = st["active"]
-        ready = st["staged"] and st["staged"] != running["version"]
+        ready, note = self._staged_update(st)
         lines = [f"Running: {running['version']} ({running['source']})"]
         if ready:
             lines.append(f"Downloaded: {st['staged']}, reload to use it")
+        elif note:
+            lines.append(note)
         if st.get("last_error"):
             lines.append(f"Last rejected update: {st['last_error'].splitlines()[0][:120]}")
         if self.update_status:
             lines.append(self.update_status)
         buttons = [ft.OutlinedButton("Check for updates", icon=ft.Icons.SYSTEM_UPDATE, on_click=lambda e: self.check_updates())]
-        if ready:
+        if ready:  # only an update newer than what runs
             buttons.append(ft.FilledButton("Reload now", icon=ft.Icons.REFRESH, on_click=lambda e: self.reload_app()))
         return [
             section_title("App updates"),
@@ -370,23 +597,81 @@ class TaskDeckApp:
             ft.Row(buttons, wrap=True),
         ]
 
-    def check_updates(self) -> None:
-        self.update_status = "Checking…"
-        self.render()
+    def _staged_update(self, st: dict) -> tuple[bool, str]:
+        """(ready, note): is the downloaded update newer than what runs (offer Reload), and if one is
+        downloaded but won't be used, why. Different isn't enough: a newer APK makes an older download moot,
+        and offering it made Reload look broken (it reloaded the same APK code every time)."""
+        staged, running = st.get("staged"), st["active"]
+        if not staged or staged == running["version"]:
+            return False, ""
+        try:
+            state = boot._load_state()
+            meta = state.get("bundles", {}).get(staged, {})
+            folder_ok = (boot.ota_dir() / staged / "taskdeck" / "__init__.py").exists()
+        except Exception:  # an older updater without these internals: as before
+            return True, ""
+        if staged in state.get("bad", []):
+            return False, f"Downloaded update {staged} was rejected, so it isn't used."
+        if meta.get("requires_api") not in (None, st.get("api")):
+            return False, f"Downloaded update {staged} needs a new APK."
+        if not folder_ok:
+            return False, f"Downloaded update {staged} is incomplete; Check for updates fetches it again."
+        if int(meta.get("build_time", 0)) <= int(running.get("build_time", 0)):
+            return False, (f"The running code ({running['version']}) is newer than the last live update "
+                           f"({staged}), so that update isn't needed.")
+        return True, ""
+
+    def _forget_old_rejection(self) -> None:
+        """A rejected update is old news once something newer than it runs. Done here (before Settings
+        is drawn) as well as in the APK's updater, so it also works with APKs whose updater doesn't."""
+        if not boot:
+            return
+        try:
+            with boot._lock:
+                state = boot._load_state()
+                error = state.get("last_error") or ""
+                if not error:
+                    return
+                version = error.split(":", 1)[0].strip()
+                rejected = int(state.get("last_error_build") or
+                               state.get("bundles", {}).get(version, {}).get("build_time", 0) or 0)
+                if boot.active.get("build_time", 0) > rejected and boot.active.get("version") != version:
+                    state["last_error"] = state["last_error_build"] = None
+                    boot._save_state(state)
+        except Exception:  # an older updater without these internals: leave it
+            pass
+
+    def _show_update_status(self, status: str) -> None:
+        """Redraw just the App updates section (the Settings tab keeps its scroll position)."""
+        self.update_status = status
+        box = getattr(self, "updates_box", None)
+        if box is not None and self.tab == "settings" and not self.stack:
+            box.controls = self.updates_section()
+        else:
+            self.render()
         self.page.update()
+
+    def check_updates(self) -> None:
+        self._show_update_status("Checking…")
+
+        done = threading.Event()
 
         def work():
             result = boot.check_for_update()
-            self.update_status = result["message"]
-            self.render()
-            self.page.update()
+            done.set()
+            self._show_update_status(result["message"])
 
-        self.page.run_thread(work)
+        def watchdog():
+            if not done.wait(CHECK_LIMIT):  # e.g. the phone's DNS not answering: urllib's timeout doesn't cover that
+                self._show_update_status(f"No answer from GitHub within {CHECK_LIMIT} s. "
+                                         "Check the connection and try again.")
+
+        threading.Thread(target=work, daemon=True).start()  # not page.run_thread: see self.tasks
+        threading.Thread(target=watchdog, daemon=True).start()
 
     def on_update_ready(self, result: dict) -> None:
         """Called from the updater's background thread when a new version is downloaded."""
-        self.update_status = result["message"]
-        self.render()
+        self._show_update_status(result["message"])
         self.page.show_dialog(ft.SnackBar(
             ft.Text(f"Update {result['version']} downloaded"),
             action="Reload",
@@ -394,8 +679,42 @@ class TaskDeckApp:
             duration=ft.Duration(seconds=10),
         ))
 
-    def reload_app(self) -> None:
+    def reload_app(self, force: bool = False) -> None:
+        """Restart on the newest code. Reloading ends running tasks (the new app can't see them), so
+        while one runs, ask first: reload when it finishes (the default), or now anyway."""
+        running = self.tasks.running()
+        if running and not force:
+            def later(e=None):
+                self.page.pop_dialog()
+                self.reload_pending = True
+                self.update_status = "Reloads when the running task finishes."
+                self.toast("TaskDeck will reload when the task finishes.")
+                self.render()
+                self.page.update()
+
+            def now(e=None):
+                self.page.pop_dialog()
+                self.reload_app(force=True)
+
+            names = "\n".join(f"• {t.title}" for t in running)
+            self.page.show_dialog(ft.AlertDialog(
+                title=ft.Text("A task is running"),
+                content=ft.Text(f"{names}\n\nReloading now would stop it. Reload when it finishes instead?"),
+                actions=[ft.TextButton("Cancel", on_click=lambda e: self.page.pop_dialog()),
+                         ft.TextButton("Reload now", on_click=now),
+                         ft.FilledButton("When it finishes", on_click=later)],
+            ))
+            return
+        self.reload_pending = False
         boot.reload(self.page)
+
+    def _reload_if_pending(self) -> None:
+        """Task listener: the waited-for reload, once nothing runs any more."""
+        if self.reload_pending and not self.tasks.running():
+            self.reload_pending = False
+            run_thread = getattr(self.page, "run_thread", None)
+            if run_thread:  # after the other listeners (notification, diagnostics) have seen the end
+                run_thread(lambda: (time.sleep(1), self.reload_app())[1])
 
     # ---- state changes ------------------------------------------------------------
 
@@ -432,6 +751,14 @@ class TaskDeckApp:
 
     def copy(self, text: str) -> None:
         self.page.run_task(self.copy_async, text)
+
+    def open_url(self, url: str) -> None:
+        self.page.run_task(ft.UrlLauncher().launch_url, url)
+
+    @property
+    def temp_dir(self):
+        """Scratch space inside TaskDeck's storage (e.g. unpacking before an upload); emptied at start."""
+        return self.store.path.parent / "tmp"
 
     # ---- commands -----------------------------------------------------------------
 
@@ -483,6 +810,12 @@ class TaskDeckApp:
             c.add(Command("app:update", "Check for app updates", self.check_updates, icon="SYSTEM_UPDATE",
                           keywords=("upgrade", "version", "ota", "reload")))
         c.add(Command("history:clear", "Clear run history", self.clear_history, icon="DELETE_SWEEP", keywords=("reset",)))
+        c.add(Command("vault:lock", "Lock credentials", self.lock_credentials, icon="LOCK",
+                      keywords=("fingerprint", "security", "keys", "secrets"),
+                      when=lambda: self.vault.available and self.vault.unlocked))
+        c.add(Command("vault:unlock", "Unlock credentials", lambda: self.page.run_task(self.unlock), icon="FINGERPRINT",
+                      keywords=("fingerprint", "security", "keys", "secrets"),
+                      when=lambda: self.vault.available and not self.vault.unlocked))
 
     # ---- keyboard -----------------------------------------------------------------
 

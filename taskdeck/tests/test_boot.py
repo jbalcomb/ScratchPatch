@@ -130,3 +130,85 @@ def test_offline_is_an_error_not_a_crash(env, monkeypatch):
     monkeypatch.setattr(boot, "_get", offline)
     result = boot.check_for_update()
     assert result["status"] == "error" and "network unreachable" in result["message"]
+
+
+def big_bundle(marker: str = "ota", files: int = 200) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("taskdeck/__init__.py", f"MARKER = {marker!r}\n")
+        for i in range(files):
+            zf.writestr(f"taskdeck/jobs/job{i}/__init__.py", "x = 1\n" * 50)
+    return buf.getvalue()
+
+
+def test_two_checks_at_once_install_one_complete_copy(env):
+    """The automatic check after starting and "Check for updates" used to unpack into the same folder."""
+    import threading
+
+    data = big_bundle()
+    publish(env, data)
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(boot.check_for_update()["status"])) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["ready", "up_to_date", "up_to_date", "up_to_date"]
+    installed = boot.ota_dir() / "abc1234" / "taskdeck" / "jobs"
+    assert len(list(installed.iterdir())) == 200
+    assert not [p for p in boot.ota_dir().iterdir() if p.name.startswith(".staging")]
+
+
+def test_incomplete_unpacking_is_never_switched_on(env, monkeypatch):
+    real = zipfile.ZipFile.extractall
+
+    def lossy(self, path=None, members=None, pwd=None):
+        real(self, path, members, pwd)
+        (boot.Path(path) / "taskdeck" / "jobs" / "job3" / "__init__.py").unlink()  # e.g. cleared by someone else
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", lossy)
+    publish(env, big_bundle(files=10))
+    result = boot.check_for_update()
+    assert result["status"] == "error" and "incompletely" in result["message"]
+    assert boot.activate()["source"] == "bundled"
+    assert not (boot.ota_dir() / "abc1234").exists()
+    assert not [p for p in boot.ota_dir().iterdir() if p.name.startswith(".staging")]
+
+
+def test_compiled_apk_still_knows_its_version(env):
+    """flet build ships taskdeck/_build.pyc only; without reading it the APK said "dev" (build time 0)."""
+    import py_compile
+
+    build = boot.SRC_DIR / "taskdeck" / "_build.py"
+    build.write_text("VERSION = 'apk7'\nBUILD_TIME = 5000\n")
+    py_compile.compile(str(build), cfile=str(build.with_suffix(".pyc")))
+    build.unlink()
+    assert boot.bundled_build() == {"version": "apk7", "build_time": 5000}
+    build.with_suffix(".pyc").unlink()
+    assert boot.bundled_build() == {"version": "dev", "build_time": 0}
+
+
+def test_rejected_message_clears_once_something_newer_starts(env):
+    publish(env, bundle_zip(), version="bad0001", build_time=2000)
+    boot.check_for_update()
+    boot.activate()  # bad0001 starts... and dies before confirm_started()
+    assert boot.activate()["source"] == "bundled"  # the fallback (APK code, build 1000)
+    boot.confirm_started()
+    assert boot.status()["last_error"].startswith("bad0001")  # still shown: older code is running
+
+    publish(env, bundle_zip("fixed"), version="good002", build_time=3000)
+    assert boot.check_for_update()["status"] == "ready"
+    boot.confirm_started()
+    assert boot.status()["last_error"]  # downloaded but not running yet: still shown
+    assert boot.activate()["version"] == "good002"
+    boot.confirm_started()
+    assert boot.status()["last_error"] is None  # a newer version started fine
+
+
+def test_old_rejection_without_a_build_time_clears_on_the_next_start(env):
+    """Rejections recorded before the build time was kept (e.g. 26ec36d on the phone)."""
+    state = boot._load_state()
+    state["last_error"] = "26ec36d: ModuleNotFoundError: No module named 'taskdeck.jobs'"
+    boot._save_state(state)
+    boot.activate()
+    boot.confirm_started()
+    assert boot.status()["last_error"] is None

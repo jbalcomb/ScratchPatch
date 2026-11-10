@@ -218,8 +218,10 @@ def test_plan_for_the_messy_sheet():
     assert [r[0] for r in plan.rows] == ["10/15/2026", "10/16/2026", "10/18/2026"]
     assert plan.rows[0] == DAY15  # the hand-typed copy is kept
     assert plan.span == 44
-    assert plan.remarks == ["Row 42 (10/18/2026) is missing values; check it by hand.",
-                            "Row 44 (10/16/2026) is missing values; check it by hand."]
+    assert plan.remarks == [
+        "Row 42 (10/18) Missing: Offline, Arr time, Arr mi, Batches, +2 more",
+        "Row 44 (10/16) Missing: Batches",
+    ]
 
 
 def test_plan_keeps_the_more_complete_of_two_different_rows():
@@ -408,3 +410,68 @@ def test_plan_accepts_dates_without_leading_zeros():
     assert not plan.changed  # the sheet's own date format, not a problem
     assert reconcile.plan([HEADERS, ["2026-10-03"] + DAY15[1:]]).changes == [
         "Row 2: write the date “2026-10-03” as 10/3/2026."]
+
+
+def row(**cells):
+    """A sheet row from record fields, everything else empty."""
+    out = [""] * 15
+    for c in COLUMNS:
+        if c.field in cells:
+            out[c.number - 1] = cells[c.field]
+    return out
+
+
+FULL = dict(date="10/16/2026", departure_time="10:38", departure_mileage=52, online_time="11:00",
+            offline_time="21:46", arrival_time="22:09", arrival_mileage=303, batches=6, orders=13, earnings=187.82)
+
+
+def test_dash_means_known_missing_and_flows_into_calculated_columns():  # case 1
+    plan = reconcile.plan([HEADERS, row(**{**FULL, "offline_time": "-", "arrival_time": "-"}, miles_driven=251)])
+    assert plan.changes == ["Row 2 (10/16/2026): Online Hours → - (an input is “-”); "
+                            "Onclock Hours → - (an input is “-”)."]
+    assert plan.remarks == []  # "-" is fine
+    assert plan.rows[0][10] == "-" and plan.rows[0][11] == "-"
+
+
+def test_empty_input_is_reported_not_its_calculated_column():  # case 2
+    plan = reconcile.plan([HEADERS, row(**{**FULL, "offline_time": ""}, onclock_hours=11.52, miles_driven=251)])
+    assert plan.changes == [] and plan.remarks == ["Row 2 (10/16) Missing: Offline"]
+
+
+def test_calculated_columns_are_filled_when_inputs_are_there():  # case 3
+    plan = reconcile.plan([HEADERS, row(**FULL, gas_at="32", gas_after="540")])
+    assert plan.changes == ["Row 2 (10/16/2026): Online Hours → 10.77 (calculated); "
+                            "Onclock Hours → 11.52 (calculated); Miles Driven → 257 (calculated)."]
+    assert plan.rows[0][10:15] == [10.77, 11.52, "32", "540", 257]
+
+
+def test_existing_calculated_values_and_dashes_are_left_alone():
+    done = row(**FULL, online_hours="-", onclock_hours=11.52, miles_driven=251)
+    plan = reconcile.plan([HEADERS, done])
+    assert not plan.changed and plan.remarks == [] and plan.rows[0] == done
+
+
+def test_gas_columns():
+    half = reconcile.plan([HEADERS, row(**FULL, gas_at="32", online_hours=1, onclock_hours=1)])
+    assert half.remarks == ["Row 2 (10/16) Missing: Gas after"] and not half.changed
+    dash = reconcile.plan([HEADERS, row(**FULL, gas_at="-", gas_after="-", online_hours=1, onclock_hours=1)])
+    assert dash.changes == ["Row 2 (10/16/2026): Miles Driven → - (an input is “-”)."] and dash.remarks == []
+    odd = reconcile.plan([HEADERS, row(**FULL, gas_at="32, 40", gas_after="540", online_hours=1, onclock_hours=1)])
+    assert odd.remarks == ["Row 2 (10/16) Missing: a matching gas stop"] and not odd.changed
+
+
+def test_day_off_row():
+    plan = reconcile.plan([HEADERS, row(date="9/7/2026", departure_time="-", earnings="-")])
+    assert plan.changes == ["Row 2 (9/7/2026): Onclock Hours → - (an input is “-”)."]
+    assert plan.remarks == ["Row 2 (9/7) Missing: Dep mi, Online, Offline, Arr time, +3 more"]
+
+
+def test_missing_line_fits_two_phone_lines():
+    import textwrap
+    from datetime import date
+
+    names = ["Dep time", "Dep mi", "Online", "Offline", "Arr time", "Arr mi", "Batches", "Orders", "Earnings"]
+    line = reconcile.missing_line(123, date(2026, 12, 31), names)
+    assert len(textwrap.wrap("• " + line, reconcile.LINE_CHARS)) <= 2 and line.endswith("more")
+    assert line.startswith("Row 123 (12/31) Missing: Dep time, ")  # column order kept
+    assert reconcile.missing_line(2, date(2026, 9, 10), ["Online", "Arr time"]) == "Row 2 (9/10) Missing: Online, Arr time"

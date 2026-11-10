@@ -3,8 +3,11 @@ import pytest
 from taskdeck.core import Field, JobPlugin, Pipeline, PluginRegistry, StepError
 from taskdeck.review.analyzer import check_plugin
 
-BUILTIN = {"text_stats", "case_convert", "hash_text", "json_format", "unit_convert", "tip_split", "daily_log",
-           "daily_log_reconcile", "home_jobs", "discord_capture", "courier_send"}
+BUILTIN = {"budget_reconcile", "case_convert", "courier_send", "daily_log", "daily_log_reconcile",
+           "discord_capture", "dll_parse", "exe_parse", "extract_archive", "hash_text", "home_jobs",
+           "json_format", "photo_ocr_capture", "photo_ocr_product_photo", "photo_ocr_reconcile",
+           "photo_ocr_review", "photo_ocr_shopping", "photo_ocr_unmatched", "text_stats", "tip_split",
+           "unit_convert", "voice_rec"}
 
 
 @pytest.fixture(scope="module")
