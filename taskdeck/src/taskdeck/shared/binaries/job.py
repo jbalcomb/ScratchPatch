@@ -16,7 +16,7 @@ from pathlib import Path
 from taskdeck.core import GOOGLE_ACCOUNT, WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
 from taskdeck.shared import files, steps
 
-from . import bundle, drive, formats, layout
+from . import bundle, debugdoc, drive, formats, layout
 
 CHUNKS = {"1 KB": 1024, "2 KB": 2048, "4 KB": 4096, "8 KB": 8192, "16 KB": 16384}
 MAX_BYTES = 64 * 1024 * 1024
@@ -237,6 +237,14 @@ def _present(expects_dll: bool | None):
                      "Full path": str(ctx["base"])})
         if exe.entry:
             rows["Entry point"] = exe.entry[1]
+            if exe.debug:
+                named = [g.name for g in exe.debug.globals if debugdoc.resolve(exe, g.segment, g.offset)[1] == exe.entry[0]]
+                if named:
+                    rows["Entry point"] += f" ({', '.join(named)})"
+        if exe.debug:
+            info = exe.debug
+            rows["Debug info"] = (f"Watcom {info.version.split()[0]}: {len(info.globals):,} symbols, "
+                                  f"{len(info.modules):,} modules (debug/DEBUG.md)")
         if ctx.get("drive_target"):
             rows["Google Drive"] = ctx["drive_target"]
             rows["Upload"] = ctx.get("upload_message") or "In the background: progress below."
