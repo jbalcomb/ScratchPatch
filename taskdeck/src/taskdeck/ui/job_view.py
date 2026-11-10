@@ -4,17 +4,21 @@ live pipeline progress and the result."""
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
 from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.shared import photos
 from taskdeck.shared.gdrive import DriveLocation
 
-from . import task_view
+from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
 from .file_browser import FileBrowser
+from .camera_capture import CameraCapture
+from .photo_picker import PhotoPicker
 from .forms import FieldControl
 
 if TYPE_CHECKING:
@@ -27,6 +31,9 @@ STAGE_COLOR = {
     Stage.PRESENT: ft.Colors.PURPLE,
 }
 
+
+
+URL = re.compile(r"https?://[^\s<>\"')]+[^\s<>\"').,;:!?]")
 
 class JobScreen:
     def __init__(self, app: "TaskDeckApp", plugin: JobPlugin, preset: dict[str, Any] | None = None):
@@ -44,7 +51,7 @@ class JobScreen:
 
         self.fields = {
             f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run,
-                                 browse=self._browse_file)
+                                 browse=self._browse_file, camera=self._take_photos)
             for f in plugin.fields
         }
         # Notes under fields that depend on the inputs (JobPlugin.field_notes), e.g. where the output goes.
@@ -142,7 +149,10 @@ class JobScreen:
                     found = self.plugin.check_ready_online(settings)
                 except Exception as exc:  # a broken check must not lock the job
                     found = [Problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}", blocking=False, fix="recheck")]
-                self.problems = self.problems + found
+                fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
+                if fixes:  # settings the check found that work: keep them, so the next run needs no lookup
+                    self.app.save_job_settings(self.plugin.id, {**self.app.job_settings(self.plugin.id), **fixes})
+                self.problems = self.problems + [p for p in found if not p.ok]
                 self.checking = False
                 self._render_readiness()
                 self._update()
@@ -227,6 +237,11 @@ class JobScreen:
         """Browse for a FILE(S) field with TaskDeck's own browser (real paths), starting where its (last) file
         is, else where another file field's file is (e.g. Supporting DLLs: the executable's folder)."""
         exts = tuple(e.lower() for e in fc.field.extensions)
+        if fc.field.preview:  # a photo field: the photo grid, starting at the camera's photos (DCIM)
+            PhotoPicker.pick(self.app, lambda paths, separate: fc.picked_many([str(p) for p in paths], separate),
+                             title=f"Choose {fc.field.label}", noun=fc.field.grouped,
+                             accept=(lambda name: name.lower().endswith(exts)) if exts else photos.is_image)
+            return
         candidates = [line.strip() for line in str(fc.value or "").splitlines() if line.strip()][-1:] + \
             [str(other.value) for other in self.fields.values()
              if other is not fc and other.field.kind == FieldKind.FILE and other.value]
@@ -236,6 +251,26 @@ class JobScreen:
                               title=f"Choose {fc.field.label}",
                               accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
                               kind=" or ".join(exts) + " files" if exts else "files")
+
+    def _linked(self, text: str) -> list[ft.TextSpan]:
+        """Text with every web address in it a tappable link (opens in the browser)."""
+        spans: list[ft.TextSpan] = []
+        at = 0
+        for m in URL.finditer(text):
+            if m.start() > at:
+                spans.append(ft.TextSpan(text[at:m.start()]))
+            url = m.group(0)
+            spans.append(ft.TextSpan(url, style=ft.TextStyle(color=ft.Colors.PRIMARY, decoration=ft.TextDecoration.UNDERLINE),
+                                     on_click=lambda e, url=url: self.app.open_url(url)))
+            at = m.end()
+        if at < len(text):
+            spans.append(ft.TextSpan(text[at:]))
+        return spans
+
+    def _take_photos(self, fc: FieldControl) -> None:
+        """Take photos (fields with Field.camera): TaskDeck's camera; the photos join the field in order."""
+        CameraCapture.open(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
+                           title=fc.field.label, guides=fc.field.camera)
 
     def clear(self, e=None) -> None:
         for fc in self.fields.values():
@@ -433,6 +468,9 @@ class JobScreen:
         parts: list[ft.Control] = []
         if result.title:
             parts.append(ft.Text(result.title, weight=ft.FontWeight.W_600))
+        images = thumbnails.strip(result.images) if result.images else None
+        if images:
+            parts.append(images)
         if result.rows:
             parts.append(
                 ft.Column(
@@ -440,7 +478,8 @@ class JobScreen:
                         ft.Row(
                             [
                                 ft.Text(k, color=ft.Colors.ON_SURFACE_VARIANT, width=150),
-                                ft.Text(v, selectable=True, expand=True, weight=ft.FontWeight.W_500),
+                                ft.Text(spans=self._linked(v), selectable=True, expand=True,
+                                        weight=ft.FontWeight.W_500),
                             ],
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         )
@@ -449,8 +488,17 @@ class JobScreen:
                     spacing=6,
                 )
             )
+        if result.table:
+            if result.table_title:
+                parts.append(ft.Text(result.table_title, weight=ft.FontWeight.W_600))
+            parts.append(ft.Column(
+                [ft.Row([ft.Text(k, selectable=True, expand=True),
+                         ft.Text(v, selectable=True, text_align=ft.TextAlign.RIGHT, weight=ft.FontWeight.W_500)],
+                        vertical_alignment=ft.CrossAxisAlignment.START)
+                 for k, v in result.table],
+                spacing=4))
         if result.text is not None:
-            parts.append(ft.Text(result.text, selectable=True, font_family="monospace"))
+            parts.append(ft.Text(spans=self._linked(result.text), selectable=True, font_family="monospace"))
         if result.warning:
             parts.append(ft.Text(result.warning, color=ft.Colors.ERROR))
         text = result.as_plain_text()

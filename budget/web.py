@@ -3,6 +3,9 @@
     python budget/web.py                 # http://<this machine>:8092
     python budget/web.py --port 8091
 
+GET /api/transactions?since=YYYY-MM-DD is a read-only JSON feed of balances and transactions, for the
+TaskDeck budget jobs.
+
 An upload is checked (a Bank of America export whose running balance fits the account), archived and
 stored right away; categorizing follows in the background. The watcher still handles files saved into the
 drop folder. No login: keep it on the home network / Tailscale.
@@ -144,11 +147,24 @@ def make_handler(opts):
             self.reply(status, json.dumps({"message": text}))
 
         def do_GET(self):
-            if urlparse(self.path).path != "/":
+            url = urlparse(self.path)
+            if url.path == "/api/transactions":
+                return self.api_transactions(parse_qs(url.query).get("since", [""])[0])
+            if url.path != "/":
                 return self.reply(404, "not found", "text/plain")
             options = "".join(f'<option value="{a}">{a}</option>' for a in ACCOUNTS)
             page = PAGE.replace("__OPTIONS__", options).replace("__HINTS__", json.dumps(ACCOUNT_HINTS))
             self.reply(200, page, "text/html; charset=utf-8")
+
+        def api_transactions(self, since):
+            """Read-only feed for the TaskDeck budget jobs: balances, plus transactions from ``since`` on."""
+            if since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", since):
+                return self.message(400, "since must be YYYY-MM-DD")
+            db = budget.connect(opts.db)
+            try:
+                self.reply(200, json.dumps(budget.feed(db, since or None)))
+            finally:
+                db.close()
 
         def do_POST(self):
             url = urlparse(self.path)

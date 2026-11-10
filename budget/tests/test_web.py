@@ -92,3 +92,23 @@ def test_page_script_parses(tmp_path):
     script.write_text(re.search(r"<script>(.*)</script>", html, re.S).group(1))
     result = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_transactions_feed(tmp_path):
+    server, base = serve(tmp_path)
+    try:
+        post(base + "/upload?account=checking&name=daily.csv", EXPORT.encode())
+        everything = json.load(urllib.request.urlopen(base + "/api/transactions"))
+        recent = json.load(urllib.request.urlopen(base + "/api/transactions?since=2026-01-03"))
+        try:
+            urllib.request.urlopen(base + "/api/transactions?since=yesterday")
+            bad = None
+        except urllib.error.HTTPError as e:
+            bad = e.code
+    finally:
+        server.shutdown()
+    assert everything["accounts"] == {"checking": {"balance": 129000, "as_of": "2026-01-05"}}
+    assert len(everything["transactions"]) == 4
+    assert [t["date"] for t in recent["transactions"]] == ["2026-01-03", "2026-01-05"]
+    assert set(recent["transactions"][0]) == {"account", "date", "description", "amount", "balance", "category"}
+    assert bad == 400

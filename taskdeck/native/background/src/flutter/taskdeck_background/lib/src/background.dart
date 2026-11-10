@@ -22,6 +22,7 @@ class BackgroundWorkService extends FletService {
       case "start":
       case "update":
       case "stop":
+      case "last_crash":
         return await _channel.invokeMethod(name, args);
       default:
         throw Exception("Unknown BackgroundWork method: $name");

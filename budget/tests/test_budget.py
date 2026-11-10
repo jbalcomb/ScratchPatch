@@ -310,3 +310,15 @@ def test_rows_from_before_the_upload_log_are_adopted(tmp_path):
     assert db.execute("SELECT import_id FROM transactions").fetchall() == [(1,)]
     budget.rebuild(db)  # the adopted file replays
     assert db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 4
+
+
+def test_account_rules_apply_to_their_account_only(tmp_path):
+    rules_file = tmp_path / "r.txt"
+    rules_file.write_text("[bills] Monthly Maintenance Fee = BofA Fee - Bills\n"
+                          "[savings] Monthly Maintenance Fee = BofA Fee - Save\n"
+                          "DES:LOAN = Car Payment\n")
+    rules = budget.load_rules(rules_file)
+    assert budget.match(rules, "Monthly Maintenance Fee", "bills") == "BofA Fee - Bills"
+    assert budget.match(rules, "Monthly Maintenance Fee", "savings") == "BofA Fee - Save"
+    assert budget.match(rules, "Monthly Maintenance Fee", "checking") is None
+    assert budget.match(rules, "EXETERFINA DES:LOAN PMNT ID:1", "bills") == "Car Payment"  # colons are fine

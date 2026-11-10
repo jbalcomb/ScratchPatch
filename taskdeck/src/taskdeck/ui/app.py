@@ -3,6 +3,7 @@ History, Settings, the command palette and keyboard shortcuts."""
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
@@ -118,6 +119,18 @@ class TaskDeckApp:
         if boot:
             boot.listeners.clear()  # drop listeners from a previous (reloaded) app instance
             boot.listeners.append(self.on_update_ready)
+        self._start_plugins()
+
+    def _start_plugins(self) -> None:
+        """Jobs with work that runs without their screen (e.g. Voice notes sending queued recordings)
+        define ``on_app_start(app)``. A failing one is logged and skipped."""
+        for plugin in self.registry:
+            start = getattr(plugin, "on_app_start", None)
+            if start:
+                try:
+                    start(self)
+                except Exception:
+                    logging.getLogger(__name__).exception("on_app_start failed for %s", plugin.id)
 
     # ---- navigation ---------------------------------------------------------------
 
@@ -522,6 +535,9 @@ class TaskDeckApp:
                          spacing=2, expand=True)
 
     def settings_tab(self) -> ft.Control:
+        # The App updates section is its own column, so its status changes redraw only it: rebuilding the
+        # whole tab sent you back to the top after "Check for updates".
+        self.updates_box = ft.Column(self.updates_section(), spacing=12)
         theme = ft.SegmentedButton(
             segments=[ft.Segment(value=k, label=ft.Text(k.title())) for k in THEMES],
             selected=[self.store.get("theme", "system")],
@@ -546,7 +562,7 @@ class TaskDeckApp:
                 *([section_title("Background work"), *self.background.settings_rows()] if self.background.enabled else []),
                 section_title("Keyboard shortcuts"),
                 *[ft.Row([ft.Text(k, width=170, font_family="monospace", size=12), ft.Text(v)]) for k, v in shortcuts],
-                *self.updates_section(),
+                self.updates_box,
                 section_title("About"),
                 ft.Text(f"{len(self.registry)} jobs installed · {len(self.commands)} palette commands"),
             ],
@@ -562,22 +578,48 @@ class TaskDeckApp:
             return []
         st = boot.status()
         running = st["active"]
-        ready = st["staged"] and st["staged"] != running["version"]
+        ready, note = self._staged_update(st)
         lines = [f"Running: {running['version']} ({running['source']})"]
         if ready:
             lines.append(f"Downloaded: {st['staged']}, reload to use it")
+        elif note:
+            lines.append(note)
         if st.get("last_error"):
             lines.append(f"Last rejected update: {st['last_error'].splitlines()[0][:120]}")
         if self.update_status:
             lines.append(self.update_status)
         buttons = [ft.OutlinedButton("Check for updates", icon=ft.Icons.SYSTEM_UPDATE, on_click=lambda e: self.check_updates())]
-        if ready:
+        if ready:  # only an update newer than what runs
             buttons.append(ft.FilledButton("Reload now", icon=ft.Icons.REFRESH, on_click=lambda e: self.reload_app()))
         return [
             section_title("App updates"),
             ft.Text("\n".join(lines), color=ft.Colors.ON_SURFACE_VARIANT, selectable=True),
             ft.Row(buttons, wrap=True),
         ]
+
+    def _staged_update(self, st: dict) -> tuple[bool, str]:
+        """(ready, note): is the downloaded update newer than what runs (offer Reload), and if one is
+        downloaded but won't be used, why. Different isn't enough: a newer APK makes an older download moot,
+        and offering it made Reload look broken (it reloaded the same APK code every time)."""
+        staged, running = st.get("staged"), st["active"]
+        if not staged or staged == running["version"]:
+            return False, ""
+        try:
+            state = boot._load_state()
+            meta = state.get("bundles", {}).get(staged, {})
+            folder_ok = (boot.ota_dir() / staged / "taskdeck" / "__init__.py").exists()
+        except Exception:  # an older updater without these internals: as before
+            return True, ""
+        if staged in state.get("bad", []):
+            return False, f"Downloaded update {staged} was rejected, so it isn't used."
+        if meta.get("requires_api") not in (None, st.get("api")):
+            return False, f"Downloaded update {staged} needs a new APK."
+        if not folder_ok:
+            return False, f"Downloaded update {staged} is incomplete; Check for updates fetches it again."
+        if int(meta.get("build_time", 0)) <= int(running.get("build_time", 0)):
+            return False, (f"The running code ({running['version']}) is newer than the last live update "
+                           f"({staged}), so that update isn't needed.")
+        return True, ""
 
     def _forget_old_rejection(self) -> None:
         """A rejected update is old news once something newer than it runs. Done here (before Settings
@@ -599,33 +641,37 @@ class TaskDeckApp:
         except Exception:  # an older updater without these internals: leave it
             pass
 
-    def check_updates(self) -> None:
-        self.update_status = "Checking…"
-        self.render()
+    def _show_update_status(self, status: str) -> None:
+        """Redraw just the App updates section (the Settings tab keeps its scroll position)."""
+        self.update_status = status
+        box = getattr(self, "updates_box", None)
+        if box is not None and self.tab == "settings" and not self.stack:
+            box.controls = self.updates_section()
+        else:
+            self.render()
         self.page.update()
+
+    def check_updates(self) -> None:
+        self._show_update_status("Checking…")
 
         done = threading.Event()
 
         def work():
             result = boot.check_for_update()
             done.set()
-            self.update_status = result["message"]
-            self.render()
-            self.page.update()
+            self._show_update_status(result["message"])
 
         def watchdog():
             if not done.wait(CHECK_LIMIT):  # e.g. the phone's DNS not answering: urllib's timeout doesn't cover that
-                self.update_status = f"No answer from GitHub within {CHECK_LIMIT} s. Check the connection and try again."
-                self.render()
-                self.page.update()
+                self._show_update_status(f"No answer from GitHub within {CHECK_LIMIT} s. "
+                                         "Check the connection and try again.")
 
         threading.Thread(target=work, daemon=True).start()  # not page.run_thread: see self.tasks
         threading.Thread(target=watchdog, daemon=True).start()
 
     def on_update_ready(self, result: dict) -> None:
         """Called from the updater's background thread when a new version is downloaded."""
-        self.update_status = result["message"]
-        self.render()
+        self._show_update_status(result["message"])
         self.page.show_dialog(ft.SnackBar(
             ft.Text(f"Update {result['version']} downloaded"),
             action="Reload",

@@ -1,0 +1,185 @@
+# Photo OCR service HTTP API
+
+The service (`photo-ocr/web.py`) listens on the workstation's `localhost:8093`. Tailscale Serve exposes it
+over HTTPS to your own devices only. Nothing here needs a login, so keep it off the open internet.
+
+All JSON. Amounts are **integer cents**, dates `YYYY-MM-DD`. Errors are `{"error": "message"}` with a
+4xx/5xx status. The TaskDeck jobs (`taskdeck/src/taskdeck/jobs/photo_ocr/`) and the web pages use
+this API only.
+
+## Health and counts
+
+`GET /api/health` → `{"ok": true, "immich": true|false|null, "engines": ["qwen3-vl-8b"], "product_engines": ["qwen3-vl-8b"], "version": 1}`
+(`immich` is null when Immich isn't set up and photos are kept locally, false when it doesn't answer;
+`engines` read receipts and `product_engines` products, the first of each being the one whose reading is used.)
+
+`GET /api/summary` →
+```json
+{"pending": 2, "review": 3, "retake": 1, "approved": 40, "failed": 0, "unmatched_items": 12,
+ "products": 25, "products_review": 2, "products_pending": 1, "due": 4,
+ "unreconciled_receipts": 5, "unreconciled_bank": 7}
+```
+
+## Receipts
+
+`POST /api/receipts`: multipart/form-data. Repeat the `photo` field once per photo, in order from the top of
+the receipt to the bottom. Optional fields are `source` (`in-store` by default) and `note`. All the photos
+become one receipt; each goes to the Immich *Receipts* album and parsing follows in the background.
+→ `201 {"id": 17, "photos": 3, "status": "pending"}`
+
+`POST /api/receipts/{id}/photos`: multipart, `photo` repeated. Adds photos (a retake, or a missed part),
+appended after the existing ones, and parses again. → `{"id": 17, "photos": 4, "status": "pending"}`
+
+`GET /api/receipts?bucket=review&status=parsed&limit=50` → `{"receipts": [Receipt summary, ...]}`
+(each filter optional; newest first).
+
+Receipt summary:
+```json
+{"id": 17, "status": "parsed", "bucket": "review", "merchant": "Giant Eagle", "purchase_date": "2026-10-12",
+ "total": 4519, "tax": 112, "source": "in-store", "photos": 2, "items": 14, "suspect": ["total", "merchant"],
+ "created_at": "2026-10-31T18:20:00", "url": "/review/17"}
+```
+
+- `status`: `pending` (waiting to be parsed), `parsed` (needs a person), `approved` (accepted, by hand or
+  automatically), `failed` (the engine errored; the reason is in `error`).
+- `bucket`: `auto`, `review` or `retake` (PRD *Confidence and review*); null while pending.
+- `suspect`: the fields whose confidence is low, out of `merchant`, `purchase_date`, `total`, `tax` and
+  `items`.
+
+`GET /api/receipts/{id}` → the summary fields plus:
+```json
+{"location": "Mentor, OH", "error": null, "note": "",
+ "images": [{"id": 31, "position": 1, "url": "/api/images/31"}],
+ "items": [{"id": 201, "position": 1, "raw_text": "BANANAS", "quantity": 1, "unit_price": null,
+            "line_total": 129, "product_id": 5, "product_name": "Bananas", "match": "alias", "confidence": 1.0}],
+ "checks": [{"name": "sum", "ok": false, "detail": "items + tax = 45.91, total = 45.19"}],
+ "confidence": {"merchant": 0.9, "purchase_date": 1.0, "total": 0.3, "tax": 1.0, "items": 0.6},
+ "disagreements": {"total": {"qwen3-vl-8b": 4519, "tesseract+llm": 4591}},
+ "runs": [{"engine": "qwen3-vl-8b", "seconds": 8.2, "error": null}]}
+```
+
+`POST /api/receipts/{id}`: a JSON edit, all keys optional:
+```json
+{"merchant": "Giant Eagle", "purchase_date": "2026-10-12", "total": 4519, "tax": 112, "location": "Mentor, OH",
+ "items": [{"raw_text": "BANANAS", "quantity": 1, "line_total": 129}], "approve": true}
+```
+`items`, when given, replaces the whole list. Every changed value is kept as a correction, and with
+`approve`, the receipt becomes `approved` and its store becomes a known store. → the full receipt.
+
+`POST /api/receipts/{id}/reparse` → `{"status": "pending"}`
+
+`GET /api/receipts/{id}/runs` → `{"runs": [...]}`, newest first: each reading's `at`, `engine`, `seconds`,
+`error`, `prompt_version` (8 characters, changes whenever the prompt text changes), the full `prompt` sent with
+the photos, the model's `raw` reply, `date_printed` (the date as the model read it off the receipt) and the `date` the
+service converted it to (the model is not asked to convert dates; see Dates below).
+
+`POST /api/receipts/{id}/ask` `{"question": "What month, day and year are printed?"}` → `{"answer", "engine",
+"seconds"}`: asks the vision model a free question about this receipt's photos. Nothing is saved; for debugging.
+`POST /api/receipts/{id}/merge` `{"into": 16}`: appends this receipt's photos to receipt 16 (for a receipt
+photographed as separate album photos), removes this one and re-parses 16. → receipt 16.
+`DELETE /api/receipts/{id}` removes the record. The photos stay in Immich.
+
+`GET /api/images/{id}` → the photo as stored (the original), from the local cache or from Immich.
+`GET /api/images/{id}?w=400` → a copy at most that wide, turned upright, as JPEG (sizes round up to 200, 400,
+800, 1200 or 1600). Made once and kept in the cache; pages use 400 for the gallery and 1200 for the photo beside
+the fields.
+
+## Line items and the catalog
+
+`GET /api/items/unmatched?limit=50` →
+```json
+{"items": [{"id": 201, "receipt_id": 17, "raw_text": "GV WHL MLK GAL", "line_total": 329,
+            "merchant": "Walmart", "purchase_date": "2026-10-12",
+            "suggestion": {"product_id": 5, "name": "Whole milk", "by": "text|model", "score": 0.82}}]}
+```
+`suggestion` is null when nothing is close.
+
+`POST /api/items/{id}/match`, with `{"product_id": 5}`, `{"new_product": {"name": "...", "brand": "...",
+"size": "..."}}` or `{"skip": true}` (not a product, e.g. a bag fee): saves the alias, so the same receipt
+text matches automatically next time, and applies it to other unmatched items with the same text.
+→ `{"matched": 3, "product_id": 5}`
+
+`GET /api/products?q=milk&status=review` → `{"products": [{"id": 5, "name": "Whole milk", "brand": "Great Value",
+"size": "1 gal", "status": "ready", "bucket": "auto", "suspect": [], "image_url": "/api/images/40",
+"purchases": 6, "last_bought": "2026-10-12", "last_price": 329, "last_store": "Walmart", "url": "/products/5"}]}`
+(both filters optional).
+
+- `status`: `pending` (waiting to be read), `review` (a person should check it), `ready`, `failed` (the
+  engine errored; the reason is in `error`). Products waiting for review can already be matched to receipt
+  lines.
+- `bucket`: `auto`, `review` or `retake`, as for receipts; null for a product named by hand.
+- `suspect`: fields with low confidence, out of `name`, `brand` and `size` (only while in review).
+
+`GET /api/products/{id}` → the product plus `aliases: [..]`, `images: [..]`,
+`history: [{"date", "merchant", "location", "line_total", "quantity", "receipt_id"}]`,
+`checks: [{"name", "ok", "detail"}]`, `confidence: {field: 0..1}`, `disagreements: {field: {engine: value}}`,
+`error` and `runs: [{"engine", "seconds", "error"}]`.
+
+`POST /api/products`: multipart with `photo` (one or more photos of one product, e.g. front and back) and an
+optional `name`. The photos go to the Immich *Products* album. Without a name, the product engines read the
+name, brand and size in the background and the checks decide `auto` or `review`; with a name it is `ready`
+at once. → `201 {"id": 26, "status": "pending"}`
+`POST /api/products/{id}`: JSON `{"name", "brand", "size", "approve": true}`, all optional. Every changed value
+is kept as a correction; `approve` makes it `ready` (it needs a name). → the product.
+`POST /api/products/{id}/reparse` → `{"status": "pending"}`
+`POST /api/products/{id}/merge` `{"into": 5}`: moves photos, aliases and purchases to 5. → product 5.
+
+`GET /api/shopping-list` →
+```json
+{"rule": "due when the days since the last purchase reach 90% of the usual days between purchases",
+ "items": [{"product_id": 5, "name": "Whole milk", "brand": "Great Value", "size": "1 gal",
+            "last_bought": "2026-10-20", "every_days": 7, "overdue_days": 4,
+            "usual_store": "Walmart", "last_price": 329, "best_price": 309, "best_store": "Aldi"}]}
+```
+
+## Google Photos Picker
+
+`GET /api/picker/status` → `{"configured": true, "signed_in": false, "auth_url": "/picker/auth"}`
+`POST /api/picker/sessions` `{"album": "receipts"|"products"}` → `{"id": "...", "picker_uri": "https://photos.google.com/..."}`.
+Open `picker_uri`, choose the photos, then poll:
+`GET /api/picker/sessions/{id}` → `{"state": "waiting"|"importing"|"done"|"error", "imported": 3, "error": null}`.
+Photos chosen for `receipts` become **one receipt each**. Use merge for one receipt photographed in parts.
+
+## Reconciliation (bank)
+
+Bank transactions come only from the budget project's store (`BUDGET_DB`, read-only). Bank exports are
+imported in budget, and new accounts or banks are added there; this service has no bank import of its own.
+
+`POST /api/reconcile/run` first copies new transactions from budget's store, then matches automatically
+(merchant, amount, bank date 1 day before to 5 days after the purchase).
+→ `{"matched": 9, "bank_rows": 640, "bank_new": 12}`, or `409` when there is no budget store at `BUDGET_DB`.
+`GET /api/reconcile` →
+```json
+{"receipts_unmatched": [Receipt summary, ...],
+ "bank_unmatched": [{"id": 3, "date": "2026-10-13", "description": "GIANT EAGLE #4 ...", "amount": -4519, "account": "checking"}],
+ "matched": [{"receipt_id": 17, "bank_id": 3, "method": "auto|manual"}]}
+```
+`POST /api/reconcile/match` `{"receipt_id": 17, "bank_id": 3}` (or `"unmatch": true`) → `{"ok": true}`
+
+## Pages (for a phone browser)
+
+`/` home with counts · `/capture` camera PWA (receipt or product) · `/review` queue (receipts; `?products` for products) · `/review/{id}` photo beside the fields ·
+`/items` unmatched items · `/products` gallery · `/products/{id}` · `/shopping` · `/reconcile` · `/picker`
+
+
+## Dates
+
+The model reports the date exactly as printed (`date_printed`); the service converts it. A year first
+(2026-11-04) or a written month (Nov 4 2026) reads one way. Two numbers then a year (11/04/26) may read month
+first or day first: if only one is a real date (25/10/26) that is it; otherwise the store's learned date order
+decides (`stores.date_order`, `mdy` or `dmy`). A store with no order yet gets the receipt in review, its date
+check carrying `"choices": [{"order", "date", "label"}]`; approving the receipt with one of those dates teaches
+the store its order. A time or other text beside the date is ignored.
+
+## Reading errors
+
+`GET /api/errors` → `{"categories": {key: label}, "by_prompt", "by_engine", "by_store", "recent"}`. Each of
+the three `by_` maps is `{name: {"readings", "with_errors", "categories": {key: count}}}`; `recent` is the
+latest 50 errors, `{receipt_id, category, detail, found_by, store, engine, prompt_version, url}`. Only receipts
+approved by hand are counted (see README, Reading errors).
+
+A receipt's sum check may carry `"fix": {"remove": [{"name", "price"}]}`: lines whose removal would make items +
+tax equal the total. An approval (`POST /api/receipts/{id}` with `approve`) may send `"used_fixes": [{"name",
+"price"}]`, the lines removed with that button, so their errors are logged as found by it.
+
+Readings now also have `savings`, the total savings printed (or null), checked against the discount lines.

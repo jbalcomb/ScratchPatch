@@ -495,3 +495,70 @@ def test_settings_forget_a_rejection_once_something_newer_runs(tmp_path, monkeyp
     monkeypatch.setattr(app_module, "boot", boot)
     make_app(tmp_path)
     assert boot.box["state"]["last_error"] == "abc1234: ImportError: x"
+
+
+def test_settings_offer_only_a_newer_update(tmp_path, monkeypatch):
+    import threading as th
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    ota = tmp_path / "ota"
+    for v in ("db09c26", "newer01"):
+        (ota / v / "taskdeck").mkdir(parents=True)
+        (ota / v / "taskdeck" / "__init__.py").write_text("")
+    state = {"current": "db09c26", "bundles": {"db09c26": {"build_time": 1000, "requires_api": 1},
+                                              "newer01": {"build_time": 3000, "requires_api": 1}}}
+    active = {"source": "bundled", "version": "a951190", "build_time": 2000}  # a newer APK
+    boot = SimpleNamespace(_lock=th.Lock(), _load_state=lambda: state, _save_state=lambda s: None,
+                           ota_dir=lambda: ota, active=active, listeners=[],
+                           status=lambda: {"active": active, "staged": state["current"], "last_error": None,
+                                           "api": 1})
+    app = make_app(tmp_path)
+    monkeypatch.setattr(app_module, "boot", boot)
+
+    def shown():
+        controls = app.updates_section()
+        return controls[1].value, [b.content for b in controls[2].controls]
+    text, buttons = shown()
+    assert "is newer than the last live update (db09c26)" in text and "Reload now" not in buttons
+
+    state["current"] = "newer01"  # an update newer than the APK
+    text, buttons = shown()
+    assert "Downloaded: newer01, reload to use it" in text and "Reload now" in buttons
+
+    state["bad"] = ["newer01"]
+    assert "was rejected" in shown()[0]
+    state["bad"] = []
+    state["bundles"]["newer01"]["requires_api"] = 2
+    assert "needs a new APK" in shown()[0]
+
+
+def test_check_for_updates_keeps_the_settings_tab(tmp_path, monkeypatch):
+    """Rebuilding the whole tab on each status change sent you back to the top."""
+    import threading as th
+    from types import SimpleNamespace
+
+    from taskdeck.ui import app as app_module
+
+    active = {"source": "bundled", "version": "a951190", "build_time": 2000}
+    checked = th.Event()
+
+    def check():
+        checked.set()
+        return {"status": "up_to_date", "message": "Up to date."}
+    boot = SimpleNamespace(_lock=th.Lock(), _load_state=lambda: {}, _save_state=lambda s: None,
+                           ota_dir=lambda: tmp_path, active=active, listeners=[], check_for_update=check,
+                           status=lambda: {"active": active, "staged": None, "last_error": None, "api": 1})
+    app = make_app(tmp_path)
+    monkeypatch.setattr(app_module, "boot", boot)
+    app.go("settings")
+    tab = app.body.content
+    app.check_updates()
+    assert checked.wait(2)
+    for _ in range(50):
+        if "Up to date." in app.updates_box.controls[1].value:
+            break
+        time.sleep(0.02)
+    assert "Up to date." in app.updates_box.controls[1].value
+    assert app.body.content is tab  # the same tab: only the App updates section changed

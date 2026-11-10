@@ -23,6 +23,11 @@ class BackgroundWork(Service):
         """Stop the service; with a title, leave a "finished" notification."""
         await self._invoke_method("stop", {"title": title, "text": text})
 
+    async def last_crash(self) -> Optional[str]:
+        """The stack trace of the Java/Kotlin exception that last closed TaskDeck, once (then forgotten).
+        None if there wasn't one. APKs built before this was added raise an error instead."""
+        return await self._invoke_method("last_crash", {})
+
 
 def _pct(progress: Optional[int]) -> int:
     return -1 if progress is None else max(0, min(100, int(progress)))

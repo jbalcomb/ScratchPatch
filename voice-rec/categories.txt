@@ -1,0 +1,16 @@
+# Categories for voice notes, one per line. The model picks one; anything else goes to Inbox.
+# Each becomes a folder under "Voice Notes" in the Obsidian vault. Edit freely, then:
+#   docker compose exec voice-rec python voicerec.py rearchive --all
+Ideas
+Todo
+Work
+Job search
+Money
+Projects
+Code
+Journal
+Health
+Shopping
+People
+Learning
+Inbox

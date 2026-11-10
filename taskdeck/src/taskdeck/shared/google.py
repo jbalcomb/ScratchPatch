@@ -141,6 +141,20 @@ class ServiceAccountCredentials:
             return self._token
 
 
+def key_problems(settings: dict[str, Any], name: str = "service_account_json") -> list:
+    """Offline check that the job's service-account key setting can be used (a blank one is left to the
+    job's required-field check). Returns taskdeck.core Problems."""
+    from taskdeck.core import Problem
+
+    key_text = (settings.get(name) or "").strip()
+    if key_text:
+        try:
+            ServiceAccountKey.from_json(key_text).check()
+        except GoogleError as exc:
+            return [Problem(str(exc))]
+    return []
+
+
 def a1_range(tab: str, cells: str = "") -> str:
     """Quote a sheet name for A1 notation: Sheet1 -> 'Sheet1'!A1, or 'Sheet1' (the whole tab)."""
     return "'" + tab.replace("'", "''") + "'" + (f"!{cells}" if cells else "")
@@ -168,6 +182,23 @@ class SheetsClient:
         except HttpError as exc:
             raise self._explain(exc) from None
         return data.get("values", []) if isinstance(data, dict) else []
+
+    def get_grid(self, rng: str) -> list[list[tuple[str, bool]]]:
+        """A range as displayed, with formatting: each cell as (text, struck through)."""
+        url = (f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}?" + urllib.parse.urlencode({
+            "ranges": rng, "fields": "sheets.data.rowData.values(formattedValue,effectiveFormat.textFormat.strikethrough)"}))
+        try:
+            data = get_json(url, headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+        rows = []
+        for sheet in (data.get("sheets") or []) if isinstance(data, dict) else []:
+            for block in sheet.get("data") or []:
+                for row in block.get("rowData") or []:
+                    rows.append([(str(c.get("formattedValue", "")),
+                                  bool(c.get("effectiveFormat", {}).get("textFormat", {}).get("strikethrough")))
+                                 for c in row.get("values") or []])
+        return rows
 
     def append_row(self, rng: str, row: list[Any]) -> None:
         url = self._url(rng, ":append", valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS")
@@ -208,6 +239,26 @@ class SheetsClient:
         try:
             post_json(f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}:batchUpdate", body,
                       headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+
+    def add_tab(self, title: str) -> bool:
+        """Create an empty tab at the end, unless one with that title exists. True if it was created."""
+        tabs = self.tabs()
+        if any(t.get("title") == title for t in tabs):
+            return False
+        body = {"requests": [{"addSheet": {"properties": {"title": title, "index": len(tabs)}}}]}
+        try:
+            post_json(f"{SHEETS_API}/{urllib.parse.quote(self.spreadsheet_id)}:batchUpdate", body,
+                      headers=self._headers(), timeout=self.timeout)
+        except HttpError as exc:
+            raise self._explain(exc) from None
+        return True
+
+    def clear(self, rng: str) -> None:
+        """Empty the cells in ``rng`` (values only; formatting stays)."""
+        try:
+            post_json(self._url(rng, ":clear"), {}, headers=self._headers(), timeout=self.timeout)
         except HttpError as exc:
             raise self._explain(exc) from None
 

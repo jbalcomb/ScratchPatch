@@ -77,6 +77,10 @@ jobs:
           grep -aq "com/it_nomads/fluttersecurestorage" all.dex || { echo "::error::flet-secure-storage missing from the APK"; exit 1; }
           grep -aq "io/flutter/plugins/localauth" all.dex || { echo "::error::flet-local-auth missing from the APK"; exit 1; }
           grep -aq "com/baseflow/permissionhandler" all.dex || { echo "::error::flet-permission-handler missing from the APK"; exit 1; }
+          grep -q "android.permission.RECORD_AUDIO" perms.txt || { echo "::error::microphone permission missing"; exit 1; }
+          grep -aq "com/llfbandit/record" all.dex || { echo "::error::flet-audio-recorder missing from the APK"; exit 1; }
+          grep -q "android.permission.CAMERA" perms.txt || { echo "::error::camera permission missing"; exit 1; }
+          grep -aq "io/flutter/plugins/camera" all.dex || { echo "::error::flet-camera missing from the APK"; exit 1; }
       - name: Verify the background service made it into the APK
         run: |
           grep -q "android.permission.FOREGROUND_SERVICE_DATA_SYNC" perms.txt || { echo "::error::foreground service permission missing"; exit 1; }

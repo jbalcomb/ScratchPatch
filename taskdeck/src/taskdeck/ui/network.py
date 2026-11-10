@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator
 
 from taskdeck.core import Cancelled
-from taskdeck.shared import http
+from taskdeck.shared import http, tailscale
 from taskdeck.shared.files import is_android
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ class NetworkMonitor:
         self.types: list[str] | None = None  # e.g. ["wifi"], ["mobile", "vpn"]; None = unknown
         self._changed = threading.Condition()
         self._service = None
+        self.listeners: list[Callable[[list[str]], None]] = []  # told about every change (worker thread or UI)
 
     async def start(self) -> None:
         """Ask the phone once, then follow its change events."""
@@ -38,6 +39,7 @@ class NetworkMonitor:
         try:
             import flet as ft
 
+            tailscale.vpn_active = lambda: None if self.types is None else "vpn" in self.types
             self._service = ft.Connectivity(on_change=lambda e: self.set_types([t.value for t in e.connectivity]))
             self.set_types([t.value for t in await self._service.get_connectivity()])
         except Exception:  # unknown network: nothing is held back
@@ -52,6 +54,11 @@ class NetworkMonitor:
         if changed:
             cut = http.abort_connections() if switched else 0  # don't wait for the old network to time out
             self.app.tasks.log_running("network", types=self.types, connections_cut=cut)
+            for listener in list(self.listeners):
+                try:
+                    listener(self.types)
+                except Exception:  # a job's listener must not break network tracking
+                    pass
 
     @property
     def on_wifi(self) -> bool:

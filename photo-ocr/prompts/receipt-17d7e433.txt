@@ -1,0 +1,12 @@
+These photos are one store receipt, in order from top to bottom. They may overlap: a line that appears
+in two photos is still one line, so list it once.
+
+Reply with JSON only, in this shape:
+{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
+ "subtotal": 0.00, "tax": 0.00, "total": 0.00}
+
+- price is the amount printed for that line (the line total, not the unit price).
+- Discounts, coupons and savings printed as their own lines are items with a negative price.
+- Bottle deposits and bag fees are items.
+- Leave out payment lines, change, card numbers and loyalty balances.
+- Use null for anything you can't read; don't guess.

@@ -117,6 +117,83 @@ def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
     assert not screen.checking and screen.blocked
 
 
+def test_settings_the_online_check_fixed_are_saved(tmp_path, monkeypatch):
+    from taskdeck.core import Problem
+    from taskdeck.jobs import budget
+
+    app = fake_app(tmp_path)
+    saved = {"budget_url": "http://100.83.88.59:8092", "sheet_id": "s"}
+    app.job_settings = lambda job_id: dict(saved)
+    app.save_job_settings = lambda job_id, values: saved.update(values)
+    app.page = SimpleNamespace(run_thread=lambda fn: fn())
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen = JobScreen(app, budget.PLUGIN)
+    screen.check_ready()
+    assert saved == {"budget_url": "https://ws.ts.net", "sheet_id": "s"}
+    assert not screen.blocked
+
+
+def settings_screen(monkeypatch, check):
+    """A budget settings screen with no page, its checks replaced by ``check``; returns (screen, saved)."""
+    from taskdeck.jobs import budget
+    from taskdeck.ui import settings_view
+
+    saved = {}
+    app = SimpleNamespace(job_settings=lambda job_id: {"budget_url": "https://old.ts.net"},
+                          save_job_settings=lambda job_id, v: saved.update(v), toast=lambda m: None,
+                          back=lambda: None, page=SimpleNamespace(run_thread=lambda fn: fn()))
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: check(s))
+    screen = settings_view.JobSettingsScreen(app, budget.PLUGIN)
+    screen.view.update = lambda: None
+    return screen, saved
+
+
+def report_text(screen):
+    import flet as ft
+
+    return " ".join(c.value for c in screen.report.controls if isinstance(c, ft.Text))
+
+
+def test_save_checks_first_and_keeps_working_settings(monkeypatch):
+    from taskdeck.core import Problem
+
+    def check(s):
+        if s["budget_url"] == "https://good.ts.net":
+            return [Problem.passed("Budget service at https://good.ts.net: 3 accounts")]
+        return [Problem("The budget service didn't answer at https://bad.ts.net", fix="recheck")]
+
+    screen, saved = settings_screen(monkeypatch, check)
+    screen.fields["budget_url"].value = "bad.ts.net/upload"
+    screen.save()
+    assert saved == {}  # not saved: the old, working address stays
+    assert "don't work yet" in report_text(screen) and "didn't answer" in report_text(screen)
+    screen.save_anyway()
+    assert saved["budget_url"] == "https://bad.ts.net"  # tidied, saved on request
+
+    saved.clear()
+    screen.fields["budget_url"].value = "good.ts.net"
+    screen.test()
+    assert saved == {} and "✓ Budget service at https://good.ts.net" in report_text(screen)
+    screen.save()
+    assert saved["budget_url"] == "https://good.ts.net"
+
+
+def test_test_settings_fills_in_what_it_fixed(monkeypatch):
+    from taskdeck.core import Problem
+
+    screen, saved = settings_screen(monkeypatch, lambda s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen.fields["budget_url"].value = "http://100.83.88.59:8092"
+    screen.test()
+    assert screen.fields["budget_url"].value == "https://ws.ts.net" and saved == {}
+    assert "Tap Save to keep these settings" in report_text(screen)
+
+
 def test_job_without_inputs_and_shared_settings(tmp_path):
     from taskdeck.jobs.daily_log import reconcile_job
 
@@ -225,3 +302,71 @@ def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inpu
     assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS"
     assert screen.notes["drive"].visible and not screen.notes["exe"].visible
     assert screen.notes["output"].value == f"Saves into {tmp_path / 'MOM' / '_WIZARDS'}"
+
+
+def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
+    """Add… on a photo field (Receipt capture) opens the photo grid, which accepts only the field's types,
+    and the photos picked are added in the order picked."""
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.PhotoPicker, "pick",
+                        classmethod(lambda cls, app, on_pick, **kw: opened.update(kw, on_pick=on_pick)))
+    monkeypatch.setattr(job_view.FileBrowser, "pick_file", classmethod(lambda *a, **kw: opened.update(file_browser=True)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert "file_browser" not in opened and opened["title"] == "Choose Receipt photos"
+    assert opened["accept"]("IMG_1.JPG") and opened["accept"]("s.webp") and not opened["accept"]("clip.heic")
+    opened["on_pick"]([tmp_path / "top.jpg", tmp_path / "bottom.jpg"], False)
+    assert fc.value.splitlines() == [str(tmp_path / "top.jpg"), str(tmp_path / "bottom.jpg")]
+    assert opened["noun"] == ""  # a receipt's photos are one receipt: one Add button
+
+    screen = JobScreen(app, photos.PRODUCT)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert opened["noun"] == "product"
+    opened["on_pick"]([tmp_path / "milk.jpg", tmp_path / "eggs.jpg"], True)
+    assert fc.value == f"{tmp_path / 'milk.jpg'}\n\n{tmp_path / 'eggs.jpg'}"
+
+
+def test_take_photos_opens_the_camera_and_adds_its_photos(tmp_path, monkeypatch):
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.CameraCapture, "open",
+                        classmethod(lambda cls, app, on_done, **kw: opened.update(kw, on_done=on_done)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    take = fc.control.controls[1].controls[0]
+    assert take.content == "Take photos"
+    take.on_click(None)
+    assert opened["guides"] == "receipt" and opened["title"] == "Receipt photos"
+    opened["on_done"]([tmp_path / "1.jpg", tmp_path / "2.jpg"])
+    assert fc.value.splitlines() == [str(tmp_path / "1.jpg"), str(tmp_path / "2.jpg")]
+    product = JobScreen(app, photos.PRODUCT).fields["photos"]
+    assert [b.content for b in product.control.controls[1].controls] == ["Add…"]
+
+
+def test_web_addresses_in_results_are_links(tmp_path):
+    from taskdeck.jobs.photo_ocr import photos
+
+    app = fake_app(tmp_path)
+    opened = []
+    app.open_url = opened.append
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    spans = screen._linked("Review them on https://ws.example.ts.net:8444/review/17.")
+    assert [s.text for s in spans] == ["Review them on ", "https://ws.example.ts.net:8444/review/17", "."]
+    spans[1].on_click(None)
+    assert opened == ["https://ws.example.ts.net:8444/review/17"]
+    assert [s.text for s in screen._linked("no links here")] == ["no links here"]

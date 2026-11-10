@@ -14,6 +14,8 @@ checking, bills checking, savings) and what's coming due, so the bills account d
 ## Architecture
 
 - **Store:** one SQLite file on the AI Workstation (`~/budget/budget.db`): `transactions` and `imports`.
+- **Budget list:** the SnapShot tab of the budget Google Sheet, read by the TaskDeck budget jobs (the phone
+  writes the results back to the sheet; this service never touches Google).
 - **Input:** Bank of America CSV exports, uploaded from the phone or any computer through the upload page,
   or saved into the drop folder.
 - **Categories:** a hand-edited rules file. Unmatched merchants get suggested rules from the local llama.cpp,
@@ -28,13 +30,22 @@ checking, bills checking, savings) and what's coming due, so the bills account d
   undo / redo / rebuild from the archived files, backups before each rebuild.
 - Docker Compose deployment behind Tailscale Serve.
 
+- Budget sheet link-up: rule categories are named after the budget sheet's SnapShot tab, and a read-only
+  feed (`GET /api/transactions`) serves the TaskDeck jobs **Reconcile budget month** and **Update budget
+  timeline** (upcoming bills and balances per account; see `taskdeck/docs/jobs/budget.md`).
+
 ## Next (candidates, one at a time)
 
-1. **Upcoming bills:** each recurring bill with its usual amount and day of the month, so a shortfall shows
-   before it hits (the bills account overdrew three times in September 2026).
-2. **Budget view on the phone:** monthly summary, the upload list with an undo button, and accepting
+1. **Budget view on the phone:** monthly summary, the upload list with an undo button, and accepting
    suggested rules, instead of running commands over SSH.
-3. **Nightly copy of the store**, keeping the last 7.
+2. **Nightly copy of the store**, keeping the last 7.
+3. **Each account's "data through" date, with a warning when one is behind** (e.g. Save's export not uploaded,
+   so its side of a transfer is missing). First handle the bank's **empty exports**: with no transactions in
+   the period, Bank of America downloads a file with a line of text instead of an empty but well-formed CSV,
+   which the upload refuses today. (Noted 2026-11-06.)
+4. **Later, to consider (noted 2026-11-02 from photo-ocr):** move the store to Postgres, and read photo-ocr's
+   receipt data to tag each transaction as having a receipt photo or not. Whether photo-ocr's store moves to
+   the same Postgres is part of that decision (see photo-ocr/README.md, Later).
 
 ## Scope guard
 
