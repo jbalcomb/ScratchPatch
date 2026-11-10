@@ -10,12 +10,13 @@ job model is decided (docs/PLAN.md, "Decisions to make first").
 
 ## Build (Windows)
 
-Needs Visual Studio 2022 (or the Build Tools) with the **Desktop development with C++** workload, which
-includes CMake and the Windows SDK. Dear ImGui is downloaded by CMake (pinned to v1.92.9); nothing else to
-install.
+Needs Visual Studio 2022 or newer (or its Build Tools) with the **Desktop development with C++** workload,
+which includes CMake and the Windows SDK. Dear ImGui is downloaded by CMake (pinned to v1.92.9); nothing else
+to install. Run these in a "Developer Command Prompt" (or any prompt where `cmake` is found); CMake picks
+the newest Visual Studio installed.
 
 ```bat
-cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake -B build -A x64
 cmake --build build --config Release
 build\Release\TaskDeck.exe
 ```
