@@ -47,7 +47,7 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 |---|---|
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
 | **Home Jobs**, **Discord: Capture Channel** | Start jobs on the workstation and follow them: pick a Discord channel by name, see how much is captured, start a full-history or new-messages capture, then watch its log or cancel it. Needs [Home Runner](../home-runner/) on the workstation, reachable over Tailscale. |
-| **Send to Devices** | Send text to your other devices through [Courier](../courier/): `clip` puts it on their clipboards, `agent-inbox` notifies; each device's own policy decides. Signed on the phone (pure-Python Ed25519), never kept in run history. Setup: on the gateway machine, `python -m courier add-sender phone --kind human --channels clip,agent-inbox --paste-string`, then paste the line it prints into the job's settings. |
+| **Send to Devices** | Send text to your other devices through [Courier](../CrossMess/): `clip` puts it on their clipboards, `agent-inbox` notifies; each device's own policy decides. Signed on the phone (pure-Python Ed25519), never kept in run history. Setup: on the gateway machine, `python -m courier add-sender phone --kind human --channels clip,agent-inbox --paste-string`, then paste the line it prints into the job's settings. |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
 Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:

@@ -1,4 +1,4 @@
-"""Send to Devices: put text on your other devices through Courier (courier/ in this repo).
+"""Send to Devices: put text on your other devices through Courier (CrossMess/ in this repo).
 
 Each device's own policy decides what happens: the clip channel copies to the clipboard, others
 notify or land in an inbox. The message is signed on the phone and screened by the gateway; it is

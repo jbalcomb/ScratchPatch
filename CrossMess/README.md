@@ -160,7 +160,7 @@ Give each agent its own sender, so it can be revoked on its own and devices can 
 Then register it as a stdio MCP server. For Claude Code:
 
 ```powershell
-claude mcp add courier --scope user --env PYTHONPATH=C:\path\to\courier\src -- C:\path\to\courier\.venv\Scripts\python.exe -m courier mcp --creds C:\Users\you\.config\courier\claude.sender.json
+claude mcp add courier --scope user --env PYTHONPATH=C:\path\to\CrossMess\src -- C:\path\to\CrossMess\.venv\Scripts\python.exe -m courier mcp --creds C:\Users\you\.config\courier\claude.sender.json
 ```
 
 The tool, `send_to_devices`, offers only the sender's channels and takes plain text up to 3,000
