@@ -15,7 +15,22 @@ used for.
 
 ## Decisions to make first (ask the user)
 
-These shape everything after the window; none is decided yet.
+These shape everything after the window. **Decided 2026-11-10** (the options considered are kept below):
+
+1. **How jobs run: c, the mix.** The UI and core (palette, history, settings, background tasks) are C++. Jobs
+   are the phone app's Python jobs, run in a separate Python process that talks JSON over stdin/stdout. Jobs
+   where speed matters get C++ versions (Extract archive first, on 7-Zip's C++ library).
+2. **Shared state: separate per device.** Pins, history and settings are local files on this PC. Syncing can
+   come later.
+3. **Credentials: Windows Credential Manager**, protected by the Windows sign-in. No Windows Hello prompt.
+4. **First jobs: Extract archive, Parse executable, and Send to Devices** (CrossMess, the old Courier). Send to
+   Devices does what the phone job does: sign a message, post it to the gateway, Test connection. It
+   doesn't show the inbox or run the device agent. That job (`taskdeck/src/taskdeck/jobs/courier`) and
+   CrossMess itself are on the `CrossMess` branch, not on `main` yet.
+5. **Distribution: a plain exe with an update check.** GitHub Actions builds it. On start, the app checks for a
+   newer release and offers to replace itself. The Python jobs come with each release.
+
+The questions as they were asked:
 
 1. **How jobs run.** The phone app's jobs are Python (`taskdeck/src/taskdeck/jobs`, contract in
    `taskdeck/src/taskdeck/core/plugin.py`: fields, settings, a pipeline of steps, an optional commit).

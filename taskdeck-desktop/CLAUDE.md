@@ -5,12 +5,26 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
 
 ## Start here
 
-* **Ask the user the questions in docs/PLAN.md, "Decisions to make first"**, before building the job model:
-  above all how jobs run (reuse the Python jobs, rewrite in C++, or a mix). Don't pick one yourself.
+* The decisions in docs/PLAN.md, "Decisions to make first", were made on 2026-11-10. Follow them:
+  * a C++ core with Python jobs in a separate process (JSON over stdin/stdout);
+  * local state on each device;
+  * keys in Credential Manager;
+  * first jobs: Extract archive, Parse executable, Send to Devices;
+  * a plain exe with an update check.
+
+  Ask before changing any of them.
 * The app builds and opens a window with the shell (navigation, tiles, job list, history, settings with
-  performance numbers, Ctrl+K palette). It was compiled with MinGW from Linux but not run on Windows yet:
-  build it with Visual Studio 2022 (README) and check it starts, resizes, sleeps when idle (CPU ~0%), and
-  scales on a high-DPI screen.
+  performance numbers, Ctrl+K palette).
+* It was checked on Windows 10 on 2026-11-10, built with Visual Studio 2022 (MSVC 19.44) with no warnings:
+  * it starts and resizes;
+  * idle CPU is 0.00% (also after resizing);
+  * memory is 26 MB working set and 16 MB private;
+  * it scales correctly at 150% on a 4K screen;
+  * it closes when its window is closed.
+
+  ImGui's default pixel font looks blocky when scaled. Loading Segoe UI (TTF) is an open polish item.
+* When measuring window sizes from a script, make the script per-monitor DPI aware
+  (`SetThreadDpiAwarenessContext`). Otherwise Windows scales the sizes it reports.
 
 ## The phone app, for reference (`../taskdeck`)
 
