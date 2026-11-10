@@ -3,6 +3,9 @@ project(TaskDeckDesktop LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# MSVC: the C runtime linked into the exe (no Visual C++ redistributable needed). Set for every target, so
+# Dear ImGui and the app agree (a mismatch fails to link with unresolved __imp_ symbols).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # Dear ImGui, pinned (no package manager needed: CMake fetches the sources at configure time).
 include(FetchContent)
@@ -30,7 +33,6 @@ target_link_libraries(TaskDeck PRIVATE imgui d3d11 dxgi d3dcompiler dwmapi psapi
 target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 if(MSVC)
     target_compile_options(TaskDeck PRIVATE /W4 /utf-8)
-    set_property(TARGET TaskDeck PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     target_compile_options(TaskDeck PRIVATE -Wall -Wextra)
     target_link_options(TaskDeck PRIVATE -static -municode)
