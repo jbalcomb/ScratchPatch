@@ -5,6 +5,7 @@ A patch of scratch projects: proofs of concept and MVPs, each in its own folder.
 | Project | What it is |
 |---|---|
 | [taskdeck/](taskdeck/) | TaskDeck: an Android app (Python/Flet) that runs pluggable jobs, with a command palette and pinned tiles. First real job: Daily Log → Google Sheet. |
+| [taskdeck-desktop/](taskdeck-desktop/) | TaskDeck Desktop: TaskDeck for Windows in C++, first with Dear ImGui, later measured against a WinUI 3 / Windows App SDK build. |
 | [budget/](budget/) | Budget: upload Bank of America exports from the phone; transactions land in SQLite, categorized by a hand-edited rules file, with balance checks and undo. Runs in Docker on the AI Workstation behind Tailscale. |
 | [voice-rec/](voice-rec/) | Voice notes: recorded in TaskDeck on the phone, then transcribed (Whisper), categorized (llama.cpp) and archived in Postgres, an Obsidian vault and the knowledge graph on the AI Workstation. |
 | [tab-ledger/](tab-ledger/) | Tab Ledger: a Chrome extension that records every window and tab, summarizes each page, tracks scrolling and copy/paste, and writes a script that reopens them. |
