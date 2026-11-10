@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e . pytest  # the dependencies in pyproject.toml, so this list never drifts from it
+      - run: pip install -e . pytest pillow  # the dependencies in pyproject.toml, so this list never drifts from it; pillow: test photos
       - name: Cache the 7-Zip engine (Linux build, for the archive tests)
         id: engine
         uses: actions/cache@v4
