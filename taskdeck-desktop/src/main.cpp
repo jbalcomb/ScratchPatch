@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <cwchar>
+#include <string>
 
 static ID3D11Device* g_device = nullptr;
 static ID3D11DeviceContext* g_context = nullptr;
@@ -27,6 +28,21 @@ static void cleanup_device();
 static void create_render_target();
 static void cleanup_render_target();
 static LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+
+// Segoe UI, the Windows UI font, from the Windows fonts folder. Dear ImGui 1.92 rasterizes glyphs at the size
+// they are drawn (base size x DPI scale), so text stays sharp at any scaling. If the font is missing, ImGui's
+// built-in font is used.
+static void load_ui_font(ImGuiIO& io, ImGuiStyle& style) {
+    wchar_t dir[MAX_PATH];
+    const UINT n = ::GetWindowsDirectoryW(dir, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    char path[MAX_PATH * 3];
+    const std::wstring wpath = std::wstring(dir) + L"\\Fonts\\segoeui.ttf";
+    if (::GetFileAttributesW(wpath.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    if (!::WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, path, sizeof(path), nullptr, nullptr)) return;
+    style.FontSizeBase = 16.0f;
+    io.Fonts->AddFontFromFileTTF(path, style.FontSizeBase);
+}
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     const bool continuous = cmdline && std::wcsstr(cmdline, L"--continuous");
@@ -56,6 +72,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     style.ScaleAllSizes(scale);
     style.FontScaleDpi = scale;
     style.WindowRounding = style.FrameRounding = 6 * scale;
+    load_ui_font(io, style);
 
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_device, g_context);

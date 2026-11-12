@@ -22,7 +22,12 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   * it scales correctly at 150% on a 4K screen;
   * it closes when its window is closed.
 
-  ImGui's default pixel font looks blocky when scaled. Loading Segoe UI (TTF) is an open polish item.
+  The UI font is Segoe UI from the Windows fonts folder, at 16 px before DPI scaling (`load_ui_font` in
+  `main.cpp`).
+* Unexplained, seen once (2026-11-12): the window showed blank white 3 s after launch. It didn't happen again
+  in 4 more launches, including a freshly copied exe sampled every 100 ms from 0.35 s on. If you see it, find
+  out first whether the app ever presented a frame (the frame counter, or a debugger) before changing
+  anything. A dark window-class background would only hide it.
 * When measuring window sizes from a script, make the script per-monitor DPI aware
   (`SetThreadDpiAwarenessContext`). Otherwise Windows scales the sizes it reports.
 
