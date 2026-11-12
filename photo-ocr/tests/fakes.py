@@ -65,7 +65,7 @@ class Server:
         self.httpd.server_close()  # so later connections are refused, not left waiting
 
 
-RECEIPT = {"store": "Giant Eagle", "location": "Mentor, OH", "date": "2026-10-12", "tax": 0.42, "total": 7.19,
+RECEIPT = {"store": "Giant Eagle", "location": "Mentor, OH", "date_printed": "Oct 12, 2026 14:03", "tax": 0.42, "total": 7.19,
            "items": [{"name": "BANANAS", "quantity": 1, "price": 1.29}, {"name": "MILK 2% GAL", "quantity": 1, "price": 3.99},
                      {"name": "BREAD WHT", "quantity": 1, "price": 2.49}, {"name": "BONUS SAVINGS", "price": -1.00}]}
 
@@ -79,6 +79,7 @@ class FakeModel:
         self.by_model = {}
         self.product = {"name": "Whole milk", "brand": "Great Value", "size": "1 gal"}
         self.product_by_model = {}
+        self.ask_reply = "It reads 11/07/26: November 7, 2026."  # a free question (no answer shape asked for)
         self.pick = None
         self.fail = False
         self.server = Server(self.handle)
@@ -95,6 +96,8 @@ class FakeModel:
             reply = self.product_by_model.get(req.get("model"), self.product)
         elif "Which of these catalog products" in text:
             reply = {"product_id": self.pick}
+        elif "response_format" not in req:  # a free question from the review page
+            return 200, {"choices": [{"message": {"content": self.ask_reply}}]}, None
         else:
             reply = self.by_model.get(req.get("model"), self.receipt)
         return 200, {"choices": [{"message": {"content": json.dumps(reply)}}]}, None

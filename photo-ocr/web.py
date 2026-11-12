@@ -17,6 +17,7 @@ import re
 import sys
 import threading
 import traceback
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -24,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import catalog  # noqa: E402
 import pages  # noqa: E402
+import timing  # noqa: E402
 import reconcile  # noqa: E402
 from immich import LocalPhotos  # noqa: E402
 from picker import Picker, PickerError  # noqa: E402
@@ -74,10 +76,14 @@ class App:
     def __init__(self, service, picker=None):
         self.s = service
         self.picker = picker
+        self.stats = timing.Stats()
         self.picker_threads = {}
         self.routes = [
             ("GET", r"/api/health", self.health),
             ("GET", r"/api/summary", lambda m, q, b, h: (200, self.s.counts())),
+            ("POST", r"/api/timings", self.phone_timings),
+            ("GET", r"/api/stats", lambda m, q, b, h: (200, self.stats.summary())),
+            ("GET", r"/api/errors", lambda m, q, b, h: (200, self.s.error_report())),
             ("POST", r"/api/receipts", self.post_receipt),
             ("GET", r"/api/receipts", self.get_receipts),
             ("GET", r"/api/receipts/(\d+)", lambda m, q, b, h: (200, self.s.receipt(int(m[1])))),
@@ -86,6 +92,8 @@ class App:
             ("POST", r"/api/receipts/(\d+)/photos", self.post_receipt_photos),
             ("POST", r"/api/receipts/(\d+)/reparse", self.reparse),
             ("POST", r"/api/receipts/(\d+)/merge", self.merge),
+            ("GET", r"/api/receipts/(\d+)/runs", lambda m, q, b, h: (200, {"runs": self.s.receipt_runs(int(m[1]))})),
+            ("POST", r"/api/receipts/(\d+)/ask", lambda m, q, b, h: (200, self.s.ask(int(m[1]), self.json(b).get("question")))),
             ("GET", r"/api/images/(\d+)", self.image),
             ("GET", r"/api/items/unmatched", lambda m, q, b, h: (200, {"items": self.s.unmatched_items(q.get("limit", 50))})),
             ("POST", r"/api/items/(\d+)/match", self.match_item),
@@ -107,7 +115,7 @@ class App:
             ("GET", r"/manifest.webmanifest", lambda m, q, b, h: (200, (pages.MANIFEST.encode(), "application/manifest+json"))),
             ("GET", r"/sw.js", lambda m, q, b, h: (200, (pages.SERVICE_WORKER.encode(), "text/javascript"))),
             ("GET", r"/icon.svg", lambda m, q, b, h: (200, (pages.ICON.encode(), "image/svg+xml"))),
-            ("GET", r"/(|capture|review|review/\d+|items|products|products/\d+|shopping|reconcile|picker)", self.page),
+            ("GET", r"/(|capture|review|review/\d+|items|products|products/\d+|shopping|reconcile|picker|stats)", self.page),
         ]
 
     # ---- helpers ----
@@ -137,6 +145,17 @@ class App:
         if any(re.fullmatch(p, path) for _, p, _ in self.routes):
             raise HttpError(405, f"{method} isn't allowed here")
         raise HttpError(404, f"nothing at {path}")
+
+    def phone_timings(self, m, q, b, h):
+        """What a page measured on the phone: its load time and each photo's and request's, network included."""
+        data = self.json(b)
+        page = str(data.get("page") or "?")[:80]
+        page_ms = data.get("page_ms") if isinstance(data.get("page_ms"), (int, float)) else None
+        items = [(str(i.get("u"))[:120], float(i.get("ms") or 0), int(i.get("kb") or 0))
+                 for i in (data.get("items") or [])[:500] if isinstance(i, dict)]
+        self.stats.add_phone(page, page_ms, items)
+        log.info(timing.phone_line(page, page_ms, items))
+        return 200, {"ok": True}
 
     # ---- receipts ----
 
@@ -177,7 +196,11 @@ class App:
         return 200, self.s.receipt(into)
 
     def image(self, m, q, b, h):
-        path = self.s.image_path(int(m[1]))
+        """A stored photo; ``?w=400`` a copy at most that wide (thumbnails and page views), else the original."""
+        width = q.get("w")
+        if width is not None and not str(width).isdigit():
+            raise HttpError(400, "w must be a width in pixels")
+        path = self.s.image_resized(int(m[1]), int(width)) if width else self.s.image_path(int(m[1]))
         ctype = {".png": "image/png", ".webp": "image/webp", ".heic": "image/heic"}.get(path.suffix.lower(), "image/jpeg")
         return 200, (path.read_bytes(), ctype)
 
@@ -305,6 +328,8 @@ def make_handler(app):
 
         def _do(self, method):
             url = urlparse(self.path)
+            t0 = time.perf_counter()
+            timing.start()
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > MAX_BYTES:
@@ -336,6 +361,19 @@ def make_handler(app):
             self.send_header("Cache-Control", "no-store" if ctype.startswith(("application/json", "text/html")) else "max-age=86400")
             self.end_headers()
             self.wfile.write(data)
+            self._timed(method, url, status, len(data), t0)
+
+        def _timed(self, method, url, status, nbytes, t0):
+            """One log line per request with its time and its parts; kept for /api/stats."""
+            if url.path == "/api/timings":
+                return  # logged as the phone's line instead
+            ms = (time.perf_counter() - t0) * 1000
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            parts_ = timing.parts()
+            app.stats.add(method, url.path, query, status, nbytes, ms, parts_)
+            detail = f" ({timing.describe(parts_)})" if parts_ else ""
+            log.info("%s %s %s %s KB %.0f ms%s", method, url.path + (f"?{url.query}" if url.query else ""), status,
+                     round(nbytes / 1024), ms, detail)
 
         def do_GET(self):
             self._do("GET")

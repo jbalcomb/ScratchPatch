@@ -4,18 +4,21 @@ live pipeline progress and the result."""
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import flet as ft
 
-from taskdeck.core import Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.core import GOOGLE_ACCOUNT, Context, FieldKind, JobPlugin, Problem, RunReport, Stage, Task
+from taskdeck.core.tasks import CANCELLED, FAILED
 from taskdeck.shared import photos
 from taskdeck.shared.gdrive import DriveLocation
 
 from . import task_view, thumbnails
 from .common import plugin_icon, screen_view
 from .file_browser import FileBrowser
+from .camera_capture import CameraCapture
 from .photo_picker import PhotoPicker
 from .forms import FieldControl
 
@@ -29,6 +32,9 @@ STAGE_COLOR = {
     Stage.PRESENT: ft.Colors.PURPLE,
 }
 
+
+
+URL = re.compile(r"https?://[^\s<>\"')]+[^\s<>\"').,;:!?]")
 
 class JobScreen:
     def __init__(self, app: "TaskDeckApp", plugin: JobPlugin, preset: dict[str, Any] | None = None):
@@ -46,7 +52,7 @@ class JobScreen:
 
         self.fields = {
             f.name: FieldControl(f, initial.get(f.name, f.default), on_change=self.invalidate, on_submit=self.run,
-                                 browse=self._browse_file)
+                                 browse=self._browse_file, camera=self._take_photos)
             for f in plugin.fields
         }
         # Notes under fields that depend on the inputs (JobPlugin.field_notes), e.g. where the output goes.
@@ -69,6 +75,7 @@ class JobScreen:
         tasks = getattr(app, "tasks", None)
         latest = tasks.latest(plugin.id) if tasks else None
         self.task: Task | None = latest if latest and latest.running else None
+        self._retries: dict[int, tuple] = {}  # task id -> (title, work, button label), see _start_task
         if tasks:
             tasks.listeners.append(self._on_task)
         self.steps_list = ft.Column([self._step_row(s) for s in self.pipeline], spacing=2)
@@ -247,6 +254,26 @@ class JobScreen:
                               accept=(lambda name: name.lower().endswith(exts)) if exts else (lambda name: True),
                               kind=" or ".join(exts) + " files" if exts else "files")
 
+    def _linked(self, text: str) -> list[ft.TextSpan]:
+        """Text with every web address in it a tappable link (opens in the browser)."""
+        spans: list[ft.TextSpan] = []
+        at = 0
+        for m in URL.finditer(text):
+            if m.start() > at:
+                spans.append(ft.TextSpan(text[at:m.start()]))
+            url = m.group(0)
+            spans.append(ft.TextSpan(url, style=ft.TextStyle(color=ft.Colors.PRIMARY, decoration=ft.TextDecoration.UNDERLINE),
+                                     on_click=lambda e, url=url: self.app.open_url(url)))
+            at = m.end()
+        if at < len(text):
+            spans.append(ft.TextSpan(text[at:]))
+        return spans
+
+    def _take_photos(self, fc: FieldControl) -> None:
+        """Take photos (fields with Field.camera): TaskDeck's camera; the photos join the field in order."""
+        CameraCapture.open(self.app, lambda paths: fc.picked_many([str(p) for p in paths]),
+                           title=fc.field.label, guides=fc.field.camera)
+
     def clear(self, e=None) -> None:
         for fc in self.fields.values():
             fc.value = fc.field.default
@@ -328,9 +355,10 @@ class JobScreen:
 
     # ---- background tasks ------------------------------------------------------------
 
-    def _start_task(self, title: str, work) -> Task:
+    def _start_task(self, title: str, work, retry_label: str = "", inputs: dict[str, Any] | None = None) -> Task:
         """``Context.services["start_task"]``: run work(task) in the background under the job's Wi-Fi-only
-        setting, shown on this screen (and in the notification) like Extract Archive."""
+        setting, shown on this screen (and in the notification) like Extract Archive. With ``retry_label``
+        a failed or stopped task offers that button (e.g. "Retry upload"), which runs ``work`` again."""
         network, settings_id = getattr(self.app, "network", None), self.plugin.settings_id
 
         def run(t: Task) -> str:
@@ -339,8 +367,13 @@ class JobScreen:
             with network.scope(settings_id, lambda: t.cancel_requested, t.set_note):  # Wi-Fi only
                 return work(t)
 
-        self.task = self.app.tasks.start(title, self.plugin.id, run, inputs=self.raw_inputs())
-        return self.task
+        inputs = dict(self.raw_inputs() if inputs is None else inputs)
+        task = self.app.tasks.start(title, self.plugin.id, run, inputs=inputs)
+        if retry_label:
+            self._retries[task.id] = (title, work, retry_label)
+        self.task = task
+        self._render_task()  # the task may have finished already (and _on_task ran before the retry was known)
+        return task
 
     def _on_task(self, task: Task) -> None:
         if task.job_id != self.plugin.id or (self.task and task is not self.task and self.task.running):
@@ -358,6 +391,13 @@ class JobScreen:
             self.task_box.controls = task_view.running_rows(t, self.cancel_task)
         else:
             buttons: list[ft.Control] = [ft.TextButton("Close", on_click=self.dismiss_task)]
+            retry = self._retries.get(t.id) if t.status in (FAILED, CANCELLED) else None
+            if retry:
+                buttons.insert(0, ft.FilledTonalButton(retry[2], icon=ft.Icons.REFRESH,
+                                                       on_click=lambda e: self.app.page.run_task(self.retry_task, t)))
+            if t.status == FAILED and t.fix == GOOGLE_ACCOUNT and hasattr(self.app, "google"):
+                buttons.insert(0, ft.FilledButton("Connect again", icon=ft.Icons.LOGIN,
+                                                  on_click=lambda e: self.connect_again(t)))
             if isinstance(t.result, DriveLocation):
                 url = task_view.drive_url(t.result)
                 buttons.insert(0, ft.FilledTonalButton("Open in Drive", icon=ft.Icons.OPEN_IN_NEW,
@@ -378,6 +418,29 @@ class JobScreen:
             content=ft.Text("What's already done stays."),
             actions=[ft.TextButton("Keep going", on_click=lambda e: self.app.page.pop_dialog()),
                      ft.FilledButton("Stop", on_click=stop)]))
+
+    async def retry_task(self, t: Task) -> None:
+        """Run a failed or stopped task's work again (e.g. upload the folder already on the phone), after
+        unlocking the accounts it signs in with."""
+        retry = self._retries.get(t.id)
+        if not retry or (self.task and self.task.running):
+            return
+        if not await self._unlock_accounts(t.inputs):
+            return
+        title, work, label = retry
+        self.app.tasks.forget(t)
+        self._retries.pop(t.id, None)
+        self._start_task(title, work, label, inputs=t.inputs)
+        self._render_readiness()
+        self._update()
+
+    def connect_again(self, t: Task) -> None:
+        """Google refused the saved sign-in: connect again, then retry the task (if it can be retried)."""
+        def connected() -> None:
+            if t.id in self._retries:
+                self.app.page.run_task(self.retry_task, t)
+
+        self.app.google.connect(on_done=connected)
 
     def dismiss_task(self, e=None) -> None:
         if self.task and not self.task.running:
@@ -453,7 +516,8 @@ class JobScreen:
                         ft.Row(
                             [
                                 ft.Text(k, color=ft.Colors.ON_SURFACE_VARIANT, width=150),
-                                ft.Text(v, selectable=True, expand=True, weight=ft.FontWeight.W_500),
+                                ft.Text(spans=self._linked(v), selectable=True, expand=True,
+                                        weight=ft.FontWeight.W_500),
                             ],
                             vertical_alignment=ft.CrossAxisAlignment.START,
                         )
@@ -462,8 +526,17 @@ class JobScreen:
                     spacing=6,
                 )
             )
+        if result.table:
+            if result.table_title:
+                parts.append(ft.Text(result.table_title, weight=ft.FontWeight.W_600))
+            parts.append(ft.Column(
+                [ft.Row([ft.Text(k, selectable=True, expand=True),
+                         ft.Text(v, selectable=True, text_align=ft.TextAlign.RIGHT, weight=ft.FontWeight.W_500)],
+                        vertical_alignment=ft.CrossAxisAlignment.START)
+                 for k, v in result.table],
+                spacing=4))
         if result.text is not None:
-            parts.append(ft.Text(result.text, selectable=True, font_family="monospace"))
+            parts.append(ft.Text(spans=self._linked(result.text), selectable=True, font_family="monospace"))
         if result.warning:
             parts.append(ft.Text(result.warning, color=ft.Colors.ERROR))
         text = result.as_plain_text()

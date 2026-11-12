@@ -13,10 +13,13 @@ from datetime import date
 from pathlib import Path
 
 import catalog
+import errors
+import timing
 import checks
 import immich
 import reconcile
 from db import Store, loads, now
+import parsing
 from parsing import load_engines, norm_store, ocr_photos, parse_photos
 
 log = logging.getLogger("photo-ocr")
@@ -82,9 +85,59 @@ class Service:
             return Path(img["cache_path"])
         suffix = Path(img["source_path"] or "").suffix.lower() or ".jpg"
         path = self.cache / f"{img['immich_asset_id']}{suffix}"
-        path.write_bytes(self.photos.download(img["immich_asset_id"]))
+        with timing.Timer("photo from Immich"):
+            path.write_bytes(self.photos.download(img["immich_asset_id"]))
         self.store.x("UPDATE images SET cache_path = ? WHERE id = ?", str(path), image_id)
         return path
+
+    SIZES = (200, 400, 800, 1200, 1600)  # widths a page can ask for; anything else rounds up to one of these
+
+    def image_resized(self, image_id, width):
+        """A smaller copy of a stored photo for a page: at most ``width`` wide, turned upright (EXIF), JPEG.
+        Made once, then kept in the cache. The original when Pillow can't (or the photo is already small)."""
+        original = self.image_path(image_id)
+        w = next((s for s in self.SIZES if s >= width), self.SIZES[-1])
+        sized = self.cache / "sized" / f"{image_id}-{w}.jpg"
+        if sized.exists():
+            timing.note("ready-made")
+            return sized
+        try:
+            from PIL import Image, ImageOps
+        except ImportError:
+            return original
+        try:
+            with timing.Timer("shrunk"), Image.open(original) as im:
+                if im.format == "JPEG":
+                    im.draft("RGB", (w, w))  # decode at 1/2, 1/4 or 1/8 size when that is still at least w: far faster
+                im = ImageOps.exif_transpose(im)
+                if im.width > w:
+                    im = im.resize((w, round(im.height * w / im.width)), Image.LANCZOS)
+                sized.parent.mkdir(exist_ok=True)
+                tmp = sized.with_suffix(".part")
+                im.convert("RGB").save(tmp, "JPEG", quality=82, optimize=True)
+                tmp.replace(sized)
+        except Exception as e:  # noqa: BLE001 - a photo Pillow can't read: send the original
+            log.warning("image %s: no smaller copy: %s", image_id, e)
+            return original
+        return sized
+
+    PAGE_SIZES = (400, 1200)  # what the pages ask for: the gallery's tiles and the photo beside the fields
+
+    def make_page_copies(self, limit=50):
+        """Background work: the copies the pages will ask for, made before anyone opens a page."""
+        made = 0
+        for img in self.store.q("SELECT id FROM images ORDER BY id DESC"):
+            for w in self.PAGE_SIZES:
+                if made >= limit:
+                    return made
+                if not (self.cache / "sized" / f"{img['id']}-{w}.jpg").exists():
+                    try:
+                        self.image_resized(img["id"], w)
+                        made += 1
+                    except Exception as e:  # noqa: BLE001 - e.g. Immich down: the page makes it later
+                        log.warning("image %s: no copy for pages yet: %s", img["id"], e)
+                        break
+        return made
 
     def receipt_photos(self, receipt_id):
         return [self.image_path(i["id"]) for i in
@@ -144,7 +197,8 @@ class Service:
     # ------------------------------------------------------------ parsing
 
     def known_stores(self):
-        return {r["norm_name"] for r in self.store.q("SELECT norm_name FROM stores")}
+        """{normalized store name: its date order (mdy / dmy, or None if not learned yet)}."""
+        return {r["norm_name"]: r["date_order"] for r in self.store.q("SELECT norm_name, date_order FROM stores")}
 
     def _read_batch(self, rows, photos_of, kind, engines):
         """Read a batch of receipts or products: engine by engine (all OCR first), so the GPU swaps models as
@@ -175,10 +229,12 @@ class Service:
 
     def _save_runs(self, runs, receipt_id=None, product_id=None):
         for run in runs.values():
-            self.store.x("INSERT INTO engine_runs (receipt_id, product_id, engine, raw_output, parsed_json, ocr_json, error, "
-                         "seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", receipt_id, product_id, run["engine"],
-                         run["raw"], json.dumps(run["parsed"]) if run["parsed"] is not None else None,
-                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run["error"], run["seconds"], now())
+            self.store.x("INSERT INTO engine_runs (receipt_id, product_id, engine, raw_output, parsed_json, ocr_json, prompt, "
+                         "prompt_version, error, seconds, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         receipt_id, product_id, run["engine"], run["raw"],
+                         json.dumps(run["parsed"]) if run["parsed"] is not None else None,
+                         json.dumps(run.get("ocr")) if run.get("ocr") else None, run.get("prompt"),
+                         run.get("prompt_version"), run["error"], run["seconds"], now())
 
     def parse_pending(self, limit=20):
         """Read pending receipts."""
@@ -273,9 +329,38 @@ class Service:
                 "WHERE i.receipt_id = ? ORDER BY i.position", rid),
             "checks": loads(r["checks"], []), "confidence": loads(r["confidence"], {}),
             "disagreements": loads(r["disagreements"], {}),
-            "runs": self.store.q("SELECT engine, seconds, error FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC LIMIT 4", rid),
+            "runs": self.store.q("SELECT id, engine, seconds, error, prompt_version, created_at FROM engine_runs "
+                                 "WHERE receipt_id = ? ORDER BY id DESC LIMIT 4", rid),
         })
         return out
+
+    def receipt_runs(self, rid):
+        """Every reading of a receipt, newest first, in full: the prompt sent, the raw reply, what was parsed
+        from it (including the date exactly as printed), the engine, the time taken. For debugging."""
+        self._receipt_row(rid)
+        out, known = [], self.known_stores()
+        for r in self.store.q("SELECT * FROM engine_runs WHERE receipt_id = ? ORDER BY id DESC", rid):
+            parsed = loads(r["parsed_json"], None)
+            out.append({"id": r["id"], "at": r["created_at"], "engine": r["engine"], "seconds": r["seconds"],
+                        "error": r["error"], "prompt_version": r["prompt_version"], "prompt": r["prompt"],
+                        "raw": r["raw_output"],
+                        "date_printed": parsed.get("date_printed") if isinstance(parsed, dict) else None,
+                        "date": parsing.normalize(parsed, checks.store_date_order(parsed, known))["date"]
+                                if isinstance(parsed, dict) else None})
+        return out
+
+    def ask(self, rid, question):
+        """Debugging: the receipt's photos and a free question to a vision engine; nothing is saved."""
+        question = str(question or "").strip()
+        if not question:
+            raise ValueError("type a question")
+        engine = next((e for e in self.parse_engines + self.product_engines if e["kind"] == "vlm"),
+                      next((e for e in self.engines.values() if e["kind"] == "vlm"), None))
+        if engine is None:
+            raise ValueError("no vision engine in engines.json to ask")
+        answer, seconds = parsing.ask(engine, self.receipt_photos(rid), question)
+        log.info("asked %s about receipt %s (%.1f s): %r -> %r", engine["name"], rid, seconds, question[:200], answer[:500])
+        return {"engine": engine["name"], "seconds": seconds, "question": question, "answer": answer}
 
     def edit(self, rid, data):
         """Hand edits from the review page; every change is kept as a correction. approve: accept it."""
@@ -334,8 +419,106 @@ class Service:
                         # The spelling the engine read is this store from now on, too.
                         self.store.x("INSERT OR IGNORE INTO stores (norm_name, name, location) VALUES (?, ?, ?)",
                                      norm_store(r["merchant_raw"]), r["merchant"], r["location"])
+                    self._record_errors(r, data.get("used_fixes") or [])  # before learning: as it was read
+                    self._learn_date_order(r)
         catalog.match_receipt_items(self.store, rid, self.text_engine)
         return self.receipt(rid)
+
+    def _primary_run(self, r):
+        """The reading a receipt's fields came from: its engine's latest run with JSON."""
+        if not r["engine"]:
+            return None
+        return self.store.one("SELECT id, engine, prompt_version, parsed_json FROM engine_runs WHERE receipt_id = ? AND "
+                              "engine = ? AND parsed_json IS NOT NULL ORDER BY id DESC LIMIT 1", r["id"], r["engine"])
+
+    def _truth(self, r):
+        """The receipt as approved, in the normalized shape errors.classify compares with."""
+        return {"store": r["merchant"], "date": r["purchase_date"], "tax": r["tax"], "total": r["total"],
+                "items": [{"name": i["raw_text"], "quantity": i["quantity"], "price": i["line_total"]} for i in
+                          self.store.q("SELECT raw_text, quantity, line_total FROM receipt_items WHERE receipt_id = ? "
+                                       "ORDER BY position", r["id"])]}
+
+    def _record_errors(self, r, used_fixes=(), known=None):
+        """Compare every reading of a receipt with it as approved by hand, and log each error by category.
+
+        Every reading: the one its fields came from, a second engine's, and earlier ones (an older prompt, before
+        Read again), each under its own engine and prompt version. -> the errors of the reading used."""
+        primary = self._primary_run(r)
+        if not primary:
+            return None
+        truth, known, at = self._truth(r), self.known_stores() if known is None else known, now()
+        # lines removed with the sum check's button, as errors.classify describes a line
+        fixed = {errors.line(f.get("name"), f.get("price")) for f in used_fixes if isinstance(f, dict)}
+        used = []
+        for run in self.store.q("SELECT id, engine, prompt_version, parsed_json FROM engine_runs WHERE receipt_id = ? "
+                                "AND parsed_json IS NOT NULL", r["id"]):
+            parsed = loads(run["parsed_json"], {})
+            found = errors.classify(parsed, truth, checks.store_date_order(parsed, known))
+            self.store.x("DELETE FROM reading_errors WHERE run_id = ?", run["id"])
+            self.store.x("INSERT OR REPLACE INTO reading_reviews (run_id, receipt_id, engine, prompt_version, store, errors, "
+                         "at) VALUES (?, ?, ?, ?, ?, ?, ?)", run["id"], r["id"], run["engine"], run["prompt_version"],
+                         r["merchant"], len(found), at)
+            mine = run["id"] == primary["id"]
+            for e in found:
+                self.store.x("INSERT INTO reading_errors (run_id, receipt_id, category, detail, found_by, at) "
+                             "VALUES (?, ?, ?, ?, ?, ?)", run["id"], r["id"], e["category"], e["detail"],
+                             "sum check suggestion" if mine and e["detail"] in fixed else "review", at)
+            if mine:
+                used = found
+        if used:
+            log.info("receipt %s reading errors: %s", r["id"], errors.counts(used))
+        return used
+
+    def log_reviewed_errors(self):
+        """Receipts approved by hand before the error log existed (or since a re-read): compare them now.
+        Receipts approved automatically are left out: nobody checked them."""
+        todo = self.store.q("SELECT r.* FROM receipts r WHERE r.status = 'approved' AND r.bucket != 'auto' AND EXISTS "
+                            "(SELECT 1 FROM engine_runs e LEFT JOIN reading_reviews v ON v.run_id = e.id WHERE "
+                            "e.receipt_id = r.id AND e.parsed_json IS NOT NULL AND v.run_id IS NULL)")
+        known = self.known_stores()
+        with self.store.tx():
+            done = [r for r in todo if self._record_errors(r, known=known) is not None]
+        return len(done)
+
+    def error_report(self):
+        """Reading errors per prompt version, engine and store: readings checked, how many had errors, by category."""
+        reviews = self.store.q("SELECT * FROM reading_reviews")
+        errs = self.store.q("SELECT e.*, v.prompt_version, v.engine, v.store FROM reading_errors e "
+                            "JOIN reading_reviews v ON v.run_id = e.run_id")
+
+        def group(key):
+            out = {}
+            for v in reviews:
+                g = out.setdefault(v[key] or "not recorded", {"readings": 0, "with_errors": 0, "categories": {}})
+                g["readings"] += 1
+                g["with_errors"] += v["errors"] > 0
+            for e in errs:
+                c = out[e[key] or "not recorded"]["categories"]
+                c[e["category"]] = c.get(e["category"], 0) + 1
+            return out
+
+        recent = self.store.q("SELECT e.receipt_id, e.category, e.detail, e.found_by, v.store, v.engine, v.prompt_version "
+                              "FROM reading_errors e JOIN reading_reviews v ON v.run_id = e.run_id "
+                              "ORDER BY e.id DESC LIMIT 50")
+        return {"categories": errors.CATEGORIES, "by_prompt": group("prompt_version"), "by_engine": group("engine"),
+                "by_store": group("store"),
+                "recent": [dict(e, url=f"/review/{e['receipt_id']}") for e in recent]}
+
+    def _learn_date_order(self, r):
+        """An approved receipt shows how its store prints dates: which reading of the printed date is the date
+        approved. Only when that is one reading (11/04/26 approved as 2026-11-04 is month first; 04/04/26 says
+        nothing)."""
+        run = self._primary_run(r)
+        parsed = loads(run["parsed_json"], {}) if run else {}
+        printed = parsed.get("date_printed") if isinstance(parsed, dict) else None
+        options = parsing.date_options(printed)
+        orders = [o for o, d in options.items() if o and d == r["purchase_date"]]
+        if len(orders) != 1:  # unreadable, written one way only, or the same date both ways (04/04/26)
+            return
+        for name in {r["merchant"], r["merchant_raw"]} - {None}:
+            self.store.x("UPDATE stores SET date_order = ? WHERE norm_name = ? AND date_order IS NOT ?",
+                         orders[0], norm_store(name), orders[0])
+        log.info("store %s prints dates %s (%r on receipt %s)", r["merchant"], parsing.DATE_ORDERS[orders[0]], printed, r["id"])
 
     def counts(self):
         c = self.store.one(
@@ -513,7 +696,8 @@ class Service:
         done = {}
         with self.work_lock:
             for name, fn in (("library", self.sync_library), ("albums", self.poll_albums),
-                             ("receipts", self.parse_pending), ("products", self.parse_pending_products)):
+                             ("receipts", self.parse_pending), ("products", self.parse_pending_products),
+                             ("page copies", self.make_page_copies), ("error log", self.log_reviewed_errors)):
                 try:
                     done[name] = fn()
                 except Exception as e:  # noqa: BLE001 - keep the worker alive; log and go on

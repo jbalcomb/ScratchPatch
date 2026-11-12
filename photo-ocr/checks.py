@@ -9,7 +9,7 @@ import difflib
 import re
 from datetime import date, timedelta
 
-from parsing import SUM_SLACK, norm_item, norm_size, norm_store, normalize, normalize_product, to_cents
+from parsing import DATE_ORDERS, SUM_SLACK, date_options, norm_item, norm_size, norm_store, normalize, normalize_product, to_cents
 
 FIELDS = ("merchant", "purchase_date", "total", "tax", "items")
 LOW_OCR_CONF = 0.6       # an OCR line read with less confidence than this makes its field suspect
@@ -21,11 +21,20 @@ def _amount_ok(value):
     return value is None or isinstance(value, (int, float)) and not isinstance(value, bool) or to_cents(value) is not None
 
 
+def store_date_order(parsed, known_stores):
+    """The date order ("mdy"/"dmy") learned for the store this reading names, if any."""
+    store = parsed.get("store") if isinstance(parsed, dict) else None
+    if not isinstance(known_stores, dict) or not isinstance(store, str):
+        return None
+    return known_stores.get(norm_store(store))
+
+
 def run_checks(parsed, known_stores, today=None, receipt_source="in-store"):
-    """parsed: one engine's JSON. -> (record in cents, [{name, ok, detail, fields}])."""
+    """parsed: one engine's JSON. known_stores: the known stores' normalized names, or {name: date order}
+    ("mdy", "dmy" or None) to read their dates by. -> (record in cents, [{name, ok, detail, fields}])."""
     today = today or date.today()
-    rec = normalize(parsed)
     raw = parsed if isinstance(parsed, dict) else {}
+    rec = normalize(parsed, store_date_order(raw, known_stores))
     out = []
 
     if rec["total"] is None or not rec["items"] or any(i["price"] is None for i in rec["items"]):
@@ -34,12 +43,34 @@ def run_checks(parsed, known_stores, today=None, receipt_source="in-store"):
     else:
         got = sum(i["price"] for i in rec["items"]) + (rec["tax"] or 0)
         ok = abs(got - rec["total"]) <= SUM_SLACK
-        out.append({"name": "sum", "ok": ok, "fields": [] if ok else ["total", "tax", "items"],
-                    "detail": f"items + tax = {got / 100:.2f}, total = {rec['total'] / 100:.2f}"})
+        check = {"name": "sum", "ok": ok, "fields": [] if ok else ["total", "tax", "items"],
+                 "detail": f"items + tax = {got / 100:.2f}, total = {rec['total'] / 100:.2f}"}
+        # Lines whose removal makes it add up (a summary line or a line read twice, usually): offer to remove one,
+        # each a button; when two lines would each do it (a coupon the same as the savings total) you pick.
+        # Only offered, never done; whether it was a mistake is logged when the receipt is approved.
+        fits = {(i["name"], i["price"]): None for i in rec["items"] if abs(got - i["price"] - rec["total"]) <= SUM_SLACK}
+        if not ok and fits:
+            check["fix"] = {"remove": [{"name": n, "price": p} for n, p in fits]}
+        out.append(check)
 
-    if rec["date"] is None:
+    if rec["savings"] and any(i["price"] is not None and i["price"] < 0 for i in rec["items"]):
+        # the savings total printed against the discount lines read; a store that prints savings only inside
+        # its prices (no discount lines) has nothing to check
+        discounts = -sum(i["price"] for i in rec["items"] if i["price"] is not None and i["price"] < 0)
+        ok = abs(discounts - abs(rec["savings"])) <= SUM_SLACK
+        out.append({"name": "savings", "ok": ok, "fields": [] if ok else ["items"],
+                    "detail": f"discount lines = {discounts / 100:.2f}, savings printed = {abs(rec['savings']) / 100:.2f}"})
+
+    printed = raw.get("date_printed") or raw.get("date")
+    options = date_options(printed)
+    if rec["date"] is None and len(options) > 1:
         out.append({"name": "date", "ok": False, "fields": ["purchase_date"],
-                    "detail": f"{raw.get('date')!r} isn't a date" if raw.get("date") else "no date"})
+                    "detail": f"{printed!r} could be " + " or ".join(f"{d} ({DATE_ORDERS[o]})" for o, d in options.items())
+                              + "; this store's date order isn't known yet. Pick one: approving teaches it.",
+                    "choices": [{"order": o, "date": d, "label": DATE_ORDERS[o]} for o, d in options.items()]})
+    elif rec["date"] is None:
+        out.append({"name": "date", "ok": False, "fields": ["purchase_date"],
+                    "detail": f"{printed!r} isn't a date" if printed else "no date"})
     else:
         d = date.fromisoformat(rec["date"])
         ok = today - timedelta(days=PLAUSIBLE_DAYS) <= d <= today + timedelta(days=1)
@@ -106,7 +137,8 @@ def assess(primary_parsed, others, known_stores, ocr_lines=None, today=None):
     keyed with the primary under "primary" too if you want it shown. -> dict with record, checks,
     disagreements, confidence {field: 0..1}, suspect [fields], bucket."""
     rec, checks = run_checks(primary_parsed, known_stores, today)
-    diff = disagreements({name: normalize(p) for name, p in others.items() if p is not None}) if others else {}
+    diff = disagreements({name: normalize(p, store_date_order(p, known_stores)) for name, p in others.items()
+                          if p is not None}) if others else {}
     conf = {f: 1.0 for f in FIELDS}
     for c in checks:
         for f in c["fields"]:
@@ -116,14 +148,15 @@ def assess(primary_parsed, others, known_stores, ocr_lines=None, today=None):
     for f, v in ocr_confidence(rec, ocr_lines).items():
         if v < LOW_OCR_CONF:
             conf[f] = min(conf[f], round(v, 2))
-    if rec["total"] is None or rec["date"] is None:
+    two_ways = any(c.get("choices") for c in checks)  # a readable date, read two ways: pick one, no retake
+    if rec["total"] is None or rec["date"] is None and not two_ways:
         bucket = "retake"
     elif all(c["ok"] for c in checks) and not diff and min(conf.values()) >= LOW_OCR_CONF:
         bucket = "auto"
     else:
         bucket = "review"
     suspect = [f for f in FIELDS if conf[f] < 0.9]
-    return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail")} for c in checks],
+    return {"record": rec, "checks": [{k: c[k] for k in ("name", "ok", "detail", "choices", "fix") if k in c} for c in checks],
             "disagreements": diff, "confidence": conf, "suspect": suspect, "bucket": bucket}
 
 

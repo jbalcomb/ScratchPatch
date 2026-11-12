@@ -67,11 +67,22 @@ Receipt summary:
 `approve`, the receipt becomes `approved` and its store becomes a known store. → the full receipt.
 
 `POST /api/receipts/{id}/reparse` → `{"status": "pending"}`
+
+`GET /api/receipts/{id}/runs` → `{"runs": [...]}`, newest first: each reading's `at`, `engine`, `seconds`,
+`error`, `prompt_version` (8 characters, changes whenever the prompt text changes), the full `prompt` sent with
+the photos, the model's `raw` reply, `date_printed` (the date as the model read it off the receipt) and the `date` the
+service converted it to (the model is not asked to convert dates; see Dates below).
+
+`POST /api/receipts/{id}/ask` `{"question": "What month, day and year are printed?"}` → `{"answer", "engine",
+"seconds"}`: asks the vision model a free question about this receipt's photos. Nothing is saved; for debugging.
 `POST /api/receipts/{id}/merge` `{"into": 16}`: appends this receipt's photos to receipt 16 (for a receipt
 photographed as separate album photos), removes this one and re-parses 16. → receipt 16.
 `DELETE /api/receipts/{id}` removes the record. The photos stay in Immich.
 
-`GET /api/images/{id}` → the photo (JPEG), from the local cache or from Immich.
+`GET /api/images/{id}` → the photo as stored (the original), from the local cache or from Immich.
+`GET /api/images/{id}?w=400` → a copy at most that wide, turned upright, as JPEG (sizes round up to 200, 400,
+800, 1200 or 1600). Made once and kept in the cache; pages use 400 for the gallery and 1200 for the photo beside
+the fields.
 
 ## Line items and the catalog
 
@@ -149,3 +160,26 @@ imported in budget, and new accounts or banks are added there; this service has 
 
 `/` home with counts · `/capture` camera PWA (receipt or product) · `/review` queue (receipts; `?products` for products) · `/review/{id}` photo beside the fields ·
 `/items` unmatched items · `/products` gallery · `/products/{id}` · `/shopping` · `/reconcile` · `/picker`
+
+
+## Dates
+
+The model reports the date exactly as printed (`date_printed`); the service converts it. A year first
+(2026-11-04) or a written month (Nov 4 2026) reads one way. Two numbers then a year (11/04/26) may read month
+first or day first: if only one is a real date (25/10/26) that is it; otherwise the store's learned date order
+decides (`stores.date_order`, `mdy` or `dmy`). A store with no order yet gets the receipt in review, its date
+check carrying `"choices": [{"order", "date", "label"}]`; approving the receipt with one of those dates teaches
+the store its order. A time or other text beside the date is ignored.
+
+## Reading errors
+
+`GET /api/errors` → `{"categories": {key: label}, "by_prompt", "by_engine", "by_store", "recent"}`. Each of
+the three `by_` maps is `{name: {"readings", "with_errors", "categories": {key: count}}}`; `recent` is the
+latest 50 errors, `{receipt_id, category, detail, found_by, store, engine, prompt_version, url}`. Only receipts
+approved by hand are counted (see README, Reading errors).
+
+A receipt's sum check may carry `"fix": {"remove": [{"name", "price"}]}`: lines whose removal would make items +
+tax equal the total. An approval (`POST /api/receipts/{id}` with `approve`) may send `"used_fixes": [{"name",
+"price"}]`, the lines removed with that button, so their errors are logged as found by it.
+
+Readings now also have `savings`, the total savings printed (or null), checked against the discount lines.

@@ -25,7 +25,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from parsing import (OCR, PROMPT, SCHEMA, chat, extract_json, image_part, load_engines, norm_item,  # noqa: E402,F401
                      norm_size, norm_store, normalize, normalize_product, ocr_photos, ocr_text, parse_photos,
-                     sum_check, to_cents, to_date)
+                     sum_check, to_cents, to_date, date_options, prompt_version)
+import errors  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -58,13 +59,20 @@ def match_items(truth, predicted, threshold=NAME_THRESHOLD):
     return matched
 
 
+def printed_dates(parsed) -> set:
+    """Every date a reading's printed date could be (one, or two for 11/04/26)."""
+    raw = parsed if isinstance(parsed, dict) else {}
+    return set(date_options(raw.get("date_printed") or raw.get("date")).values())
+
+
 def score(label, parsed, threshold=NAME_THRESHOLD):
     truth, pred = normalize(label), normalize(parsed)
     stores = truth["store"] if isinstance(truth["store"], list) else [truth["store"]]
     matched = match_items(truth["items"], pred["items"], threshold)
     s = {
         "total": pred["total"] is not None and pred["total"] == truth["total"],
-        "date": pred["date"] is not None and pred["date"] == truth["date"],
+        # the model's job is reading the date as printed; which way round it goes is the store's (see date_options)
+        "date": truth["date"] is not None and truth["date"] in printed_dates(parsed),
         "store": bool(pred["store"]) and norm_store(pred["store"]) in {norm_store(x) for x in stores if x},
         "tax": (pred["tax"] or 0) == (truth["tax"] or 0),
         "items_matched": len(matched),
@@ -190,6 +198,8 @@ def cmd_check(args):
 def cmd_label(args):
     """Start labels from an engine's output, so hand-labeling is correcting rather than typing."""
     engine_dir = args.home / "results" / args.engine
+    if not engine_dir.is_dir():  # an engine's name: its results with the current prompt
+        engine_dir = args.home / "results" / results_name(args.engine)
     n = 0
     for r in receipts(args.home / "set"):
         run_file = engine_dir / f"{r.name}.json"
@@ -218,7 +228,7 @@ def cmd_label(args):
 
 
 # ---------------------------------------------------------------- running engines
-def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print):
+def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print, prompt=None):
     """Run one engine over the test set; one JSON per receipt (the engine_runs row of PRD.md), kept between runs.
 
     Two-step engines OCR every receipt first and then structure every receipt, so with one model loaded at a
@@ -236,10 +246,15 @@ def run_engine(engine, set_dir, out_dir, force=False, only=None, log=print):
             log(f"  {engine['name']} {r.name}: OCR {ocr['seconds']:.1f}s" + (f"  ERROR {ocr['error']}" if ocr.get("error") else ""))
     for r in todo:
         ocr = json.loads((out_dir / f"{r.name}.ocr.json").read_text()) if engine["kind"] == "ocr_llm" else None
-        run = {"item": r.name, "photos": [p.name for p in photos(r)], **parse_photos(engine, photos(r), kind_of(r), ocr=ocr)}
+        run = {"item": r.name, "photos": [p.name for p in photos(r)], **parse_photos(engine, photos(r), kind_of(r), ocr=ocr,
+                                                                       prompt=prompt if kind_of(r) == "receipt" else None)}
         (out_dir / f"{r.name}.json").write_text(json.dumps(run, indent=1) + "\n")
         log(f"  {engine['name']} {r.name}: {run['seconds']:.1f}s" + (f"  ERROR {run['error']}" if run["error"] else ""))
     return len(todo)
+
+
+def results_name(engine, prompt=None):
+    return f"{engine}@{prompt_version(prompt or PROMPT)}"
 
 
 def cmd_run(args):
@@ -250,9 +265,13 @@ def cmd_run(args):
     for name in names:
         if name not in engines:
             sys.exit(f"no engine {name!r} in {args.engines} ({', '.join(engines)})")
+    prompt = Path(args.prompt).read_text() if args.prompt else None
     for name in names:
-        print(f"{name}:")
-        n = run_engine(engines[name], args.home / "set", args.home / "results" / name, args.force, args.receipt)
+        # each prompt's results apart, so a changed prompt is run again: results/<engine>@<receipt prompt version>
+        out = results_name(name, prompt)
+        print(f"{out}:")
+        n = run_engine(engines[name], args.home / "set", args.home / "results" / out, args.force, args.receipt,
+                       prompt=prompt)
         print(f"  {n} items run")
 
 
@@ -375,6 +394,18 @@ def report(home, threshold=NAME_THRESHOLD):
                 "If the pair is nearly always right when it agrees, agreement can auto-accept and disagreement can "
                 "send a receipt to review (PRD.md, Confidence and review).\n"]
 
+    cats = list(errors.CATEGORIES)
+    rows = []
+    for e in scores:
+        found = [x for rid, (label, _) in labeled.items() if rid in scores[e]
+                 for x in reading_errors(home, e, rid, label)]
+        n = sum(1 for rid in labeled if rid in scores[e])
+        counted = errors.counts(found)
+        rows.append([e, str(n)] + [str(counted.get(c, 0)) for c in cats])
+    out += ["## Errors by category\n", table(["Engine", "Receipts"] + [errors.CATEGORIES[c] for c in cats], rows), "",
+            "Each reading compared with its label line by line (errors.py): the same categories the service logs "
+            "when you approve a receipt. A failed reading counts no errors here; see Failed above.\n"]
+
     rows = []
     for rid, (_, ts) in labeled.items():
         row = [rid, ", ".join(ts) or ""]
@@ -385,6 +416,12 @@ def report(home, threshold=NAME_THRESHOLD):
     out += ["## Per receipt\n", table(["Receipt", "Tags"] + list(scores), rows), "",
             "T total, D date, S store, X tax (✓ right, ✗ wrong), then line items matched / labeled / returned.\n"]
     return "\n".join(out + products)
+
+
+def reading_errors(home, engine, rid, label):
+    f = home / "results" / engine / f"{rid}.json"
+    run = json.loads(f.read_text()) if f.exists() else {}
+    return errors.classify(run["parsed"], normalize(label)) if run.get("parsed") else []
 
 
 def _cell(s):
@@ -398,9 +435,9 @@ def _agree(home, a, b, rid):
         run = json.loads((home / "results" / e / f"{rid}.json").read_text())
         if not run.get("parsed"):
             return False
-        recs.append(normalize(run["parsed"]))
-    return all(r["total"] is not None and r["date"] for r in recs) and \
-        recs[0]["total"] == recs[1]["total"] and recs[0]["date"] == recs[1]["date"]
+        recs.append((normalize(run["parsed"]), printed_dates(run["parsed"])))
+    (r0, d0), (r1, d1) = recs
+    return r0["total"] is not None and r0["total"] == r1["total"] and bool(d0) and d0 == d1
 
 
 def cmd_score(args):
@@ -429,6 +466,8 @@ def main(argv=None):
     r.add_argument("--all", action="store_true")
     r.add_argument("--force", action="store_true")
     r.add_argument("--receipt", action="append", help="only this item (repeatable), e.g. r007 or p002")
+    r.add_argument("--prompt", help="a receipt prompt file to try instead of the current one (see prompts/); "
+                   "results are kept per prompt as <engine>@<prompt version>")
     r.add_argument("--engines", default=os.environ.get("PHOTO_OCR_ENGINES") or HERE / "engines.json")
     r.set_defaults(func=cmd_run)
     lb = sub.add_parser("label", help="draft label.draft.json for unlabeled items from an engine's output")

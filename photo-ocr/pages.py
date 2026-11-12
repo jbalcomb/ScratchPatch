@@ -73,6 +73,28 @@ async function api(path, opts = {}) {
 }
 function say(text, bad) { const m = $('#msg'); if (m) { m.textContent = text; m.className = 'msg' + (bad ? ' bad' : ''); } }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// Load times as the phone sees them (network included), sent to the service for its log and /stats.
+(() => {
+  let sent = 0, pageSent = false;
+  function report() {
+    if (!navigator.sendBeacon || location.pathname === '/stats') return;
+    const all = performance.getEntriesByType('resource'), fresh = all.slice(sent);
+    sent = all.length;
+    const items = fresh.filter(r => r.name.includes('/api/') && !r.name.includes('/api/timings')).map(r => {
+      const u = new URL(r.name);
+      return {u: u.pathname + u.search, ms: Math.round(r.duration), kb: Math.round((r.encodedBodySize || r.transferSize || 0) / 1024)};
+    });
+    const nav = performance.getEntriesByType('navigation')[0];
+    const pageMs = !pageSent && nav && nav.loadEventEnd ? Math.round(nav.loadEventEnd) : null;
+    if (!items.length && !pageMs) return;
+    pageSent = pageSent || !!pageMs;
+    navigator.sendBeacon('/api/timings', new Blob([JSON.stringify({page: location.pathname, page_ms: pageMs, items})],
+                                                   {type: 'application/json'}));
+  }
+  addEventListener('load', () => setTimeout(report, 3000));
+  addEventListener('pagehide', report);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') report(); });
+})();
 """
 
 BODIES = {}
@@ -81,6 +103,7 @@ BODIES[""] = ("Photo OCR", """
 <h1>Photo OCR</h1>
 <div class="counts" id="counts"></div>
 <p class="muted">Photos of receipts and products land in Immich; the service reads them with the local models. Readings that need a look are under Review.</p>
+<p class="muted"><a href="/stats">Reading errors and load times</a></p>
 <script>
 api('/api/summary').then(c => {
   const tiles = [['Pending', c.pending, '/review'], ['To review', c.review, '/review'], ['Retake', c.retake, '/review'],
@@ -181,29 +204,68 @@ async function load() {
   r = await api('/api/receipts/' + id);
   $('#title').textContent = r.merchant || 'Receipt ' + id;
   $('#bucket').innerHTML = `<span class="tag ${r.bucket || r.status}">${r.status === 'approved' ? 'approved' : (r.bucket || r.status)}</span>`;
-  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}" alt="photo ${i.position}"></a>`).join('');
+  $('#photos').innerHTML = r.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}?w=1200" alt="photo ${i.position}" decoding="async"></a>`).join('');
   const sus = new Set(r.suspect);
   const val = (f, v) => (f === 'total' || f === 'tax') ? (v == null ? '' : (v / 100).toFixed(2)) : (v ?? '');
   const dis = r.disagreements || {};
-  $('#form').innerHTML = (r.error ? `<p class="msg bad">${esc(r.error)}</p>` : '')
+  const last = r.runs[0];
+  $('#form').innerHTML = (last ? `<p class="muted" id="lastread">Read ${esc(last.created_at.replace('T', ' '))} by ${esc(last.engine)}`
+      + ` in ${last.seconds ?? '?'} s · prompt ${esc(last.prompt_version || 'not recorded')}</p>` : '')
+    + (r.status === 'pending' ? '<p class="msg">Reading… this page updates when it is done.</p>' : '')
+    + (r.error ? `<p class="msg bad">${esc(r.error)}</p>` : '')
     + (r.bucket === 'retake' ? '<p class="msg bad">The total or date couldn\\'t be read: add a new photo below, or type them in.</p>' : '')
     + FIELDS.map(([f, l]) => `<div class="${sus.has(f) ? 'suspect' : ''}"><label for="f_${f}">${l}${dis[f] ? ' · engines read: '
       + esc(Object.entries(dis[f]).map(([e, v]) => e + ' ' + ((f === 'total' || f === 'tax') ? money(v) : v)).join(', ')) : ''}</label>
-      <input id="f_${f}" value="${esc(val(f, r[f]))}" ${f === 'total' || f === 'tax' ? 'inputmode="decimal"' : ''}></div>`).join('')
+      <input id="f_${f}" value="${esc(val(f, r[f]))}" ${f === 'total' || f === 'tax' ? 'inputmode="decimal"' : ''}>${f === 'purchase_date' ? dateChoices() : ''}</div>`).join('')
     + `<h2 class="${sus.has('items') ? 'suspect' : ''}">Items</h2>
       <table class="items"><thead><tr><th>Text</th><th class="num">Qty</th><th class="num">Price</th><th></th></tr></thead>
       <tbody id="items"></tbody></table>
       <div class="row" style="margin-top:6px"><button id="addrow">Add item</button><span class="grow muted" id="sum"></span></div>
-      <h2>Checks</h2><ul class="checks">${(r.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')}</ul>
+      <h2>Checks</h2><ul class="checks">${(r.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')}</ul>${sumFix()}
       <div class="row" style="margin-top:14px"><button class="primary" id="approve">Approve</button><button id="save">Save</button>
         <button id="reparse">Read again</button></div>
       <h2>More</h2>
       <div class="row"><input type="file" id="more" accept="image/*" capture="environment" hidden><button id="addphoto">Add a photo (retake)</button>
         <input id="into" placeholder="receipt #" inputmode="numeric" style="width:110px"><button id="merge">Merge into</button>
         <button class="danger" id="del">Delete</button></div>
-      <p class="muted">${r.runs.map(x => esc(x.engine) + ' ' + (x.seconds ?? '?') + ' s' + (x.error ? ' (' + esc(x.error) + ')' : '')).join(' · ')}</p>`;
+      <h2>Readings</h2>
+      <div id="runs"><button id="showruns">Show every reading, with the prompt sent and the model's reply</button></div>
+      <h2>Ask the model</h2>
+      <p class="muted">Sends this receipt's photos and your question to the vision model and shows its answer. Nothing is saved.</p>
+      <textarea id="q" rows="2" placeholder="Ask about the photo"></textarea>
+      <div class="row" style="margin-top:6px">
+        <button class="qp" data-q="What date is printed on this receipt? Write it exactly as it is printed.">Date as printed</button>
+        <button class="qp" data-q="Look at the date printed on this receipt. Which number is the month, which is the day, and which is the year? Explain how you can tell.">Month, day, year</button>
+        <button class="primary" id="ask">Ask</button></div>
+      <pre id="answer" class="card" style="white-space:pre-wrap;display:none"></pre>`;
   $('#items').innerHTML = r.items.map(rowHtml).join('');
+  usedFixes = [];
+  document.querySelectorAll('.sumfix').forEach(b => b.onclick = () => {
+    const row = [...document.querySelectorAll('#items tr')].reverse().find(tr =>
+      tr.querySelector('.t').value === b.dataset.name && toCents(tr.querySelector('.p').value) === Number(b.dataset.price));
+    if (!row) return say('That line is no longer in the list.', true);
+    row.remove(); sum();
+    document.querySelectorAll('.sumfix').forEach(x => x.disabled = true);
+    b.textContent = 'Removed: approve to keep it that way';
+    usedFixes = [{name: b.dataset.name, price: Number(b.dataset.price)}];  // logged as found by the suggestion
+  });
+  document.querySelectorAll('.datepick').forEach(b => b.onclick = () => { $('#f_purchase_date').value = b.dataset.d; });
   bind(); sum();
+}
+let usedFixes = [];
+function sumFix() {
+  // the sum check found one line whose removal makes items + tax equal the total: offer to remove it
+  const c = (r.checks || []).find(c => c.fix);
+  if (!c) return '';
+  return '<p class="muted">Without one of these lines, items + tax = total:</p><div class="row">' + c.fix.remove.map(x =>
+    `<button class="sumfix" data-name="${esc(x.name)}" data-price="${x.price}">Remove “${esc(x.name)}” (${money(x.price)})</button>`).join('') + '</div>';
+}
+function dateChoices() {
+  // a date that reads two ways (11/04/26): one button per reading; approving teaches the store its order
+  const c = (r.checks || []).find(c => c.choices);
+  if (!c) return '';
+  return '<div class="row" style="margin-top:4px">' + c.choices.map(x =>
+    `<button class="datepick" data-d="${esc(x.date)}">${esc(x.date)} (${esc(x.label)})</button>`).join('') + '</div>';
 }
 function rowHtml(i) {
   const m = i.product_name ? `<br><span class="muted">→ ${esc(i.product_name)}</span>` : (i.match === 'skip' ? '<br><span class="muted">not a product</span>' : '');
@@ -227,7 +289,40 @@ function bind() {
   $('#addrow').onclick = () => { $('#items').insertAdjacentHTML('beforeend', rowHtml({raw_text: '', quantity: null, line_total: null})); bind(); };
   $('#save').onclick = () => send(false);
   $('#approve').onclick = () => send(true);
-  $('#reparse').onclick = async () => { await api(`/api/receipts/${id}/reparse`, {json: {}}); say('Reading again… reload in a minute.'); };
+  $('#reparse').onclick = async () => {
+    const before = r.runs.length ? r.runs[0].id : 0;
+    await api(`/api/receipts/${id}/reparse`, {json: {}});
+    say('Reading again… this page updates when the new reading is in.');
+    for (let i = 0; i < 120; i++) {  // up to 6 minutes: the model may have to be loaded first
+      await new Promise(ok => setTimeout(ok, 3000));
+      const now = await api('/api/receipts/' + id);
+      if (now.status !== 'pending' && (now.runs.length && now.runs[0].id !== before || now.error)) {
+        await load();
+        return say(`Read again: date ${now.purchase_date || 'not read'}, total ${money(now.total)}.`);
+      }
+    }
+    say('Still reading after 6 minutes: reload later.', true);
+  };
+  $('#showruns').onclick = async () => {
+    const runs = (await api(`/api/receipts/${id}/runs`)).runs;
+    $('#runs').innerHTML = runs.map(x => `<details class="card"><summary>${esc(x.at.replace('T', ' '))} · ${esc(x.engine)} ·
+      ${x.seconds ?? '?'} s · prompt ${esc(x.prompt_version || 'not recorded')} · date printed
+      “${esc(x.date_printed ?? '?')}” → ${esc(x.date ?? '?')}${x.error ? ' · ' + esc(x.error) : ''}</summary>
+      <h2>Prompt</h2><pre style="white-space:pre-wrap">${esc(x.prompt || 'not recorded (read before prompts were kept)')}</pre>
+      <h2>Reply</h2><pre style="white-space:pre-wrap">${esc(x.raw || '')}</pre></details>`).join('') || '<p class="muted">No readings yet.</p>';
+  };
+  document.querySelectorAll('.qp').forEach(b => b.onclick = () => { $('#q').value = b.dataset.q; });
+  $('#ask').onclick = async () => {
+    const question = $('#q').value.trim();
+    if (!question) return say('Type a question, or tap one of the ready-made ones.', true);
+    $('#ask').disabled = true; say('Asking… the model may have to be loaded first.');
+    try {
+      const a = await api(`/api/receipts/${id}/ask`, {json: {question}});
+      $('#answer').style.display = ''; $('#answer').textContent = `${a.answer}\n\n(${a.engine}, ${a.seconds} s)`;
+      say('');
+    } catch (e) { say(e.message, true); }
+    $('#ask').disabled = false;
+  };
   $('#addphoto').onclick = () => $('#more').click();
   $('#more').onchange = async e => { const fd = new FormData(); fd.append('photo', e.target.files[0]);
     try { await api(`/api/receipts/${id}/photos`, {method: 'POST', body: fd}); say('Photo added; reading again… reload in a minute.'); } catch (x) { say(x.message, true); } };
@@ -237,7 +332,7 @@ function bind() {
     await api('/api/receipts/' + id, {method: 'DELETE'}); location.href = '/review'; };
 }
 async function send(approve) {
-  const body = {items: items(), approve};
+  const body = {items: items(), approve, used_fixes: usedFixes};
   for (const [f] of FIELDS) { const v = $('#f_' + f).value.trim(); body[f] = (f === 'total' || f === 'tax') ? toCents(v) : (v || null); }
   if (Number.isNaN(body.total) || Number.isNaN(body.tax) || body.items.some(i => Number.isNaN(i.line_total))) return say('A price isn\\'t a number.', true);
   try {
@@ -289,7 +384,7 @@ let t;
 async function load() {
   const r = await api('/api/products?q=' + encodeURIComponent($('#q').value));
   $('#grid').innerHTML = r.products.map(p => `<a href="/products/${p.id}" style="color:inherit;text-decoration:none">
-    ${p.image_url ? `<img src="${p.image_url}" alt="" loading="lazy">` : '<img alt="">'}
+    ${p.image_url ? `<img src="${p.image_url}?w=400" alt="" loading="lazy" decoding="async">` : '<img alt="">'}
     <b>${esc(p.name || (p.status === 'pending' ? 'Reading…' : 'Unnamed'))}</b>${p.status === 'review' ? ' <span class="tag review">check</span>' : ''}<br><span class="muted">${esc([p.brand, p.size].filter(Boolean).join(' · '))}
     ${p.purchases ? `<br>${p.purchases}× · ${money(p.last_price)} at ${esc(p.last_store || '?')}` : ''}</span></a>`).join('') || '<p class="muted">No products yet.</p>';
 }
@@ -326,7 +421,7 @@ async function load() {
     <input id="f_${f}" value="${esc(p[f] || '')}"></div>`).join('');
   $('#checks').innerHTML = (p.checks || []).map(c => `<li class="${c.ok ? '' : 'bad'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}: ${esc(c.detail)}</li>`).join('')
     || '<li class="muted">Named by hand, not read from a photo.</li>';
-  $('#photos').innerHTML = p.images.map(i => `<img src="${i.url}" alt="">`).join('');
+  $('#photos').innerHTML = p.images.map(i => `<a href="${i.url}" target="_blank"><img src="${i.url}?w=1200" alt="" decoding="async"></a>`).join('');
   $('#aliases').innerHTML = p.aliases.map(a => `<li>${esc(a)}</li>`).join('') || '<li class="muted">none yet</li>';
   $('#hist').innerHTML = p.history.map(h => `<tr><td><a href="/review/${h.receipt_id}">${esc(h.date)}</a></td><td>${esc(h.merchant || '')}${h.location ? ' · ' + esc(h.location) : ''}</td>
     <td class="num">${money(h.line_total)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No purchases yet.</td></tr>';
@@ -416,6 +511,49 @@ async function start(album) {
   } catch (e) { say(e.message, true); }
 }
 load().catch(e => say(e.message, true));
+</script>""")
+
+
+BODIES["stats"] = ("Stats", """
+<h1>Reading errors</h1>
+<p class="muted">What the model got wrong, from its own reading compared with the receipt as you approved it.
+Receipts approved automatically aren't counted: nobody checked them.</p>
+<div id="errors"></div>
+<h1>Load times</h1>
+<p class="muted">Since the service started (the last 2000 requests). The phone's times include the network; the
+service's are its own share. Reload to update.</p>
+<div id="body"></div>
+<script>
+const ms = x => x == null ? '' : (x >= 1000 ? (x / 1000).toFixed(1) + ' s' : x + ' ms');
+const row = (name, s, extra) => s ? `<tr><td>${esc(name)}</td><td class="num">${s.count}</td><td class="num">${ms(s.median_ms)}</td>
+  <td class="num">${ms(s.p95_ms)}</td><td class="num">${ms(s.max_ms)}</td>${extra || ''}</tr>` : '';
+const head = (first, extra) => `<tr><th>${first}</th><th class="num">n</th><th class="num">median</th><th class="num">95%</th><th class="num">slowest</th>${extra || ''}</tr>`;
+function errorTable(title, groups, cats) {
+  const used = Object.keys(cats).filter(c => Object.values(groups).some(g => g.categories[c]));
+  return `<h2>${title}</h2><div style="overflow-x:auto"><table><tr><th></th><th class="num">readings</th><th class="num">with errors</th>`
+    + used.map(c => `<th class="num">${esc(cats[c])}</th>`).join('') + '</tr>'
+    + Object.entries(groups).map(([k, g]) => `<tr><td>${esc(k)}</td><td class="num">${g.readings}</td><td class="num">${g.with_errors}</td>`
+      + used.map(c => `<td class="num">${g.categories[c] || ''}</td>`).join('') + '</tr>').join('') + '</table></div>';
+}
+api('/api/errors').then(e => {
+  if (!Object.keys(e.by_prompt).length) return $('#errors').innerHTML = '<p class="muted">No receipt approved by hand yet.</p>';
+  $('#errors').innerHTML = errorTable('By prompt version', e.by_prompt, e.categories) + errorTable('By engine', e.by_engine, e.categories)
+    + errorTable('By store', e.by_store, e.categories)
+    + '<h2>Latest</h2><ul class="checks">' + e.recent.map(x => `<li><a href="${x.url}">#${x.receipt_id}</a> ${esc(x.store || '')}
+      · ${esc(e.categories[x.category] || x.category)}: ${esc(x.detail)} <span class="muted">(${esc(x.engine)}, prompt ${esc(x.prompt_version || '?')}${x.found_by !== 'review' ? ', ' + esc(x.found_by) : ''})</span></li>`).join('') + '</ul>';
+}).catch(err => $('#errors').textContent = err.message);
+api('/api/stats').then(s => {
+  let h = '<h2>On the phone</h2><table>' + head('Page') +
+    Object.entries(s.phone).map(([p, v]) => row(p + ' page', v.page_load) + row(p + ' photos', v.photo) + row(p + ' data', v.api)).join('') + '</table>';
+  if (!Object.keys(s.phone).length) h += '<p class="muted">No page has reported yet: open the gallery, then come back.</p>';
+  h += '<h2>In the service</h2><table>' + head('Request', '<th class="num">size</th>') +
+    Object.entries(s.server).map(([k, v]) => row(k, v, `<td class="num">${v.median_kb} KB</td>`)).join('') + '</table>';
+  const pp = Object.entries(s.photo_parts);
+  if (pp.length) h += '<p class="muted">Photos: ' + pp.map(([w, n]) => `${esc(w)} ${n}×`).join(' · ') + '</p>';
+  h += '<h2>Slowest requests</h2><table><tr><th>Request</th><th class="num">time</th><th>where it went</th></tr>' +
+    s.slowest.map(r => `<tr><td>${esc(r.request)}</td><td class="num">${ms(r.ms)}</td><td class="muted">${esc(r.parts)}</td></tr>`).join('') + '</table>';
+  $('#body').innerHTML = h;
+}).catch(e => $('#body').textContent = e.message);
 </script>""")
 
 

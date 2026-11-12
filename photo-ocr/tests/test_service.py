@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 import urllib.error
@@ -73,8 +74,8 @@ def test_buckets():
     assert next(c for c in a["checks"] if c["name"] == "sum")["detail"] == "items + tax = 7.19, total = 7.91"
 
     assert checks.assess(dict(RECEIPT, total=None), {}, known)["bucket"] == "retake"
-    assert checks.assess(dict(RECEIPT, date="13/45/2026"), {}, known)["bucket"] == "retake"
-    assert checks.assess(dict(RECEIPT, date="2019-01-01"), {}, known)["bucket"] == "review"
+    assert checks.assess(dict(RECEIPT, date_printed="13/45/2026"), {}, known)["bucket"] == "retake"
+    assert checks.assess(dict(RECEIPT, date_printed="2019-01-01"), {}, known)["bucket"] == "review"
     assert checks.assess(dict(RECEIPT, tax="forty"), {}, known)["bucket"] == "review"
 
 
@@ -119,7 +120,7 @@ def test_capture_parse_review_approve(tmp_path, model):
     assert r["status"] == "approved"
     fixes = svc.store.q("SELECT field, before, after FROM corrections WHERE receipt_id = ?", rid)
     assert {f["field"] for f in fixes} == {"merchant", "items"}
-    assert svc.known_stores() == {"gianteagle4", "gianteagle"}
+    assert svc.known_stores() == {"gianteagle4": None, "gianteagle": None}
 
     # The same store next time: everything checks out, so it's saved without review.
     rid2 = capture(svc, 3)
@@ -212,7 +213,7 @@ def test_aliases_products_and_shopping_list(tmp_path, model):
     model.pick = milk
     rids = []
     for n, d in enumerate(days):
-        model.receipt = dict(RECEIPT, date=d.isoformat(), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
+        model.receipt = dict(RECEIPT, date_printed=d.strftime("%b %d, %Y"), items=[{"name": "GV WHL MLK GAL", "price": 3.29 + n * 0.1},
                                                                    {"name": "BAG FEE", "price": 0.10}],
                              tax=0, total=round(3.39 + n * 0.1, 2))
         rids.append(capture(svc, 10 + n))
@@ -526,3 +527,338 @@ def test_export_labels_feeds_the_bakeoff(tmp_path, model, capsys):
     assert sorted(p.name for p in folder.iterdir()) == ["1.jpg", "2.jpg", "label.json", "tags.txt"]
     assert bakeoff.main(["--home", str(tmp_path / "bakeoff"), "check"]) == 0
     assert bakeoff.score(json.loads((folder / "label.json").read_text()), RECEIPT)["all"]
+
+
+def test_pages_get_smaller_copies_of_photos(api):
+    """A gallery of full-size phone photos loads a row at a time: pages ask for ?w=..., a copy made once and kept."""
+    import io
+    from PIL import Image
+    big = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored sideways, shown upright (as a phone camera saves portrait photos)
+    Image.new("RGB", (4000, 3000), (200, 30, 30)).save(big, "JPEG", exif=exif)
+    body, ctype = form([("photo", "big.jpg", big.getvalue())])
+    api("POST", "/api/products", body, ctype)
+    [img] = api.svc.store.q("SELECT id FROM images")
+
+    status, data = api("GET", f"/api/images/{img['id']}?w=400")
+    small = Image.open(io.BytesIO(data))
+    assert status == 200 and small.size == (400, 533)  # upright: portrait, 400 wide
+    assert len(data) < len(big.getvalue()) / 10
+    cached = api.svc.cache / "sized" / f"{img['id']}-400.jpg"
+    assert cached.exists()
+    assert api("GET", f"/api/images/{img['id']}?w=350")[1] == data  # rounds up to the same kept copy
+    assert api("GET", f"/api/images/{img['id']}")[1] == big.getvalue()  # no w: the original
+    assert api("GET", f"/api/images/{img['id']}?w=big")[0] == 400
+
+    gallery = api("GET", "/products")[1].decode()
+    assert '${p.image_url}?w=400' in gallery and 'loading="lazy"' in gallery
+    assert '?w=1200' in api("GET", "/review/1")[1].decode()
+
+
+def test_load_times_are_logged_and_summarized(api, caplog):
+    import io
+    import logging
+    from PIL import Image
+    big = io.BytesIO()
+    Image.new("RGB", (3000, 4000), (10, 120, 200)).save(big, "JPEG")
+    body, ctype = form([("photo", "big.jpg", big.getvalue())])
+    api("POST", "/api/products", body, ctype)
+    [img] = api.svc.store.q("SELECT id FROM images")
+    caplog.set_level(logging.INFO, logger="photo-ocr")
+    import time as clock
+
+    def logged(text, n):
+        """The log lines with ``text``, once there are ``n``: the service logs a request just after sending it,
+        so the time to send is counted, which means the next step here can run first."""
+        for _ in range(100):
+            lines = [r.getMessage() for r in caplog.records if text in r.getMessage()]
+            if len(lines) >= n:
+                return lines
+            clock.sleep(0.02)
+        return lines
+
+    api("GET", f"/api/images/{img['id']}?w=400")
+    logged(f"/api/images/{img['id']}", 1)
+    api("GET", f"/api/images/{img['id']}?w=400")
+    lines = logged(f"/api/images/{img['id']}", 2)
+    assert len(lines) == 2
+    assert lines[0].startswith(f"GET /api/images/{img['id']}?w=400 200 ") and "(shrunk " in lines[0]
+    assert lines[1].endswith("(ready-made)")
+
+    status, ok = api("POST", "/api/timings", {"page": "/products", "page_ms": 1840, "items": [
+        {"u": "/api/products", "ms": 95, "kb": 3}, {"u": f"/api/images/{img['id']}?w=400", "ms": 2100, "kb": 41},
+        {"u": "/api/images/9?w=400", "ms": 300, "kb": 30}]})
+    assert status == 200 and ok == {"ok": True}
+    phone = [r.getMessage() for r in caplog.records if r.getMessage().startswith("phone ")]
+    assert phone == [f"phone /products: page 1.8 s; 2 photos median 1200 ms, slowest 2100 ms "
+                     f"(/api/images/{img['id']}?w=400, 41 KB); 1 request, slowest 95 ms (/api/products)"]
+
+    stats = api("GET", "/api/stats")[1]
+    assert stats["server"]["photo ?w=400"]["count"] == 2
+    assert stats["photo_parts"] == {"shrunk": 1, "ready-made": 1}
+    assert stats["phone"]["/products"]["page_load"]["median_ms"] == 1840
+    assert stats["phone"]["/products"]["photo"]["max_ms"] == 2100
+    assert any("shrunk" in r["parts"] for r in stats["slowest"])
+    assert api("GET", "/stats")[0] == 200
+
+
+def test_photo_fetched_from_immich_is_timed(tmp_path, model, immich_fake):
+    import timing
+    client = immich.Immich(immich_fake.url, "k1")
+    svc = make_service(tmp_path, model, photos=client)
+    rid = capture(svc, 1)
+    [img] = svc.store.q("SELECT id, cache_path FROM images WHERE receipt_id = ?", rid)
+    os.remove(img["cache_path"])
+    timing.start()
+    svc.image_path(img["id"])
+    assert [w for w, _ in timing.parts()] == ["photo from Immich"]
+
+
+def test_worker_makes_the_page_copies_ahead(tmp_path, model):
+    import io
+    from PIL import Image
+    svc = make_service(tmp_path, model)
+    b = io.BytesIO()
+    Image.new("RGB", (3000, 4000), (1, 2, 3)).save(b, "JPEG")
+    pid = svc.create_product([("p.jpg", b.getvalue())])
+    done = svc.work_once()
+    [img] = svc.store.q("SELECT id FROM images WHERE product_id = ?", pid)
+    assert done["page copies"] == 2
+    assert all((svc.cache / "sized" / f"{img['id']}-{w}.jpg").exists() for w in (400, 1200))
+    assert svc.work_once()["page copies"] == 0  # made once
+
+
+def test_readings_keep_their_prompt_and_the_date_as_printed(api, model):
+    import parsing
+    model.receipt = dict(RECEIPT, date_printed="11/04/26 12:19:13")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    [run] = api("GET", "/api/receipts/1/runs")[1]["runs"]
+    assert run["prompt"] == parsing.PROMPT and run["prompt_version"] == parsing.prompt_version(parsing.PROMPT)
+    assert (run["date_printed"], run["date"]) == ("11/04/26 12:19:13", None)  # Nov 4 or Apr 11: not known yet
+    assert '"date_printed"' in run["raw"]
+    assert "date_printed" in run["prompt"] and "YYYY-MM-DD" not in run["prompt"]
+    last = api("GET", "/api/receipts/1")[1]["runs"][0]
+    assert last["prompt_version"] == run["prompt_version"] and last["created_at"]
+    assert api("GET", "/api/receipts/9/runs")[0] == 404
+
+
+def test_ask_the_model_about_a_receipt(api, model):
+    api.svc.create_receipt([("r.png", png(1)), ("s.png", png(2))])
+    status, a = api("POST", "/api/receipts/1/ask", {"question": "What date is printed on this receipt?"})
+    assert status == 200 and a["answer"] == model.ask_reply and a["engine"] == "vl-a"
+    asked = json.loads(model.requests[-1][2])
+    content = asked["messages"][0]["content"]
+    assert sum(1 for c in content if c.get("type") == "image_url") == 2
+    assert content[-1]["text"] == "What date is printed on this receipt?" and "response_format" not in asked
+    assert api("POST", "/api/receipts/1/ask", {"question": " "}) == (400, {"error": "type a question"})
+
+
+def test_an_existing_store_gets_the_new_columns(tmp_path):
+    import db
+    old = tmp_path / "old.db"
+    con = sqlite3.connect(old)
+    con.execute("CREATE TABLE engine_runs (id INTEGER PRIMARY KEY, receipt_id INTEGER, product_id INTEGER, engine TEXT "
+                "NOT NULL, raw_output TEXT, parsed_json TEXT, ocr_json TEXT, error TEXT, seconds REAL, created_at TEXT NOT NULL)")
+    con.execute("INSERT INTO engine_runs (engine, created_at) VALUES ('qwen3-vl-8b', '2026-11-06T10:00:00')")
+    con.commit()
+    con.close()
+    store = db.Store(old)
+    [row] = store.q("SELECT engine, prompt, prompt_version FROM engine_runs")
+    assert row == {"engine": "qwen3-vl-8b", "prompt": None, "prompt_version": None}
+    db.Store(old)  # opening again changes nothing
+
+
+@pytest.mark.parametrize("printed, options", [
+    ("11/04/26", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("1/4/26", {"mdy": "2026-01-04", "dmy": "2026-04-01"}),
+    ("11/04/26 12:19:13", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("TC# 1234 11.04.2026 12:19", {"mdy": "2026-11-04", "dmy": "2026-04-11"}),
+    ("04/04/26", {"mdy": "2026-04-04", "dmy": "2026-04-04"}),
+    ("11/25/2026", {"mdy": "2026-11-25"}), ("25/11/26", {"dmy": "2026-11-25"}), ("25-11-2026", {"dmy": "2026-11-25"}),
+    ("2026-11-04", {"": "2026-11-04"}), ("2026/11/04 08:15", {"": "2026-11-04"}),
+    ("Nov 4, 2026", {"": "2026-11-04"}), ("4 November 2026", {"": "2026-11-04"}), ("SAT NOV 04 26", {"": "2026-11-04"}),
+    ("13/45/26", {}), ("", {}), (None, {}), ("soon", {})])
+def test_every_way_a_printed_date_reads(printed, options):
+    import parsing
+    assert parsing.date_options(printed) == options
+
+
+def test_to_date_converts_only_what_reads_one_way():
+    import parsing
+    assert parsing.to_date("25/11/26") == "2026-11-25" and parsing.to_date("04/04/26") == "2026-04-04"
+    assert parsing.to_date("11/04/26") is None
+    assert parsing.to_date("11/04/26", "mdy") == "2026-11-04" and parsing.to_date("11/04/26", "dmy") == "2026-04-11"
+
+
+def test_a_store_learns_its_date_order_from_the_first_approved_receipt(api, model):
+    model.receipt = dict(RECEIPT, store="Walmart", date_printed="10/04/26 12:19:13")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/1")[1]
+    assert (r["bucket"], r["purchase_date"]) == ("review", None)  # not a retake: the date is readable, two ways
+    [date_check] = [c for c in r["checks"] if c["name"] == "date"]
+    assert not date_check["ok"] and "this store's date order isn't known yet" in date_check["detail"]
+    assert date_check["choices"] == [{"order": "mdy", "date": "2026-10-04", "label": "month first"},
+                                     {"order": "dmy", "date": "2026-04-10", "label": "day first"}]
+    api("POST", "/api/receipts/1", {"purchase_date": "2026-10-04", "approve": True})
+    assert api.svc.known_stores()["walmart"] == "mdy"
+
+    model.receipt = dict(RECEIPT, store="WALMART", date_printed="10/05/26 09:02")
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/2")[1]
+    assert r["purchase_date"] == "2026-10-05" and r["bucket"] == "auto"
+    assert api("GET", "/api/receipts/2/runs")[1]["runs"][0]["date"] == "2026-10-05"
+
+
+def test_a_date_that_reads_one_way_teaches_the_order_too(api, model):
+    model.receipt = dict(RECEIPT, store="Tim Hortons", date_printed="25/10/26")  # only day first is a real date
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    assert api("GET", "/api/receipts/1")[1]["purchase_date"] == "2026-10-25"
+    api("POST", "/api/receipts/1", {"approve": True})
+    assert api.svc.known_stores()["timhortons"] == "dmy"
+    model.receipt = dict(RECEIPT, store="Tim Hortons", date_printed="04/10/26")
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()
+    assert api("GET", "/api/receipts/2")[1]["purchase_date"] == "2026-10-04"
+
+
+def test_the_same_date_both_ways_teaches_nothing(api, model):
+    model.receipt = dict(RECEIPT, store="Walmart", date_printed="10/10/26")
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    api("POST", "/api/receipts/1", {"approve": True})
+    assert api.svc.known_stores()["walmart"] is None
+
+
+def test_review_page_offers_the_two_readings(api):
+    page = api("GET", "/review/1")[1].decode()
+    assert "c.choices" in page and "datepick" in page and "f_purchase_date" in page
+
+
+TRUTH = {"store": "Meijer", "date": "2026-10-04", "tax": 42, "total": 619,
+         "items": [{"name": "BANANAS", "quantity": 1, "price": 129}, {"name": "MILK 2% GAL", "quantity": 1, "price": 399},
+                   {"name": "BREAD WHT", "quantity": 1, "price": 249}, {"name": "MPERKS COUPON", "quantity": None, "price": -200}]}
+
+
+def reading(**changes):
+    r = {"store": "Meijer", "date_printed": "10/04/26", "tax": 0.42, "total": 6.19,
+         "items": [{"name": "BANANAS", "price": 1.29}, {"name": "MILK 2% GAL", "price": 3.99},
+                   {"name": "BREAD WHT", "price": 2.49}, {"name": "MPERKS COUPON", "price": -2.00}]}
+    r.update(changes)
+    return r
+
+
+def cats(found):
+    return [e["category"] for e in found]
+
+
+def test_a_right_reading_has_no_errors():
+    import errors
+    assert errors.classify(reading(), TRUTH, "mdy") == []
+
+
+def test_a_summary_line_read_as_an_item():
+    import errors
+    savings = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -2.00}])
+    assert errors.classify(savings, TRUTH, "mdy") == [{"category": "summary_line", "detail": "'SAVINGS TOTAL' -2.00"}]
+    subtotal = reading(items=reading()["items"] + [{"name": "SUBTTL", "price": 5.77}])  # its amount says so
+    assert cats(errors.classify(subtotal, TRUTH, "mdy")) == ["summary_line"]
+    unnamed = reading(items=reading()["items"] + [{"name": "MPERKS", "price": -2.00}])  # the discounts' total
+    assert cats(errors.classify(unnamed, TRUTH, "mdy")) == ["summary_line"]
+    # its text alone says so too, even when another mistake keeps the sum from working out
+    worse = reading(total=9.99, items=reading()["items"] + [{"name": "YOU SAVED", "price": -2.00}])
+    assert cats(errors.classify(worse, TRUTH, "mdy")) == ["summary_line", "misread_total"]
+
+
+def test_line_errors_by_category():
+    import errors
+    items = reading()["items"]
+    twice = reading(items=items + [items[0]], total=7.48)
+    assert cats(errors.classify(twice, TRUTH, "mdy")) == ["duplicate_line", "misread_total"]
+    extra = reading(items=items + [{"name": "GUM", "price": 1.00}], total=7.19)  # its own sum balances with it
+    assert cats(errors.classify(extra, TRUTH, "mdy")) == ["extra_line", "misread_total"]
+    extra = reading(items=items + [{"name": "GUM", "price": 1.00}])
+    assert errors.classify(extra, TRUTH, "mdy") == [{"category": "extra_line", "detail": "'GUM' 1.00"}]
+    missed = reading(items=items[:3])
+    assert cats(errors.classify(missed, TRUTH, "mdy")) == ["missed_line"]
+    price = reading(items=[{"name": "BANANAS", "price": 1.92}] + items[1:])
+    assert errors.classify(price, TRUTH, "mdy") == [{"category": "misread_price", "detail": "BANANAS: read 1.92, is 1.29"}]
+    text = reading(items=[{"name": "BANAMAS", "price": 1.29}] + items[1:])
+    assert cats(errors.classify(text, TRUTH, "mdy")) == ["misread_text"]
+
+
+def test_field_and_date_errors():
+    import errors
+    assert cats(errors.classify(reading(tax=0.24), TRUTH, "mdy")) == ["misread_tax"]
+    assert errors.classify(reading(date_printed="10/07/26"), TRUTH, "mdy")[0]["category"] == "misread_date"
+    assert cats(errors.classify(reading(), TRUTH, "dmy")) == ["wrong_date_order"]  # the store's order, not the model
+    assert errors.classify(reading(), TRUTH, None) == []  # read two ways and asked: no one's mistake
+
+
+def test_the_sum_check_offers_to_remove_the_line_that_breaks_it():
+    known = {"meijer": "mdy"}
+    savings = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -3.00}])
+    [s] = [c for c in checks.assess(savings, {}, known)["checks"] if c["name"] == "sum"]
+    assert not s["ok"] and s["fix"] == {"remove": [{"name": "SAVINGS TOTAL", "price": -300}]}
+    one_coupon = reading(items=reading()["items"] + [{"name": "SAVINGS TOTAL", "price": -2.00}])  # = the coupon
+    [s] = [c for c in checks.assess(one_coupon, {}, known)["checks"] if c["name"] == "sum"]
+    assert s["fix"]["remove"] == [{"name": "MPERKS COUPON", "price": -200}, {"name": "SAVINGS TOTAL", "price": -200}]
+    off = reading(total=9.99)  # no one line explains it
+    assert "fix" not in next(c for c in checks.assess(off, {}, known)["checks"] if c["name"] == "sum")
+
+
+def test_the_savings_printed_against_the_discount_lines():
+    known = {"meijer": "mdy"}
+    ok = checks.assess(reading(savings=2.00), {}, known)
+    assert next(c for c in ok["checks"] if c["name"] == "savings") == {
+        "name": "savings", "ok": True, "detail": "discount lines = 2.00, savings printed = 2.00"}
+    assert ok["bucket"] == "auto"
+    missed = checks.assess(reading(savings=5.00), {}, known)
+    assert not next(c for c in missed["checks"] if c["name"] == "savings")["ok"] and missed["bucket"] == "review"
+    none = reading(savings=1.50, items=reading()["items"][:3], total=8.19)  # savings inside the prices: no lines
+    assert not any(c["name"] == "savings" for c in checks.assess(none, {}, known)["checks"])
+
+
+def test_the_prompt_says_what_isnt_an_item():
+    import parsing
+    assert "Summary lines are not items" in parsing.PROMPT and '"savings"' in parsing.PROMPT
+    assert "savings" in parsing.SCHEMA["properties"]
+
+
+def test_errors_are_logged_on_approval_for_every_reading(api, model):
+    import parsing
+    model.receipt = dict(RECEIPT, items=RECEIPT["items"] + [{"name": "SAVINGS TOTAL", "price": -1.00}])
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.parse_pending()
+    r = api("GET", "/api/receipts/1")[1]
+    options = next(c for c in r["checks"] if c["name"] == "sum")["fix"]["remove"]
+    assert options == [{"name": "BONUS SAVINGS", "price": -100}, {"name": "SAVINGS TOTAL", "price": -100}]
+    fix = options[1]
+    api.svc.reparse(1)  # read again: the same mistake, a second reading
+    api.svc.parse_pending()
+    items = [{"raw_text": i["raw_text"], "quantity": i["quantity"], "line_total": i["line_total"]}
+             for i in api("GET", "/api/receipts/1")[1]["items"] if i["raw_text"] != "SAVINGS TOTAL"]
+    api("POST", "/api/receipts/1", {"items": items, "approve": True, "used_fixes": [fix]})
+    rows = api.svc.store.q("SELECT run_id, category, detail, found_by FROM reading_errors ORDER BY run_id")
+    assert [(x["category"], x["found_by"]) for x in rows] == [("summary_line", "review"), ("summary_line", "sum check suggestion")]
+    report = api("GET", "/api/errors")[1]
+    version = parsing.prompt_version(parsing.PROMPT)
+    assert report["by_prompt"] == {version: {"readings": 2, "with_errors": 2, "categories": {"summary_line": 2}}}
+    assert report["by_store"]["Giant Eagle"]["readings"] == 2
+    assert report["recent"][0]["url"] == "/review/1" and report["categories"]["summary_line"]
+    assert api.svc.log_reviewed_errors() == 0  # nothing left to compare
+
+
+def test_receipts_approved_before_the_error_log_are_compared(api, model):
+    api.svc.create_receipt([("r.png", png(1))])
+    api.svc.create_receipt([("s.png", png(2))])
+    api.svc.parse_pending()  # a new store: both in review
+    api.svc.store.x("UPDATE receipts SET status = 'approved' WHERE id = 1")  # as if approved before this version
+    api.svc.store.x("UPDATE receipts SET status = 'approved', bucket = 'auto' WHERE id = 2")  # nobody checked it
+    assert api.svc.log_reviewed_errors() == 1
+    assert [x["receipt_id"] for x in api.svc.store.q("SELECT receipt_id FROM reading_reviews")] == [1]
+    assert "error log" in api.svc.work_once()

@@ -333,3 +333,94 @@ def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
     assert opened["noun"] == "product"
     opened["on_pick"]([tmp_path / "milk.jpg", tmp_path / "eggs.jpg"], True)
     assert fc.value == f"{tmp_path / 'milk.jpg'}\n\n{tmp_path / 'eggs.jpg'}"
+
+
+def test_take_photos_opens_the_camera_and_adds_its_photos(tmp_path, monkeypatch):
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.CameraCapture, "open",
+                        classmethod(lambda cls, app, on_done, **kw: opened.update(kw, on_done=on_done)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    take = fc.control.controls[1].controls[0]
+    assert take.content == "Take photos"
+    take.on_click(None)
+    assert opened["guides"] == "receipt" and opened["title"] == "Receipt photos"
+    opened["on_done"]([tmp_path / "1.jpg", tmp_path / "2.jpg"])
+    assert fc.value.splitlines() == [str(tmp_path / "1.jpg"), str(tmp_path / "2.jpg")]
+    product = JobScreen(app, photos.PRODUCT).fields["photos"]
+    assert [b.content for b in product.control.controls[1].controls] == ["Add…"]
+
+
+def test_web_addresses_in_results_are_links(tmp_path):
+    from taskdeck.jobs.photo_ocr import photos
+
+    app = fake_app(tmp_path)
+    opened = []
+    app.open_url = opened.append
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    spans = screen._linked("Review them on https://ws.example.ts.net:8444/review/17.")
+    assert [s.text for s in spans] == ["Review them on ", "https://ws.example.ts.net:8444/review/17", "."]
+    spans[1].on_click(None)
+    assert opened == ["https://ws.example.ts.net:8444/review/17"]
+    assert [s.text for s in screen._linked("no links here")] == ["no links here"]
+
+
+def test_a_failed_upload_offers_connect_again_and_retry(tmp_path):
+    """Google refused the sign-in: the card offers Connect again (which retries once connected) and
+    Retry upload (which runs the upload again, without parsing again)."""
+    import asyncio
+
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    app.page = SimpleNamespace(update=lambda: None, run_task=lambda fn, *a: asyncio.run(fn(*a)))
+    app.vault = None
+    app.history = SimpleNamespace(add=lambda *a: None)
+    connects = []
+    app.google = SimpleNamespace(connect=lambda on_done=None: (connects.append(1), on_done and on_done()))
+    attempts = []
+
+    def work(t):
+        attempts.append(1)
+        if len(attempts) == 1:
+            err = RuntimeError("Google no longer accepts this sign-in (revoked or expired). Connect again.")
+            err.fix = "account:google"
+            raise err
+        return "Uploaded 3 files."
+
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    task = screen._start_task("Uploading _GAME to Google Drive", work, retry_label="Retry upload")
+    assert task.status == "failed" and task.fix == "account:google"
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Connect again", "Retry upload", "Close"]
+
+    screen.connect_again(task)  # connects, then retries
+    assert connects == [1] and len(attempts) == 2
+    assert screen.task.status == "done" and screen.task.message == "Uploaded 3 files."
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Close"]
+
+
+def test_a_network_failure_offers_only_retry(tmp_path):
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    app.google = SimpleNamespace(connect=lambda on_done=None: None)
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    screen._start_task("Uploading", lambda t: (_ for _ in ()).throw(RuntimeError("No connection.")),
+                       retry_label="Retry upload")
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Retry upload", "Close"]

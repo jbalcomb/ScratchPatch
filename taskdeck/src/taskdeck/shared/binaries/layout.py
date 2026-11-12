@@ -30,6 +30,7 @@ from typing import Callable
 
 from taskdeck.core import Cancelled
 
+from . import debugdoc
 from .formats import Exe, Region, h
 
 GENERATOR = "TaskDeck binary parser 2"
@@ -121,12 +122,17 @@ class _Writer:
         self.region_dirs = [f"regions/{i:02d}-{slug(r.name)}" for i, r in enumerate(self.exe.regions)]
         self.chunks = [(i, s, min(s + self.chunk, r.end)) for i, r in enumerate(self.exe.regions)
                        for s in range(r.start, r.end, self.chunk)]
+        # Debug symbols by file offset, to name them in the header of the chunk that holds them.
+        at = debugdoc.chunk_symbols(self.exe, self.exe.debug) if self.exe.debug else {}
+        self.symbol_offsets = sorted(at)
+        self.symbol_names = at
         self._regions()
         self._headers()
         for name, lines in self.exe.tables.items():
             self.index["tables"][name] = self._paged(f"tables/{slug(name)}", lines, f"{self.name} · {name}")
         self._strings()
         self._exports()
+        self._debug()
         meta = self._metadata()
         self._put("metadata.json", json.dumps(meta, indent=2) + "\n")
         self._put("SUMMARY.md", self._summary(meta))
@@ -175,12 +181,35 @@ class _Writer:
                     f"# prev: {prev}",
                     f"# next: {nxt}",
                     "# columns: file offset" + (f" | {r.address}" if r.base is not None else "") + " | bytes | ASCII"]
+            named = self._symbols_in(s, e)
+            if named:
+                head.insert(4, "# symbols: " + named)
             body = [self._hex_line(off, min(off + BYTES_PER_LINE, e), r) for off in range(s, e, BYTES_PER_LINE)]
             self._put(rel, "\n".join(head + body) + "\n")
             item = {"file": rel, "start": s, "end": e}
             entries[i]["chunks"].append(item)
             self.out.chunks += 1
         self.index["regions"] = list(entries.values())
+
+    def _symbols_in(self, start: int, end: int, most: int = 12) -> str:
+        """The debug symbols starting in [start, end): "Read_Key_ (0x00012345), ..." (file offsets)."""
+        lo = bisect.bisect_left(self.symbol_offsets, start)
+        hi = bisect.bisect_left(self.symbol_offsets, end)
+        found = [f"{n} ({h(off, 8)})" for off in self.symbol_offsets[lo:hi] for n in self.symbol_names[off]]
+        return ", ".join(found[:most]) + (f", … {len(found) - most} more (debug/symbols-*.txt)" if len(found) > most else "")
+
+    def _debug(self) -> None:
+        """The debug info: DEBUG.md (all of it), symbols by address, one file per module."""
+        info = self.exe.debug
+        if not info:
+            return
+        self.index["debug"] = {"symbols": self._paged("debug/symbols", debugdoc.symbols_lines(self.exe, info, self._chunk_for),
+                                                      f"{self.name} · debug symbols by address")}
+        doc, modules = debugdoc.document(self.exe, info, self.name, self._chunk_for)
+        self._put("debug/DEBUG.md", doc)
+        for rel, text in modules.items():
+            self._put(rel, text)
+        self.index["debug"].update(document="debug/DEBUG.md", modules=sorted(modules))
 
     def _hex_line(self, start: int, end: int, r: Region) -> str:
         row = self.data[start:end]
@@ -294,8 +323,10 @@ class _Writer:
                f"| Chunks | {self.out.chunks:,} of up to {self.chunk:,} bytes |", ""]
         if meta["entry_point"]:
             e = meta["entry_point"]
+            named = ", ".join(self.symbol_names.get(e["file_offset"], []))
             out += ["## Entry point", "",
-                    f"{e['header']} → file offset {h(e['file_offset'], 8)}, in `{e['chunk']}`", ""]
+                    f"{e['header']}" + (f", `{named}`" if named else "")
+                    + f" → file offset {h(e['file_offset'], 8)}, in `{e['chunk']}`", ""]
         out += ["## Layout", "",
                 "Every byte of the file belongs to exactly one region. Offsets are file offsets, end exclusive.", "",
                 "| # | Region | Kind | File offsets | Size | Address of start | Folder | Note |",
@@ -334,6 +365,21 @@ class _Writer:
             if len(ex) > len(shown):
                 out.append(f"| … | {len(ex) - len(shown):,} more in `exports/` | |")
             out.append("")
+        if exe.debug:
+            info = exe.debug
+            detailed = sum(1 for m in info.modules if m.symbols or m.types or m.lines)
+            entry_name = ""
+            if exe.entry:
+                entry_name = ", ".join(self.symbol_names.get(exe.entry[0], []))
+            out += ["## Debug info", "",
+                    f"Watcom debug info {info.version}: {len(info.modules):,} modules ({detailed:,} with locals, types "
+                    f"and line numbers), {len(info.globals):,} global symbols"
+                    + (f"; the entry point is `{entry_name}`" if entry_name else "") + ".",
+                    "- `debug/DEBUG.md`: all of it in one file: modules, every global symbol, routines with their "
+                    "parameters and locals, types (structs with their fields), line numbers",
+                    "- `debug/symbols-*.txt`: every global symbol, one per line, by address, with its chunk file",
+                    "- `debug/modules/`: one file per module (its part of DEBUG.md)",
+                    "- Each chunk file's header names the symbols that start in it (`# symbols:`).", ""]
         if exe.facts.get("imported_modules"):
             out += ["## Imported modules", ""] + [f"- {m}" for m in exe.facts["imported_modules"]] + [""]
         if isinstance(exe.facts.get("resources"), dict):
@@ -352,7 +398,7 @@ class _Writer:
         return "\n".join(line for line in out if line is not None) + "\n"
 
 
-HEX_FACTS = {"new_header_offset", "image_base", "image_end"}  # addresses; other numbers are counts and sizes
+HEX_FACTS = {"new_header_offset", "image_base", "image_end", "le_offset", "bound_stub_offset", "data_pages_end"}  # addresses; other numbers are counts and sizes
 
 
 def _fmt(key: str, v: object) -> str:
@@ -380,9 +426,10 @@ files so you can read or search one piece at a time instead of loading the whole
 overlay, ...), numbered in file order. Each region is cut into chunks of up to {chunk:,} bytes, one file per
 chunk, named by the **first and last file offset** in hex: `00001000-00001FFF.txt`.
 
-Each chunk file starts with five `#` lines: the region, the byte range (file offsets, and the region's own
-address where it has one: RVA for Windows sections, offset in the load image for DOS), and the **previous and
-next** chunk files, so you can walk the file in order. Then one line per 16 bytes:
+Each chunk file starts with a few `#` lines: the region, the byte range (file offsets, and the region's own
+address where it has one: RVA for Windows sections, offset in the load image for DOS, linear address for an LE
+program's objects), the **previous and next** chunk files, so you can walk the file in order, and, when the
+file has debug info, the symbols that start in this chunk. Then one line per 16 bytes:
 
     file offset  [address]  16 bytes in hex                                    |ASCII|
 
@@ -400,8 +447,11 @@ segment).
 - Exports (`exports/`): every exported function or variable, one per line: ordinal, file offset,
   address, name, and the chunk file holding it. `exports/exports.json` has the same as JSON. Forwarded
   exports name the DLL and function they pass on to.
-- Tables (`tables/`): relocations (DOS), base relocations (Windows: every place holding an absolute address,
-  what it points to), sections, imports, resources, segments, depending on the format.
+- Tables (`tables/`): relocations (DOS), base relocations (Windows) and fixups (LE: every place holding an
+  address, what it points to), sections, objects, imports, resources, segments, depending on the format.
+- Debug info (`debug/`, when the file has Watcom debug info): `DEBUG.md` has all of it (modules, every global
+  symbol, routines with parameters and locals, types, line numbers); `symbols-*.txt` lists the global symbols
+  by address, one per line, with the chunk file holding each; `modules/` has one file per module.
   Long tables are split into files of 1,000 lines.
 
 Paths in these files are relative to this folder.

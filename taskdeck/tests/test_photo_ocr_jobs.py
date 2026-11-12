@@ -4,6 +4,7 @@ import email.parser
 import email.policy
 import http.server as http_server
 import json
+import os
 import threading
 import urllib.parse
 
@@ -237,7 +238,7 @@ def test_capture_sends_one_multipart_request_in_order(service, settings, tmp_pat
         ("Tax", "$1.12"), ("Items", "3"), ("Status", "Needs a look"), ("Check", "store"),
         ("Review page", f"{service.url}/review/17")]
     assert report.result.warning.startswith("Some of this reading looks doubtful")
-    assert report.result.images == files.splitlines()  # the thumbnails beside the reading
+    assert report.result.images == [p[2] for p in parts[1:]]  # the photos sent, beside the reading
 
 
 def test_capture_without_note_sends_only_photos(service, settings, tmp_path):
@@ -480,3 +481,61 @@ def test_grouped_field_value():
     assert f.coerce("a.jpg\nb.jpg\n\n\nc.jpg\n  \n") == [["a.jpg", "b.jpg"], ["c.jpg"]]
     assert Field.files("photos", "Photos").coerce("a.jpg\n\nc.jpg") == ["a.jpg", "c.jpg"]
     assert join_groups(split_groups("a\nb\n\nc")) == "a\nb\n\nc"
+
+
+def test_camera_photos_are_kept_only_until_sent(service, settings, tmp_path, monkeypatch):
+    """Photos from TaskDeck's camera are deleted once the receipt is sent; photos picked from the phone stay;
+    a failed send deletes nothing. The result still shows the photos (as the bytes that were sent)."""
+    from taskdeck.shared import files as storage
+    monkeypatch.setenv("TASKDECK_DATA_DIR", str(tmp_path / "app"))
+    shot = storage.camera_dir() / "receipt-1.jpg"
+    shot.write_bytes(b"camera photo")
+    [own] = photo_files(tmp_path, "from-gallery.jpg").splitlines()
+
+    service.errors["POST /api/receipts"] = (503, {"error": "busy"})
+    assert not run(photos.CAPTURE, settings, photos=f"{shot}\n{own}").ok
+    assert shot.exists()
+    del service.errors["POST /api/receipts"]
+    report = run(photos.CAPTURE, settings, photos=f"{shot}\n{own}")
+    assert report.ok, report.error
+    assert not shot.exists() and os.path.exists(own)
+    assert report.result.images[0] == b"camera photo"
+
+
+def test_receipt_field_offers_the_camera():
+    [field] = [f for f in photos.CAPTURE.fields if f.name == "photos"]
+    assert field.camera == "receipt" and field.preview
+    [product_field] = photos.PRODUCT.fields
+    assert product_field.camera == ""  # products: the camera later
+
+
+def test_receipt_result_says_why_and_lists_the_items(service, settings, tmp_path):
+    service.readings["/api/receipts/17"] = {
+        **READ_RECEIPT, "location": "Mentor, OH", "tax": 112, "total": 4519,
+        "items": [{"raw_text": "BANANAS", "quantity": 1, "line_total": 129},
+                  {"raw_text": "GV WHL MLK GAL", "quantity": 2, "line_total": 658},
+                  {"raw_text": "BONUS SAVINGS", "quantity": None, "line_total": -100}],
+        "checks": [{"name": "sum", "ok": False, "detail": "items + tax = 7.99, total = 45.19"},
+                   {"name": "date", "ok": True, "detail": "2026-10-12"},
+                   {"name": "store", "ok": False, "detail": "new store: Giant Eagle"}],
+        "disagreements": {"total": {"qwen3-vl-8b": 4519, "tesseract+llm": 4591}},
+        "runs": [{"engine": "qwen3-vl-8b", "seconds": 41.6, "error": None}]}
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    rows = dict(report.result.rows)
+    assert rows["Store"] == "Giant Eagle · Mentor, OH" and rows["Items"] == "3"
+    assert rows["Why"] == ("items + tax = 7.99, total = 45.19; new store: Giant Eagle; "
+                           "the engines read total differently")
+    assert rows["Read by"] == "qwen3-vl-8b in 42 s"
+    assert report.result.table_title == "Items read (3)"
+    assert report.result.table == [("BANANAS", "$1.29"), ("GV WHL MLK GAL ×2", "$6.58"), ("BONUS SAVINGS", "-$1.00")]
+    assert report.result.text == "Items + tax = $7.99 (total on the receipt $45.19)"
+    assert "GV WHL MLK GAL ×2       $6.58" in report.result.as_plain_text()  # Copy keeps them in columns
+
+
+def test_a_new_store_is_said_plainly(service, settings, tmp_path):
+    service.readings["/api/receipts/17"] = {
+        **READ_RECEIPT, "checks": [{"name": "sum", "ok": True, "detail": "x"},
+                                   {"name": "store", "ok": False, "detail": "new store: Giant Eagle"}]}
+    report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
+    assert dict(report.result.rows)["Status"] == "Needs a look: first receipt from this store"
+    assert report.result.warning.startswith("First receipt from Giant Eagle: check it once on the review page")

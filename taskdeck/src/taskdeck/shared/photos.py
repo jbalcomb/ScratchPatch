@@ -129,3 +129,41 @@ def _from_tiff(tiff: bytes) -> tuple[bytes | None, int]:
         return (thumb if thumb[:2] == b"\xff\xd8" else None), orientation
     except (KeyError, struct.error, IndexError):
         return None, 1
+
+
+def jpeg_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from a JPEG's frame header, as stored (before any EXIF turn); None if not found."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 9 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:  # no length
+            i += 2
+            continue
+        size = struct.unpack(">H", data[i + 2:i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):  # a start-of-frame
+            height, width = struct.unpack(">HH", data[i + 5:i + 9])
+            return width, height
+        i += 2 + size
+    return None
+
+
+def shown_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) as the photo is shown: a portrait photo stored sideways (EXIF orientation 5-8) swapped."""
+    size = jpeg_size(data)
+    if size is None:
+        return None
+    return (size[1], size[0]) if _orientation(data) in (5, 6, 7, 8) else size
+
+
+def _orientation(data: bytes) -> int:
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker, size = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+        if marker == 0xE1 and data[i + 4:i + 10] == b"Exif\x00\x00":
+            return _from_tiff(data[i + 10:i + 2 + size])[1]
+        if marker in (0xDA, 0xD9):
+            break
+        i += 2 + size
+    return 1

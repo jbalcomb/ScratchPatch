@@ -12,6 +12,7 @@ dependencies = [
     "flet-local-auth==1.0.4",      # fingerprint prompt when unlocking again after a lock
     "flet-permission-handler==1.0.4",  # "All files access", to open archives and extract anywhere
     "flet-audio-recorder==1.0.4",  # Voice notes: the microphone
+    "flet-camera==1.0.4",  # Receipt capture: TaskDeck's own camera, with receipt edge and overlap guides
     # 7-Zip's archive library + TaskDeck's C shim for Android arm64 (built by the "TaskDeck 7-Zip engine" workflow)
     "taskdeck-sevenzip @ https://github.com/jbalcomb/ScratchPatch/releases/download/taskdeck-sevenzip/taskdeck_sevenzip-26.5.1-py3-none-any.whl",
 ]
@@ -21,6 +22,7 @@ dev = [
     "flet[all]==1.0.4",
     "fastapi<0.120",  # flet-web 1.0.4 passes openapi_prefix, removed in newer FastAPI
     "pytest>=8",
+    "pillow",  # test photos (tests/test_camera_capture.py)
 ]
 
 # Third-party job packages register here, e.g.
@@ -48,6 +50,7 @@ taskdeck-background = "native/background"  # relative to this folder (where flet
 "android.permission.USE_BIOMETRIC" = true  # fingerprint unlocks the credentials vault
 "android.permission.MANAGE_EXTERNAL_STORAGE" = true  # Extract Archive: read and write files anywhere
 "android.permission.RECORD_AUDIO" = true  # Voice notes
+"android.permission.CAMERA" = true  # Receipt capture: Take photos
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

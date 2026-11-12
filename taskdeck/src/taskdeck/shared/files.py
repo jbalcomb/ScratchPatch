@@ -44,6 +44,23 @@ def is_android() -> bool:
     return hasattr(sys, "getandroidapilevel") or "ANDROID_ARGUMENT" in os.environ or "ANDROID_ROOT" in os.environ
 
 
+def camera_dir() -> Path:
+    """Where TaskDeck's camera keeps photos until they are sent (app storage, not the gallery)."""
+    from taskdeck.core.storage import default_data_dir
+
+    path = default_data_dir() / "camera"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def is_camera_photo(path: str | Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(camera_dir().resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def photos_location() -> Location:
     """Where the camera's photos are: DCIM on a phone; Pictures (else home) on a desktop."""
     if is_android():

@@ -40,8 +40,9 @@ def test_to_cents():
 
 def test_to_date():
     assert bakeoff.to_date("2026-10-12") == "2026-10-12"
-    assert bakeoff.to_date("10/12/2026") == "2026-10-12"
-    assert bakeoff.to_date("10/12/26") == "2026-10-12"
+    assert bakeoff.to_date("10/12/2026") is None  # Oct 12 or Dec 10: the store's date order decides
+    assert bakeoff.to_date("10/12/2026", "mdy") == "2026-10-12" and bakeoff.to_date("10/12/26", "dmy") == "2026-12-10"
+    assert bakeoff.to_date("10/13/26") == "2026-10-13"
     assert bakeoff.to_date("Oct 12, 2026") == "2026-10-12"
     assert bakeoff.to_date("2026-10-12T14:03:00") == "2026-10-12"
     assert bakeoff.to_date("13/45/2026") is None
@@ -158,7 +159,7 @@ def test_add_run_score_end_to_end(tmp_path, llama, capsys):
     engines = tmp_path / "engines.json"
     engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
     assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)]) == 0
-    run = json.loads((home / "results" / "fake-vl" / "r002.json").read_text())
+    run = json.loads((home / "results" / bakeoff.results_name("fake-vl") / "r002.json").read_text())
     assert run["error"] is None and run["parsed"]["total"] == "9.99"
     # Both photos of r002 went in one request, with the schema and the model name.
     assert len(FakeLlama.requests) == 2
@@ -178,7 +179,7 @@ def test_add_run_score_end_to_end(tmp_path, llama, capsys):
     capsys.readouterr()
     bakeoff.main(["--home", str(home), "score"])
     report = (home / "results" / "report.md").read_text()
-    row = next(line for line in report.splitlines() if line.startswith("| fake-vl |"))
+    row = next(line for line in report.splitlines() if line.startswith(f"| {bakeoff.results_name('fake-vl')} |"))
     cells = [c.strip() for c in row.strip("|").split("|")]
     assert cells[1:4] == ["2", "0", "50%"]  # 2 receipts, none failed, total right on 1
     assert "T✗" in report and "thermal" in report
@@ -219,7 +220,7 @@ def test_products_in_the_bakeoff(tmp_path, llama, capsys):
     engines = tmp_path / "engines.json"
     engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
     bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)])
-    run = json.loads((home / "results" / "fake-vl" / "p001.json").read_text())
+    run = json.loads((home / "results" / bakeoff.results_name("fake-vl") / "p001.json").read_text())
     assert run["kind"] == "product" and run["parsed"]["brand"] == "GREAT VALUE"
 
     bakeoff.main(["--home", str(home), "label", "fake-vl"])
@@ -233,7 +234,7 @@ def test_products_in_the_bakeoff(tmp_path, llama, capsys):
     report = (home / "results" / "report.md").read_text()
     assert "# Receipts" in report and "# Products" in report
     products = report[report.index("# Products"):]
-    row = next(line for line in products.splitlines() if line.startswith("| fake-vl |"))
+    row = next(line for line in products.splitlines() if line.startswith(f"| {bakeoff.results_name('fake-vl')} |"))
     assert [c.strip() for c in row.strip("|").split("|")][3:7] == ["100%", "100%", "0%", "0%"]  # 128 fl oz isn't 1 gal
     assert "N✓B✓S✗" in report
 
@@ -260,3 +261,39 @@ def test_check_flags_bad_labels(tmp_path, capsys):
 def test_ocr_text_marks_photo_breaks():
     lines = [{"text": "A", "conf": 1}, None, {"text": "B", "conf": 1}, None]
     assert bakeoff.ocr_text(lines) == "--- photo 1 ---\nA\n--- photo 2 ---\nB"
+
+
+def test_another_prompt_runs_beside_the_current_one(tmp_path, llama):
+    home = tmp_path / "bakeoff"
+    (tmp_path / "IMG_1.png").write_bytes(PNG)
+    bakeoff.main(["--home", str(home), "add", str(tmp_path / "IMG_1.png")])
+    (home / "set" / "r001" / "label.json").write_text(json.dumps(LABEL))
+    engines = tmp_path / "engines.json"
+    engines.write_text(json.dumps({"engines": [{"name": "fake-vl", "kind": "vlm", "url": llama, "model": "m"}]}))
+    old = Path(bakeoff.HERE / "prompts").glob("receipt-*.txt")
+    old = next(p for p in old if p.read_text() != bakeoff.PROMPT)  # the prompt before the summary-line rule
+    assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines)]) == 0
+    assert bakeoff.main(["--home", str(home), "run", "fake-vl", "--engines", str(engines), "--prompt", str(old)]) == 0
+    sent = [r["messages"][0]["content"][-1]["text"] for r in FakeLlama.requests]
+    assert sent == [bakeoff.PROMPT, old.read_text()]
+    version = bakeoff.prompt_version(old.read_text())
+    assert (home / "results" / f"fake-vl@{version}" / "r001.json").exists()
+    bakeoff.main(["--home", str(home), "score"])
+    report = (home / "results" / "report.md").read_text()
+    assert "## Errors by category" in report and f"| fake-vl@{version} | 1 |" in report
+
+
+def test_errors_by_category_in_the_report(tmp_path):
+    home = tmp_path / "bakeoff"
+    item = home / "set" / "r001"
+    item.mkdir(parents=True)
+    (item / "1.png").write_bytes(PNG)
+    (item / "label.json").write_text(json.dumps(LABEL))
+    reading = dict(LABEL, store="Giant Eagle", items=LABEL["items"] + [{"name": "TOTAL SAVINGS", "price": "-1.00"}])
+    (home / "results" / "vl").mkdir(parents=True)
+    (home / "results" / "vl" / "r001.json").write_text(json.dumps({"parsed": reading, "seconds": 3}))
+    bakeoff.main(["--home", str(home), "score"])
+    report = (home / "results" / "report.md").read_text()
+    header = next(line for line in report.splitlines() if line.startswith("| Engine | Receipts | summary"))
+    row = next(line for line in report.splitlines() if line.startswith("| vl | 1 | 1 |"))
+    assert header and row

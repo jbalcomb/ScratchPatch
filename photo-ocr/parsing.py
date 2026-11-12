@@ -4,6 +4,7 @@ Shared by the bake-off (bakeoff.py) and the service (web.py). Standard library o
 fixes phone-photo rotation and shrinks photos before they go to a vision model.
 """
 import base64
+import hashlib
 import io
 import json
 import mimetypes
@@ -13,7 +14,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 SUM_SLACK = 2          # cents: items + tax may differ from the total by this much (rounding)
@@ -41,21 +42,56 @@ def to_cents(value):
     return -cents if negative else cents
 
 
-DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%m-%d-%Y", "%m-%d-%y", "%Y/%m/%d", "%b %d %Y", "%d %b %Y")
+TEXT_DATE_FORMATS = ("%b %d %Y", "%b %d %y", "%B %d %Y", "%B %d %y", "%d %b %Y", "%d %b %y", "%d %B %Y")
+NUMERIC_DATE = re.compile(r"(?<!\d)(?:(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2}))(?!\d)")
+MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+TEXT_DATE = re.compile(rf"\b(?:{MONTH} \d{{1,2}} \d{{4}}|{MONTH} \d{{1,2}} \d{{2}}|\d{{1,2}} {MONTH} \d{{2,4}})\b", re.I)
+DATE_ORDERS = {"mdy": "month first", "dmy": "day first"}
 
 
-def to_date(value):
-    """A receipt date in any common US form -> "YYYY-MM-DD", or None."""
-    if not value:
+def _day(y, m, d):
+    try:
+        return date(y, m, d).isoformat()
+    except ValueError:
         return None
-    s = re.sub(r"\s+", " ", str(value).strip().replace(",", ""))
-    s = s.split("T")[0] if re.match(r"\d{4}-\d\d-\d\dT", s) else s
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt).date().isoformat()
-        except ValueError:
-            pass
-    return None
+
+
+def date_options(value) -> dict:
+    """Every way to read a printed receipt date -> {order: "YYYY-MM-DD"}, no guessing.
+
+    A year first (2026-11-04, 2026/11/04) or a written month (Nov 4 2026, 4 Nov 2026) has one reading, keyed "".
+    Two numbers then a year (11/04/26) are keyed "mdy" (month first) and "dmy" (day first), each only if it
+    is a real date: 25/04/26 is only "dmy", 11/04/26 is both. Month and day may have a leading zero or not,
+    the year two digits (20yy) or four. A time or other text printed beside the date is ignored."""
+    if not value:
+        return {}
+    s = re.sub(r"\s+", " ", str(value).strip().replace(",", " ").replace(".", " "))
+    m = NUMERIC_DATE.search(str(value))
+    if m:
+        if m.group(1):
+            iso = _day(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return {"": iso} if iso else {}
+        a, b, y = int(m.group(4)), int(m.group(5)), int(m.group(6))
+        y = y + 2000 if y < 100 else y
+        out = {"mdy": _day(y, a, b), "dmy": _day(y, b, a)}
+        return {k: v for k, v in out.items() if v}
+    t = TEXT_DATE.search(s)
+    if t:
+        for fmt in TEXT_DATE_FORMATS:
+            try:
+                return {"": datetime.strptime(t.group(0), fmt).date().isoformat()}
+            except ValueError:
+                pass
+    return {}
+
+
+def to_date(value, order=None):
+    """A printed receipt date -> "YYYY-MM-DD", or None when it isn't a date or could be read two ways and the
+    store's order (order: "mdy" or "dmy") isn't known."""
+    options = date_options(value)
+    if len(set(options.values())) == 1:
+        return next(iter(options.values()))
+    return options.get(order)
 
 
 def norm_store(name):
@@ -66,7 +102,7 @@ def norm_item(name):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).split())
 
 
-def normalize(record):
+def normalize(record, date_order=None):
     """Model output or a hand label -> {store, date, tax, total, items[{name, quantity, price}]}, amounts in cents."""
     record = record if isinstance(record, dict) else {}
     items = []
@@ -78,9 +114,11 @@ def normalize(record):
     store = record.get("store")
     return {
         "store": store if isinstance(store, list) else (str(store).strip() if store else None),
-        "date": to_date(record.get("date")),
+        # model readings give the date as printed and it is converted here; hand labels give "date" (YYYY-MM-DD)
+        "date": to_date(record.get("date_printed") or record.get("date"), date_order),
         "tax": to_cents(record.get("tax")),
         "total": to_cents(record.get("total")),
+        "savings": to_cents(record.get("savings")),
         "items": items,
     }
 
@@ -115,11 +153,13 @@ PROMPT = """These photos are one store receipt, in order from top to bottom. The
 in two photos is still one line, so list it once.
 
 Reply with JSON only, in this shape:
-{"store": "store name as printed", "location": "city, state as printed, or null", "date": "YYYY-MM-DD", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
- "subtotal": 0.00, "tax": 0.00, "total": 0.00}
+{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
+ "subtotal": 0.00, "tax": 0.00, "total": 0.00, "savings": 0.00}
 
 - price is the amount printed for that line (the line total, not the unit price).
 - Discounts, coupons and savings printed as their own lines are items with a negative price.
+- Summary lines are not items: subtotal, tax, total, total savings or "you saved", balance due.
+- savings is the total savings amount when the receipt prints one, otherwise null.
 - Bottle deposits and bag fees are items.
 - Leave out payment lines, change, card numbers and loyalty balances.
 - Use null for anything you can't read; don't guess."""
@@ -135,15 +175,16 @@ SCHEMA = {
     "properties": {
         "store": {"type": ["string", "null"]},
         "location": {"type": ["string", "null"]},
-        "date": {"type": ["string", "null"]},
+        "date_printed": {"type": ["string", "null"]},
         "items": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"}, "quantity": {"type": ["number", "null"]}, "price": {"type": ["number", "null"]}},
             "required": ["name", "price"]}},
         "subtotal": {"type": ["number", "null"]},
         "tax": {"type": ["number", "null"]},
         "total": {"type": ["number", "null"]},
+        "savings": {"type": ["number", "null"]},
     },
-    "required": ["store", "date", "items", "tax", "total"],
+    "required": ["store", "date_printed", "items", "tax", "total"],
 }
 
 PRODUCT_PROMPT = """These photos show one grocery or household product (front, back or sides of the packaging).
@@ -344,17 +385,26 @@ def ocr_photos(engine, paths):
         return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.monotonic() - t0, 2)}
 
 
-def parse_photos(engine, paths, kind="receipt", ocr=None):
+def parse_photos(engine, paths, kind="receipt", ocr=None, prompt=None):
     """The photos of one receipt or one product (kind, see KINDS), in order, through one engine; never raises.
 
     -> {"engine", "kind", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
-    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model)."""
-    spec = KINDS[kind]
+    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model).
+    prompt: another vision prompt to try in place of the kind's (the bake-off, comparing prompt versions); an
+    OCR engine gets it with the OCR text in place of the photos."""
+    spec = dict(KINDS[kind])
+    if prompt:
+        rules = lambda p: p.split("\n\n", 1)[1]  # noqa: E731 - the part after the opening paragraph
+        spec["text_prompt"] = spec["text_prompt"].replace(rules(spec["prompt"]), rules(prompt))
+        spec["prompt"] = prompt
+    template = spec["prompt"] if engine["kind"] == "vlm" else spec["text_prompt"]
     run = {"engine": engine["name"], "kind": kind, "raw": None, "parsed": None, "error": None, "seconds": None,
-           "at": datetime.now().isoformat(timespec="seconds")}
+           "at": datetime.now().isoformat(timespec="seconds"), "prompt": None,
+           "prompt_version": prompt_version(template)}
     t0, extra = time.monotonic(), 0.0
     try:
         if engine["kind"] == "vlm":
+            run["prompt"] = spec["prompt"]
             content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": spec["prompt"]}]
         elif engine["kind"] == "ocr_llm":
             ocr = ocr or ocr_photos(engine, paths)
@@ -362,7 +412,7 @@ def parse_photos(engine, paths, kind="receipt", ocr=None):
             if ocr.get("error"):
                 raise RuntimeError(f"OCR failed: {ocr['error']}")
             run["ocr"] = ocr["lines"]
-            content = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
+            content = run["prompt"] = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
         else:
             raise ValueError(f"unknown engine kind {engine['kind']!r} (vlm or ocr_llm)")
         run["raw"], reply = chat(engine, content, spec["schema"])
@@ -407,3 +457,19 @@ def normalize_product(record):
     record = record if isinstance(record, dict) else {}
     clean = lambda v: str(v).strip() if v not in (None, "") and str(v).strip().lower() not in ("null", "none") else None  # noqa: E731
     return {"name": clean(record.get("name")), "brand": clean(record.get("brand")), "size": clean(record.get("size"))}
+
+
+def prompt_version(template: str) -> str:
+    """A short tag for a prompt's wording (8 hex characters): which prompt a reading was made with."""
+    return hashlib.sha1(template.encode("utf-8")).hexdigest()[:8]
+
+
+def ask(engine, paths, question: str) -> tuple[str, float]:
+    """Debugging: the photos and a free question to a vision engine; the reply as text, and the seconds taken.
+    No answer shape is imposed, so the model says what it sees in its own words."""
+    if engine.get("kind") != "vlm":
+        raise ValueError(f"{engine['name']} can't look at photos (it reads OCR text); ask a vision engine")
+    t0 = time.monotonic()
+    content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": question}]
+    reply, _ = chat(engine, content)
+    return (reply or "").strip(), round(time.monotonic() - t0, 2)
