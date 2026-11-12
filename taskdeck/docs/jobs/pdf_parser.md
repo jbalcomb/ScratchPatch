@@ -8,7 +8,7 @@ phone only sends the file and shows the result.
 
 ## Setup
 
-1. On the workstation, start the service and make it the Tailscale Service `pdf-parser`, as in
+1. On the workstation, start the service and reach it over Tailscale at `https://pdf-parser.tailc54221.ts.net`, as in
    [pdf-parser/README.md](../../../pdf-parser/README.md) (*On the workstation*).
 2. On the phone, connect Tailscale.
 3. The job's setting **PDF parser service URL** defaults to `https://pdf-parser.tailc54221.ts.net`; change it

@@ -165,16 +165,10 @@ Errors are `{"error": "..."}`. No login: keep it behind Tailscale.
    Check: `curl -s http://127.0.0.1:8096/api/health`. If `id -u` isn't 1000, start it with
    `UID=$(id -u) GID=$(id -g) docker compose up -d --build`.
 
-3. **Reach it from the phone** as the **Tailscale Service** `pdf-parser` (the root README's convention),
-   forwarding to `localhost:8096`: define `svc:pdf-parser` in the Tailscale admin console (Services), then on
-   the workstation
-
-   ```bash
-   sudo tailscale serve --service=svc:pdf-parser --https=443 127.0.0.1:8096
-   ```
-
-   and approve the workstation as its host in the console. The address is
-   **https://pdf-parser.tailc54221.ts.net**, the TaskDeck job's default.
+3. **Reach it from the phone** at **https://pdf-parser.tailc54221.ts.net** (the TaskDeck job's default). HTTPS
+   comes from a Tailscale sidecar container, `ts-pdf-parser`, defined in `~/develai/docker-compose.yml` on the
+   workstation (outside this repo), which forwards to `localhost:8096`. Change or restart it there, not here.
+   Check it from another device on the tailnet: `curl -s https://pdf-parser.tailc54221.ts.net/api/health`.
 
 Port 8096 is the first one above those already taken on the workstation (8090, 8092–8095).
 
