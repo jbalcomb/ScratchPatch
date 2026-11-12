@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from taskdeck.core import Drafts, JsonStore
+from taskdeck.core import Drafts, JsonStore, RunReport
 from taskdeck.jobs import daily_log
 from taskdeck.ui.job_view import JobScreen
 
@@ -14,7 +14,7 @@ def fake_app(tmp_path):
     return SimpleNamespace(
         store=store, drafts=Drafts(store),
         favorites=SimpleNamespace(is_pinned=lambda job_id: False),
-        palette=None, open_settings=lambda job_id: None,
+        palette=None, open_settings=lambda job_id: None, services=dict,
     )
 
 
@@ -55,7 +55,7 @@ def run_screen(screen, report):
     screen.view.update = lambda: None
     screen._show_report = lambda r: None
     screen.app.job_settings = lambda job_id: {}
-    screen.app.page = SimpleNamespace(schedule_update=lambda: None)
+    screen.app.page = SimpleNamespace(update=lambda: None)
     screen.app.history = SimpleNamespace(add=lambda *a: None)
     screen.app.on_history_changed = lambda: None
     asyncio.run(screen.run())
@@ -117,9 +117,310 @@ def test_online_check_runs_after_offline_checks_pass(tmp_path, monkeypatch):
     assert not screen.checking and screen.blocked
 
 
+def test_settings_the_online_check_fixed_are_saved(tmp_path, monkeypatch):
+    from taskdeck.core import Problem
+    from taskdeck.jobs import budget
+
+    app = fake_app(tmp_path)
+    saved = {"budget_url": "http://100.83.88.59:8092", "sheet_id": "s"}
+    app.job_settings = lambda job_id: dict(saved)
+    app.save_job_settings = lambda job_id, values: saved.update(values)
+    app.page = SimpleNamespace(run_thread=lambda fn: fn())
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen = JobScreen(app, budget.PLUGIN)
+    screen.check_ready()
+    assert saved == {"budget_url": "https://ws.ts.net", "sheet_id": "s"}
+    assert not screen.blocked
+
+
+def settings_screen(monkeypatch, check):
+    """A budget settings screen with no page, its checks replaced by ``check``; returns (screen, saved)."""
+    from taskdeck.jobs import budget
+    from taskdeck.ui import settings_view
+
+    saved = {}
+    app = SimpleNamespace(job_settings=lambda job_id: {"budget_url": "https://old.ts.net"},
+                          save_job_settings=lambda job_id, v: saved.update(v), toast=lambda m: None,
+                          back=lambda: None, page=SimpleNamespace(run_thread=lambda fn: fn()))
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready", lambda self, s: [])
+    monkeypatch.setattr(type(budget.PLUGIN), "check_ready_online", lambda self, s: check(s))
+    screen = settings_view.JobSettingsScreen(app, budget.PLUGIN)
+    screen.view.update = lambda: None
+    return screen, saved
+
+
+def report_text(screen):
+    import flet as ft
+
+    return " ".join(c.value for c in screen.report.controls if isinstance(c, ft.Text))
+
+
+def test_save_checks_first_and_keeps_working_settings(monkeypatch):
+    from taskdeck.core import Problem
+
+    def check(s):
+        if s["budget_url"] == "https://good.ts.net":
+            return [Problem.passed("Budget service at https://good.ts.net: 3 accounts")]
+        return [Problem("The budget service didn't answer at https://bad.ts.net", fix="recheck")]
+
+    screen, saved = settings_screen(monkeypatch, check)
+    screen.fields["budget_url"].value = "bad.ts.net/upload"
+    screen.save()
+    assert saved == {}  # not saved: the old, working address stays
+    assert "don't work yet" in report_text(screen) and "didn't answer" in report_text(screen)
+    screen.save_anyway()
+    assert saved["budget_url"] == "https://bad.ts.net"  # tidied, saved on request
+
+    saved.clear()
+    screen.fields["budget_url"].value = "good.ts.net"
+    screen.test()
+    assert saved == {} and "✓ Budget service at https://good.ts.net" in report_text(screen)
+    screen.save()
+    assert saved["budget_url"] == "https://good.ts.net"
+
+
+def test_test_settings_fills_in_what_it_fixed(monkeypatch):
+    from taskdeck.core import Problem
+
+    screen, saved = settings_screen(monkeypatch, lambda s: [Problem(
+        "Budget service address updated to https://ws.ts.net", blocking=False, fix="recheck",
+        settings={"budget_url": "https://ws.ts.net"})])
+    screen.fields["budget_url"].value = "http://100.83.88.59:8092"
+    screen.test()
+    assert screen.fields["budget_url"].value == "https://ws.ts.net" and saved == {}
+    assert "Tap Save to keep these settings" in report_text(screen)
+
+
 def test_job_without_inputs_and_shared_settings(tmp_path):
     from taskdeck.jobs.daily_log import reconcile_job
 
     screen = JobScreen(fake_app(tmp_path), reconcile_job.PLUGIN)
     assert screen.fields == {}
     assert reconcile_job.PLUGIN.settings_id == "daily_log"
+
+
+def test_background_task_shows_its_progress_and_outcome(tmp_path):
+    """A job that hands long work to a background task (Parse executable's Drive upload) gets Extract
+    Archive's progress: a bar per phase while it runs (Run disabled), then the outcome with Open in Drive."""
+    import flet as ft
+
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+    from taskdeck.shared.gdrive import DriveLocation, Folder
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    seen = {}
+
+    def work(t):
+        t.set_phases(("Checking what's already in Google Drive", 3, "files"), ("Uploading to Google Drive", 3, "files"))
+        t.advance(1, 1)
+        t.result = DriveLocation().child(Folder("f1", "GAME.EXE"))
+        seen["running"] = [c.value for c in screen.task_box.controls if isinstance(c, ft.Text)]
+        seen["run_disabled"] = screen.blocked
+        return "Uploaded 3 files to Google Drive › My Drive › GAME.EXE."
+
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    task = screen._start_task("Uploading GAME.EXE to Google Drive", work)
+    assert task.status == "done"
+    assert "Uploading GAME.EXE to Google Drive" in seen["running"] and seen["run_disabled"]
+    card = screen.task_box.controls[0].content.controls
+    assert card[0].controls[1].value == task.message
+    assert [b.content for b in card[1].controls] == ["Open in Drive", "Close"]
+    assert not screen.blocked
+    screen.dismiss_task()
+    assert screen.task_box.controls == []
+
+
+def run_unlocking(tmp_path, plugin, raw, locked: bool, fingerprint_ok: bool):
+    """JobScreen.run up to the account unlock; returns (unlock asked, the job ran)."""
+    import asyncio
+
+    asked, ran = [], []
+    app = fake_app(tmp_path)
+    app.vault = SimpleNamespace(needs_unlock=lambda sid: locked and sid == "account:google")
+
+    async def unlock(then=None):
+        asked.append(True)
+        return fingerprint_ok
+
+    app.unlock = unlock
+    screen = JobScreen(app, plugin)
+    screen.view.update = lambda: None
+    screen.raw_inputs = lambda: raw
+    screen._set_running = lambda running: ran.append(running)  # the run gets this far only after unlocking
+    screen.app.page = SimpleNamespace(update=lambda: None)
+    screen.app.job_settings = lambda job_id: {}
+    screen.plugin = SimpleNamespace(**{k: getattr(plugin, k) for k in ("id", "settings_id", "accounts_needed")},
+                                    run=lambda *a, **k: RunReport(False, None, [], "stop"), has_commit=False)
+    screen.app.history = SimpleNamespace(add=lambda *a: None)
+    screen.app.on_history_changed = lambda: None
+    asyncio.run(screen.run())
+    return bool(asked), bool(ran)
+
+
+def test_run_asks_for_the_fingerprint_when_it_signs_in_with_a_locked_account(tmp_path):
+    from taskdeck.jobs import exe_parse
+
+    drive_on = {"exe": "x.exe", "drive": True}
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=True, fingerprint_ok=True) == (True, True)
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=True, fingerprint_ok=False) == (True, False)
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, drive_on, locked=False, fingerprint_ok=True) == (False, True)
+    off = {"exe": "x.exe", "drive": False}  # no Drive, no Google account: never asks
+    assert run_unlocking(tmp_path, exe_parse.PLUGIN, off, locked=True, fingerprint_ok=False) == (False, True)
+
+
+def test_file_fields_browse_with_taskdecks_own_browser_and_notes_follow_the_inputs(tmp_path, monkeypatch):
+    """Browse opens TaskDeck's file browser (real paths, only the field's file types); picking a file updates
+    the notes under the fields (Parse executable: the Drive path under its switch)."""
+    from taskdeck.jobs import exe_parse
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.FileBrowser, "pick_file",
+                        classmethod(lambda cls, app, on_pick, **kw: opened.update(kw, on_pick=on_pick)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"drive_folder": "RE"}
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _EXECUTABLE"
+
+    fc = screen.fields["exe"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert opened["title"] == "Choose Executable"
+    assert opened["accept"]("WIZARDS.EXE") and opened["accept"]("x.ovl") and not opened["accept"]("x.dll")
+    opened["on_pick"](tmp_path / "MOM" / "WIZARDS.EXE")
+    assert fc.value == str(tmp_path / "MOM" / "WIZARDS.EXE")
+    assert screen.notes["drive"].value == "Would go to Google Drive › My Drive › RE › _WIZARDS"
+    screen.fields["drive"].input.value = True
+    screen.invalidate()
+    assert screen.notes["drive"].value == "Goes to Google Drive › My Drive › RE › _WIZARDS"
+    assert screen.notes["drive"].visible and not screen.notes["exe"].visible
+    assert screen.notes["output"].value == f"Saves into {tmp_path / 'MOM' / '_WIZARDS'}"
+
+
+def test_photo_fields_browse_with_the_photo_picker(tmp_path, monkeypatch):
+    """Add… on a photo field (Receipt capture) opens the photo grid, which accepts only the field's types,
+    and the photos picked are added in the order picked."""
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.PhotoPicker, "pick",
+                        classmethod(lambda cls, app, on_pick, **kw: opened.update(kw, on_pick=on_pick)))
+    monkeypatch.setattr(job_view.FileBrowser, "pick_file", classmethod(lambda *a, **kw: opened.update(file_browser=True)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert "file_browser" not in opened and opened["title"] == "Choose Receipt photos"
+    assert opened["accept"]("IMG_1.JPG") and opened["accept"]("s.webp") and not opened["accept"]("clip.heic")
+    opened["on_pick"]([tmp_path / "top.jpg", tmp_path / "bottom.jpg"], False)
+    assert fc.value.splitlines() == [str(tmp_path / "top.jpg"), str(tmp_path / "bottom.jpg")]
+    assert opened["noun"] == ""  # a receipt's photos are one receipt: one Add button
+
+    screen = JobScreen(app, photos.PRODUCT)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    screen._browse_file(fc)
+    assert opened["noun"] == "product"
+    opened["on_pick"]([tmp_path / "milk.jpg", tmp_path / "eggs.jpg"], True)
+    assert fc.value == f"{tmp_path / 'milk.jpg'}\n\n{tmp_path / 'eggs.jpg'}"
+
+
+def test_take_photos_opens_the_camera_and_adds_its_photos(tmp_path, monkeypatch):
+    from taskdeck.jobs.photo_ocr import photos
+    from taskdeck.ui import job_view
+
+    opened = {}
+    monkeypatch.setattr(job_view.CameraCapture, "open",
+                        classmethod(lambda cls, app, on_done, **kw: opened.update(kw, on_done=on_done)))
+    app = fake_app(tmp_path)
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    fc = screen.fields["photos"]
+    fc.input.update = lambda: None
+    take = fc.control.controls[1].controls[0]
+    assert take.content == "Take photos"
+    take.on_click(None)
+    assert opened["guides"] == "receipt" and opened["title"] == "Receipt photos"
+    opened["on_done"]([tmp_path / "1.jpg", tmp_path / "2.jpg"])
+    assert fc.value.splitlines() == [str(tmp_path / "1.jpg"), str(tmp_path / "2.jpg")]
+    product = JobScreen(app, photos.PRODUCT).fields["photos"]
+    assert [b.content for b in product.control.controls[1].controls] == ["Add…"]
+
+
+def test_web_addresses_in_results_are_links(tmp_path):
+    from taskdeck.jobs.photo_ocr import photos
+
+    app = fake_app(tmp_path)
+    opened = []
+    app.open_url = opened.append
+    app.job_settings = lambda job_id: {"service_url": "https://ws.example.ts.net:8444"}
+    screen = JobScreen(app, photos.CAPTURE)
+    spans = screen._linked("Review them on https://ws.example.ts.net:8444/review/17.")
+    assert [s.text for s in spans] == ["Review them on ", "https://ws.example.ts.net:8444/review/17", "."]
+    spans[1].on_click(None)
+    assert opened == ["https://ws.example.ts.net:8444/review/17"]
+    assert [s.text for s in screen._linked("no links here")] == ["no links here"]
+
+
+def test_a_failed_upload_offers_connect_again_and_retry(tmp_path):
+    """Google refused the sign-in: the card offers Connect again (which retries once connected) and
+    Retry upload (which runs the upload again, without parsing again)."""
+    import asyncio
+
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    app.page = SimpleNamespace(update=lambda: None, run_task=lambda fn, *a: asyncio.run(fn(*a)))
+    app.vault = None
+    app.history = SimpleNamespace(add=lambda *a: None)
+    connects = []
+    app.google = SimpleNamespace(connect=lambda on_done=None: (connects.append(1), on_done and on_done()))
+    attempts = []
+
+    def work(t):
+        attempts.append(1)
+        if len(attempts) == 1:
+            err = RuntimeError("Google no longer accepts this sign-in (revoked or expired). Connect again.")
+            err.fix = "account:google"
+            raise err
+        return "Uploaded 3 files."
+
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    task = screen._start_task("Uploading _GAME to Google Drive", work, retry_label="Retry upload")
+    assert task.status == "failed" and task.fix == "account:google"
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Connect again", "Retry upload", "Close"]
+
+    screen.connect_again(task)  # connects, then retries
+    assert connects == [1] and len(attempts) == 2
+    assert screen.task.status == "done" and screen.task.message == "Uploaded 3 files."
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Close"]
+
+
+def test_a_network_failure_offers_only_retry(tmp_path):
+    from taskdeck.core import TaskManager
+    from taskdeck.jobs import exe_parse
+
+    app = fake_app(tmp_path)
+    app.tasks = TaskManager(start_thread=lambda fn: fn())
+    app.google = SimpleNamespace(connect=lambda on_done=None: None)
+    screen = JobScreen(app, exe_parse.PLUGIN)
+    screen.view.update = lambda: None
+    screen._start_task("Uploading", lambda t: (_ for _ in ()).throw(RuntimeError("No connection.")),
+                       retry_label="Retry upload")
+    buttons = screen.task_box.controls[0].content.controls[1].controls
+    assert [b.content for b in buttons] == ["Retry upload", "Close"]

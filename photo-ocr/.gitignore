@@ -1,0 +1,3 @@
+# Receipt photos and results stay in ~/receipts/bakeoff, never in the repo
+set/
+results/

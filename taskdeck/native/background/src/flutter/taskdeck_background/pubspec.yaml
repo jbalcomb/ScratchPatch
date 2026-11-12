@@ -1,0 +1,20 @@
+name: taskdeck_background
+description: TaskDeck background work (Android foreground service)
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flet: any  # the app's own flet (flet build overrides it)
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: dev.taskdeck.background
+        pluginClass: BackgroundPlugin

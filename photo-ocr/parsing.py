@@ -1,0 +1,475 @@
+"""Reading a receipt with a local model: the prompts, the model and OCR calls, and turning replies into records.
+
+Shared by the bake-off (bakeoff.py) and the service (web.py). Standard library only; Pillow (optional)
+fixes phone-photo rotation and shrinks photos before they go to a vision model.
+"""
+import base64
+import hashlib
+import io
+import json
+import mimetypes
+import os
+import re
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from datetime import date, datetime
+from pathlib import Path
+
+SUM_SLACK = 2          # cents: items + tax may differ from the total by this much (rounding)
+
+# ---------------------------------------------------------------- normalizing values
+
+def to_cents(value):
+    """12.34 / "12.34" / "$1,234.56" / "1.00-" / "(1.00)" -> integer cents; anything else -> None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return round(value * 100)
+    s = str(value).strip().replace("$", "").replace(",", "").replace(" ", "")
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        s, negative = s[1:-1], True
+    if s.endswith("-"):  # receipts print discounts as 1.00-
+        s, negative = s[:-1], True
+    if s.startswith("-"):
+        s, negative = s[1:], not negative
+    if not re.fullmatch(r"\d+(\.\d{1,2})?|\.\d{1,2}", s):
+        return None
+    whole, _, frac = s.partition(".")
+    cents = int(whole or 0) * 100 + int((frac + "00")[:2])
+    return -cents if negative else cents
+
+
+TEXT_DATE_FORMATS = ("%b %d %Y", "%b %d %y", "%B %d %Y", "%B %d %y", "%d %b %Y", "%d %b %y", "%d %B %Y")
+NUMERIC_DATE = re.compile(r"(?<!\d)(?:(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2}))(?!\d)")
+MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+TEXT_DATE = re.compile(rf"\b(?:{MONTH} \d{{1,2}} \d{{4}}|{MONTH} \d{{1,2}} \d{{2}}|\d{{1,2}} {MONTH} \d{{2,4}})\b", re.I)
+DATE_ORDERS = {"mdy": "month first", "dmy": "day first"}
+
+
+def _day(y, m, d):
+    try:
+        return date(y, m, d).isoformat()
+    except ValueError:
+        return None
+
+
+def date_options(value) -> dict:
+    """Every way to read a printed receipt date -> {order: "YYYY-MM-DD"}, no guessing.
+
+    A year first (2026-11-04, 2026/11/04) or a written month (Nov 4 2026, 4 Nov 2026) has one reading, keyed "".
+    Two numbers then a year (11/04/26) are keyed "mdy" (month first) and "dmy" (day first), each only if it
+    is a real date: 25/04/26 is only "dmy", 11/04/26 is both. Month and day may have a leading zero or not,
+    the year two digits (20yy) or four. A time or other text printed beside the date is ignored."""
+    if not value:
+        return {}
+    s = re.sub(r"\s+", " ", str(value).strip().replace(",", " ").replace(".", " "))
+    m = NUMERIC_DATE.search(str(value))
+    if m:
+        if m.group(1):
+            iso = _day(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return {"": iso} if iso else {}
+        a, b, y = int(m.group(4)), int(m.group(5)), int(m.group(6))
+        y = y + 2000 if y < 100 else y
+        out = {"mdy": _day(y, a, b), "dmy": _day(y, b, a)}
+        return {k: v for k, v in out.items() if v}
+    t = TEXT_DATE.search(s)
+    if t:
+        for fmt in TEXT_DATE_FORMATS:
+            try:
+                return {"": datetime.strptime(t.group(0), fmt).date().isoformat()}
+            except ValueError:
+                pass
+    return {}
+
+
+def to_date(value, order=None):
+    """A printed receipt date -> "YYYY-MM-DD", or None when it isn't a date or could be read two ways and the
+    store's order (order: "mdy" or "dmy") isn't known."""
+    options = date_options(value)
+    if len(set(options.values())) == 1:
+        return next(iter(options.values()))
+    return options.get(order)
+
+
+def norm_store(name):
+    return re.sub(r"[^a-z0-9]", "", str(name or "").casefold().replace("&", "and"))
+
+
+def norm_item(name):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).split())
+
+
+def normalize(record, date_order=None):
+    """Model output or a hand label -> {store, date, tax, total, items[{name, quantity, price}]}, amounts in cents."""
+    record = record if isinstance(record, dict) else {}
+    items = []
+    for it in record.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        price = to_cents(it.get("price", it.get("line_total", it.get("total"))))
+        items.append({"name": str(it.get("name") or "").strip(), "quantity": it.get("quantity"), "price": price})
+    store = record.get("store")
+    return {
+        "store": store if isinstance(store, list) else (str(store).strip() if store else None),
+        # model readings give the date as printed and it is converted here; hand labels give "date" (YYYY-MM-DD)
+        "date": to_date(record.get("date_printed") or record.get("date"), date_order),
+        "tax": to_cents(record.get("tax")),
+        "total": to_cents(record.get("total")),
+        "savings": to_cents(record.get("savings")),
+        "items": items,
+    }
+
+
+def extract_json(text):
+    """The first JSON object in a model's reply, tolerating code fences and chatter around it."""
+    if text is None:
+        raise ValueError("empty reply")
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fenced:
+        text = fenced.group(1)
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in the reply")
+    obj, _ = json.JSONDecoder().raw_decode(text[start:])
+    return obj
+
+
+
+def sum_check(rec):
+    """Line items plus tax equal the total, within rounding. None when there is nothing to check."""
+    if rec["total"] is None or not rec["items"] or any(i["price"] is None for i in rec["items"]):
+        return None
+    return abs(sum(i["price"] for i in rec["items"]) + (rec["tax"] or 0) - rec["total"]) <= SUM_SLACK
+
+
+
+# ---------------------------------------------------------------- talking to models
+
+PROMPT = """These photos are one store receipt, in order from top to bottom. They may overlap: a line that appears
+in two photos is still one line, so list it once.
+
+Reply with JSON only, in this shape:
+{"store": "store name as printed", "location": "city, state as printed, or null", "date_printed": "the date exactly as printed on the receipt", "items": [{"name": "line text", "quantity": 1, "price": 3.49}],
+ "subtotal": 0.00, "tax": 0.00, "total": 0.00, "savings": 0.00}
+
+- price is the amount printed for that line (the line total, not the unit price).
+- Discounts, coupons and savings printed as their own lines are items with a negative price.
+- Summary lines are not items: subtotal, tax, total, total savings or "you saved", balance due.
+- savings is the total savings amount when the receipt prints one, otherwise null.
+- Bottle deposits and bag fees are items.
+- Leave out payment lines, change, card numbers and loyalty balances.
+- Use null for anything you can't read; don't guess."""
+
+TEXT_PROMPT = """Below is OCR text from one store receipt (it may come from several overlapping photos, separated by
+"--- photo N ---"; a line repeated where photos overlap is still one line, so list it once).
+
+""" + PROMPT.split("\n\n", 1)[1] + "\n\nOCR text:\n{text}"
+
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "store": {"type": ["string", "null"]},
+        "location": {"type": ["string", "null"]},
+        "date_printed": {"type": ["string", "null"]},
+        "items": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "quantity": {"type": ["number", "null"]}, "price": {"type": ["number", "null"]}},
+            "required": ["name", "price"]}},
+        "subtotal": {"type": ["number", "null"]},
+        "tax": {"type": ["number", "null"]},
+        "total": {"type": ["number", "null"]},
+        "savings": {"type": ["number", "null"]},
+    },
+    "required": ["store", "date_printed", "items", "tax", "total"],
+}
+
+PRODUCT_PROMPT = """These photos show one grocery or household product (front, back or sides of the packaging).
+Read the packaging.
+
+Reply with JSON only, in this shape:
+{"name": "what the product is, e.g. Whole milk", "brand": "brand as printed, or null", "size": "net size with unit as printed, e.g. 1 gal or 12 x 12 fl oz, or null"}
+
+- name is what the product is, without the brand or size.
+- Use null for anything you can't read; don't guess."""
+
+PRODUCT_TEXT_PROMPT = """Below is OCR text from photos of one grocery or household product's packaging (photos are
+separated by "--- photo N ---").
+
+""" + PRODUCT_PROMPT.split("\n\n", 1)[1] + "\n\nOCR text:\n{text}"
+
+PRODUCT_SCHEMA = {
+    "type": "object",
+    "properties": {"name": {"type": ["string", "null"]}, "brand": {"type": ["string", "null"]},
+                   "size": {"type": ["string", "null"]}},
+    "required": ["name", "brand", "size"],
+}
+
+# What can be read from photos: each kind has its prompt for a vision model, its prompt for OCR text, and the
+# JSON shape the model must answer in.
+KINDS = {
+    "receipt": {"prompt": PROMPT, "text_prompt": TEXT_PROMPT, "schema": SCHEMA},
+    "product": {"prompt": PRODUCT_PROMPT, "text_prompt": PRODUCT_TEXT_PROMPT, "schema": PRODUCT_SCHEMA},
+}
+
+
+def chat(engine, content, schema=None):
+    """One request to an OpenAI-compatible chat endpoint (llama.cpp's llama-server, in router mode on the workstation)."""
+    body = {
+        **({"model": engine["model"]} if engine.get("model") else {}),
+        "messages": [{"role": "user", "content": content}],
+        "temperature": 0,
+        "max_tokens": engine.get("max_tokens", 4096),
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if schema is not None and engine.get("json_schema", True):
+        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "reading", "schema": schema}}
+    if engine.get("logprobs"):
+        body["logprobs"] = True
+    headers = {"Content-Type": "application/json"}
+    key = engine.get("api_key") or os.environ.get(engine.get("api_key_env", "LLM_API_KEY"))
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    endpoint = engine["url"].rstrip("/")
+    if not endpoint.endswith("/chat/completions"):
+        endpoint += "/v1/chat/completions"
+    req = urllib.request.Request(endpoint, json.dumps(body).encode(), headers)
+    try:
+        with urllib.request.urlopen(req, timeout=engine.get("timeout", 600)) as resp:
+            reply = json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code} from {endpoint}: {e.read()[:300].decode(errors='replace')}") from None
+    return reply["choices"][0]["message"].get("content"), reply
+
+
+def image_part(path, max_side=None):
+    """A photo as a data: URL, upright (EXIF rotation applied) and, with max_side, shrunk."""
+    data, mime = path.read_bytes(), mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        Image = None
+    if Image is not None:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            if max_side and max(im.size) > max_side:
+                im.thumbnail((max_side, max_side))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=90)
+            data, mime = buf.getvalue(), "image/jpeg"
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}
+
+
+# ---------------------------------------------------------------- OCR back ends (text plus per-line confidence)
+
+def ocr_tesseract(paths, cfg):
+    lines = []
+    for path in paths:
+        tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", str(cfg.get("psm", 4)), "tsv"],
+                             capture_output=True, text=True, check=True).stdout
+        cur, words = None, []
+        for row in tsv.splitlines()[1:]:
+            f = row.split("\t")
+            if len(f) < 12 or f[0] != "5" or not f[11].strip():
+                continue
+            key = tuple(f[1:5])
+            if key != cur and words:
+                lines.append(_line(words))
+                words = []
+            cur = key
+            words.append((f[11], float(f[10]) / 100))
+        if words:
+            lines.append(_line(words))
+        lines.append(None)  # photo break
+    return lines
+
+
+def ocr_doctr(paths, cfg):
+    from doctr.io import DocumentFile
+    from doctr.models import ocr_predictor
+    model = _cached("doctr", lambda: ocr_predictor(pretrained=True))
+    lines = []
+    for page in model(DocumentFile.from_images([str(p) for p in paths])).export()["pages"]:
+        for block in page["blocks"]:
+            for line in block["lines"]:
+                lines.append(_line([(w["value"], w["confidence"]) for w in line["words"]]))
+        lines.append(None)
+    return lines
+
+
+def ocr_paddleocr(paths, cfg):
+    from paddleocr import PaddleOCR
+    model = _cached("paddleocr", lambda: PaddleOCR(lang=cfg.get("lang", "en")))
+    lines = []
+    for path in paths:
+        if hasattr(model, "predict"):  # PaddleOCR 3.x
+            for res in model.predict(str(path)):
+                res = getattr(res, "json", res)
+                res = res.get("res", res)
+                lines += [{"text": t, "conf": float(c)} for t, c in zip(res["rec_texts"], res["rec_scores"])]
+        else:  # 2.x
+            for page in model.ocr(str(path)) or []:
+                lines += [{"text": t, "conf": float(c)} for _box, (t, c) in page or []]
+        lines.append(None)
+    return lines
+
+
+def ocr_vlm(paths, cfg):
+    """An OCR-only vision model (e.g. PaddleOCR-VL) behind an OpenAI-compatible endpoint: plain text, no confidence."""
+    lines = []
+    for path in paths:
+        text, _ = chat(cfg, [image_part(path, cfg.get("max_side")), {"type": "text", "text": cfg.get("prompt", "OCR:")}])
+        lines += [{"text": t, "conf": None} for t in (text or "").splitlines() if t.strip()]
+        lines.append(None)
+    return lines
+
+
+OCR = {"tesseract": ocr_tesseract, "doctr": ocr_doctr, "paddleocr": ocr_paddleocr, "vlm": ocr_vlm}
+_models = {}
+
+
+def _cached(name, make):
+    if name not in _models:
+        _models[name] = make()
+    return _models[name]
+
+
+def _line(words):
+    confs = [c for _, c in words if c >= 0]
+    return {"text": " ".join(w for w, _ in words), "conf": round(min(confs), 3) if confs else None}
+
+
+def ocr_text(lines):
+    out, n = ["--- photo 1 ---"], 1
+    for line in lines[:-1] if lines and lines[-1] is None else lines:
+        if line is None:
+            n += 1
+            out.append(f"--- photo {n} ---")
+        else:
+            out.append(line["text"])
+    return "\n".join(out)
+
+
+
+# ---------------------------------------------------------------- engines.json
+
+def load_engines(path):
+    """engines.json, with ${VAR} and ${VAR:-default} filled in from the environment."""
+    def fill(v):
+        while isinstance(v, str):  # innermost first, so ${A:-${B}} works
+            filled = re.sub(r"\$\{(\w+)(?::-([^${}]*))?\}", lambda m: os.environ.get(m.group(1)) or (m.group(2) or ""), v)
+            if filled == v:
+                return v
+            v = filled
+        if isinstance(v, dict):
+            return {k: fill(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fill(x) for x in v]
+        return v
+    return {e["name"]: e for e in fill(json.loads(Path(path).read_text(encoding="utf-8"))["engines"])}
+
+
+
+# ---------------------------------------------------------------- one set of photos through one engine
+
+def ocr_photos(engine, paths):
+    """Step 1 of an ocr_llm engine: {"lines": [...], "seconds"} or {"error", "seconds"}."""
+    t0 = time.monotonic()
+    try:
+        lines = OCR[engine["ocr"]](list(paths), {**engine, **engine.get("ocr_engine", {})})
+        return {"lines": lines, "seconds": round(time.monotonic() - t0, 2)}
+    except Exception as e:  # noqa: BLE001 - recorded with the run
+        return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.monotonic() - t0, 2)}
+
+
+def parse_photos(engine, paths, kind="receipt", ocr=None, prompt=None):
+    """The photos of one receipt or one product (kind, see KINDS), in order, through one engine; never raises.
+
+    -> {"engine", "kind", "raw", "parsed", "error", "seconds", "ocr" (lines, ocr_llm only), "logprobs" (if asked)}.
+    ocr: a result of ocr_photos done earlier (so a batch can OCR everything before loading the text model).
+    prompt: another vision prompt to try in place of the kind's (the bake-off, comparing prompt versions); an
+    OCR engine gets it with the OCR text in place of the photos."""
+    spec = dict(KINDS[kind])
+    if prompt:
+        rules = lambda p: p.split("\n\n", 1)[1]  # noqa: E731 - the part after the opening paragraph
+        spec["text_prompt"] = spec["text_prompt"].replace(rules(spec["prompt"]), rules(prompt))
+        spec["prompt"] = prompt
+    template = spec["prompt"] if engine["kind"] == "vlm" else spec["text_prompt"]
+    run = {"engine": engine["name"], "kind": kind, "raw": None, "parsed": None, "error": None, "seconds": None,
+           "at": datetime.now().isoformat(timespec="seconds"), "prompt": None,
+           "prompt_version": prompt_version(template)}
+    t0, extra = time.monotonic(), 0.0
+    try:
+        if engine["kind"] == "vlm":
+            run["prompt"] = spec["prompt"]
+            content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": spec["prompt"]}]
+        elif engine["kind"] == "ocr_llm":
+            ocr = ocr or ocr_photos(engine, paths)
+            extra = ocr.get("seconds") or 0
+            if ocr.get("error"):
+                raise RuntimeError(f"OCR failed: {ocr['error']}")
+            run["ocr"] = ocr["lines"]
+            content = run["prompt"] = spec["text_prompt"].replace("{text}", ocr_text(ocr["lines"]))
+        else:
+            raise ValueError(f"unknown engine kind {engine['kind']!r} (vlm or ocr_llm)")
+        run["raw"], reply = chat(engine, content, spec["schema"])
+        if engine.get("logprobs"):
+            run["logprobs"] = reply["choices"][0].get("logprobs")
+        run["parsed"] = extract_json(run["raw"])
+    except Exception as e:  # noqa: BLE001
+        run["error"] = f"{type(e).__name__}: {e}"
+    run["seconds"] = round(time.monotonic() - t0 + extra, 2)
+    return run
+
+
+def parse_receipt(engine, paths, ocr=None):
+    return parse_photos(engine, paths, "receipt", ocr)
+
+
+# ---------------------------------------------------------------- products: normalizing
+
+SIZE_UNITS = {"floz": "fl oz", "fluidounce": "fl oz", "fluidounces": "fl oz", "oz": "oz", "ounce": "oz", "ounces": "oz",
+              "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb", "g": "g", "gram": "g", "grams": "g", "kg": "kg",
+              "ml": "ml", "l": "l", "liter": "l", "litre": "l", "liters": "l", "gal": "gal", "gallon": "gal",
+              "qt": "qt", "quart": "qt", "pt": "pt", "pint": "pt", "ct": "ct", "count": "ct", "pk": "pk", "pack": "pk",
+              "sheets": "sheets", "rolls": "rolls", "each": "ea", "ea": "ea"}
+SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(fl\.?\s*oz|fluid\s*ounces?|[a-z]+)\b")
+
+
+def norm_size(size):
+    """The size a label or model gives, comparable: "12 FL. OZ" / "12floz" -> "12 fl oz", "12 x 12 fl oz" kept as a
+    pack, and only the first size when the package repeats it in other units ("16 oz (1 lb)" -> "16 oz")."""
+    text = str(size or "").lower()
+    for num, unit in SIZE_RE.findall(text):
+        u = SIZE_UNITS.get(re.sub(r"[^a-z]", "", unit))
+        if u:
+            first = f"{float(num):g} {u}"
+            pack = re.search(r"(\d+)\s*[x\u00d7]\s*" + re.escape(num) + r"\s*" + re.escape(unit), text)
+            return f"{int(pack.group(1))} x {first}" if pack else first
+    return None
+
+
+def normalize_product(record):
+    """Model output or a hand label -> {name, brand, size} (stripped strings or None)."""
+    record = record if isinstance(record, dict) else {}
+    clean = lambda v: str(v).strip() if v not in (None, "") and str(v).strip().lower() not in ("null", "none") else None  # noqa: E731
+    return {"name": clean(record.get("name")), "brand": clean(record.get("brand")), "size": clean(record.get("size"))}
+
+
+def prompt_version(template: str) -> str:
+    """A short tag for a prompt's wording (8 hex characters): which prompt a reading was made with."""
+    return hashlib.sha1(template.encode("utf-8")).hexdigest()[:8]
+
+
+def ask(engine, paths, question: str) -> tuple[str, float]:
+    """Debugging: the photos and a free question to a vision engine; the reply as text, and the seconds taken.
+    No answer shape is imposed, so the model says what it sees in its own words."""
+    if engine.get("kind") != "vlm":
+        raise ValueError(f"{engine['name']} can't look at photos (it reads OCR text); ask a vision engine")
+    t0 = time.monotonic()
+    content = [image_part(Path(p), engine.get("max_side")) for p in paths] + [{"type": "text", "text": question}]
+    reply, _ = chat(engine, content)
+    return (reply or "").strip(), round(time.monotonic() - t0, 2)

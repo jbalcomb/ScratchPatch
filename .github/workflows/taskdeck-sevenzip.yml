@@ -1,0 +1,67 @@
+name: TaskDeck 7-Zip engine
+
+# Builds 7-Zip's archive library + TaskDeck's C shim for Android arm64 and publishes the
+# taskdeck_sevenzip wheel to the "taskdeck-sevenzip" release, where the APK build installs it from.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - claude/android-job-interface-app-q20urc
+    paths:
+      - "taskdeck/native/sevenzip/**"
+      - ".github/workflows/taskdeck-sevenzip.yml"
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: taskdeck
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Get 7-Zip source
+        run: git clone --depth 1 --branch "$(cat native/sevenzip/7ZIP_VERSION)" https://github.com/ip7z/7zip.git /tmp/7zip
+      - name: Build for Linux and run the engine tests
+        run: |
+          native/sevenzip/build.sh /tmp/7zip /tmp/7z-linux
+          pip install "flet==1.0.4" "rsa>=4.9" certifi pytest
+          TASKDECK_7Z_DIR=/tmp/7z-linux pytest -q tests/test_archive.py
+      - name: Build for Android arm64 (NDK)
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          native/sevenzip/build.sh /tmp/7zip /tmp/7z-android "$TC/aarch64-linux-android24-clang" "$TC/aarch64-linux-android24-clang++"
+          file /tmp/7z-android/*.so | tee arch.txt
+          test "$(grep -c 'ARM aarch64' arch.txt)" = 2
+          for lib in lib7z.so lib7zshim.so; do
+            echo "$lib needs:"; "$TC/llvm-readelf" -d "/tmp/7z-android/$lib" | grep NEEDED
+            # Only Android system libraries: the app doesn't ship libc++_shared.so
+            if "$TC/llvm-readelf" -d "/tmp/7z-android/$lib" | grep NEEDED | grep -vqE "\[(libc|libm|libdl|liblog)\.so\]"; then
+              echo "::error::$lib needs a library that isn't part of Android"; exit 1
+            fi
+          done
+      - name: Build the wheel
+        run: |
+          cp /tmp/7z-android/lib7z.so /tmp/7z-android/lib7zshim.so native/sevenzip/package/taskdeck_sevenzip/
+          cp /tmp/7zip/DOC/License.txt native/sevenzip/package/taskdeck_sevenzip/LICENSE-7zip.txt
+          cp /tmp/7zip/DOC/unRarLicense.txt native/sevenzip/package/taskdeck_sevenzip/LICENSE-unRAR.txt
+          pip wheel --no-deps -w dist native/sevenzip/package
+          ls -la dist
+          python -m zipfile -l dist/*.whl | tee wheel.txt
+          grep -q "taskdeck_sevenzip/lib7z.so" wheel.txt && grep -q "taskdeck_sevenzip/lib7zshim.so" wheel.txt
+      - name: Publish to the taskdeck-sevenzip release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view taskdeck-sevenzip >/dev/null 2>&1 || gh release create taskdeck-sevenzip --prerelease \
+            --title "TaskDeck 7-Zip engine" --notes "7-Zip's archive library + TaskDeck's C shim for Android arm64 (Python wheel). Installed by the APK build. Not an app."
+          gh release upload taskdeck-sevenzip dist/*.whl --clobber

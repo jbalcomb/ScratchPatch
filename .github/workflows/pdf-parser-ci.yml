@@ -1,0 +1,27 @@
+name: PDF Parser CI
+
+on:
+  push:
+    paths:
+      - "pdf-parser/**"
+      - ".github/workflows/pdf-parser-ci.yml"
+  pull_request:
+    paths:
+      - "pdf-parser/**"
+      - ".github/workflows/pdf-parser-ci.yml"
+
+defaults:
+  run:
+    working-directory: pdf-parser
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -q

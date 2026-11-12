@@ -24,11 +24,15 @@ its timing.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install "flet[all]==1.0.4" "fastapi<0.120" pytest   # fastapi pin: needed by flet-web 1.0.4
+pip install --upgrade pip        # 25.1 or newer, for --group
+pip install -e . --group dev    # everything in pyproject.toml: the app's packages, plus flet[all], pytest
 flet run src/main.py            # desktop window
 flet run --web src/main.py      # browser
 pytest                          # tests
 ```
+
+Install from `pyproject.toml` like this, not with a hand-written `pip install` list: the app's packages
+(recorder, vault, permissions…) are listed only there, and tests that need a missing one fail or skip.
 
 ## Build the Android APK
 
@@ -45,7 +49,14 @@ stored as JSON in the app's private storage (`FLET_APP_STORAGE_DATA`).
 
 | Job | Notes |
 |---|---|
+| **Extract archive** | Unpack zip, 7z, RAR, tar and gz (password-protected too) into a folder on the phone, in the background. Needs the APK with file access. [docs/jobs/extract_archive_SPEC.md](docs/jobs/extract_archive_SPEC.md). |
+| **Parse executable** | Split a DOS or Windows .exe (MZ, PE, NE, LE; DOS/4G-bound programs; Watcom debug info decoded into a markdown file) into small text files an AI agent can walk or search: summary and layout, metadata, headers, hex chunks, strings; with supporting DLLs side by side and an import → export cross-reference. Optionally mirrored to Google Drive. [docs/jobs/exe_parse.md](docs/jobs/exe_parse.md). |
+| **Parse DLL** | The same for .dll and other libraries, with the exports table (ordinal, name, address, chunk file; forwarders; 16-bit NE too). Shares Parse executable's Drive folder. [docs/jobs/dll_parse.md](docs/jobs/dll_parse.md). |
+| **Voice notes** | Record on the phone; history with recorded and transcribed times; the AI Workstation transcribes, categorizes and archives (Postgres, Obsidian, knowledge graph). Wi-Fi only per stage, with a per-note override. Needs the newest APK and the workstation set up: [docs/jobs/voice_rec.md](docs/jobs/voice_rec.md). |
 | **Daily Log to Sheet** | Paste a delivery log → local AI extracts it → preview → append to Google Sheets. Needs setup: [docs/jobs/daily_log.md](docs/jobs/daily_log.md). |
+| **Update budget** | The budget sheet's SnapShot tab against the bank transactions from the budget service, in one run: TimeLine and Projected (day-by-day balances through next month), ThisWeek, and every month reconciled (bills paid or missing, spending week by week and not on the list). [docs/jobs/budget.md](docs/jobs/budget.md). |
+| **Photo OCR**: Receipt capture, Review queue, Unmatched items, Product photo, Shopping list, Reconciliation | Phone side of the photo OCR service on the AI Workstation, over Tailscale: send receipt and product photos, see what needs checking, accept product matches, the shopping list, and bank reconciliation against the budget store. Needs the service URL: [docs/jobs/photo_ocr.md](docs/jobs/photo_ocr.md). |
+| **PDF Parser** | Send a PDF to the PDF parser service on the AI Workstation; get its text, tables, images and OCR as a folder with a manifest, and a summary (pages, tables, images kept and to review). Needs the service: [docs/jobs/pdf_parser.md](docs/jobs/pdf_parser.md). |
 | Text Statistics, Case Converter, Hash / Checksum, JSON Formatter, Unit Converter, Tip & Split | Offline examples of the plugin pattern. |
 
 Jobs can have **settings** (tune icon on the job screen, or *Settings → Job settings*) and a **two-step run**:
@@ -60,6 +71,15 @@ python tools/new_job.py word_freq "Word Frequency" --category Text
 This creates `src/taskdeck/jobs/word_freq/__init__.py`. Fill in the fields and steps, add tags, then run
 `python -m taskdeck.review`. The job appears in All jobs and the palette automatically. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the plugin contract.
+
+Planned work: [TODO.md](TODO.md).
+
+Saving to Google Drive needs a one-time setup: [docs/GOOGLE_DRIVE_SETUP.md](docs/GOOGLE_DRIVE_SETUP.md).
+Jobs that copy files are either a one-time copy of a fixed snapshot or an ongoing sync, and that decides what
+happens to files already there: [docs/JOB_KINDS.md](docs/JOB_KINDS.md).
+
+Credentials (settings marked `secret=True`) are kept in a vault your fingerprint unlocks: see
+[docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 
 ## Layout
 

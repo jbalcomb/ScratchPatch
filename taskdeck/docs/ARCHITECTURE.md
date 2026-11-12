@@ -28,6 +28,8 @@ class UnitConvert(JobPlugin):
     tags = ("km", "miles", ...)             # extra palette keywords
     fields = (Field.number("value", "Value", required=True), Field.choice(...), ...)
     quick_actions = (QuickAction("Convert: km to mi", {"from_unit": "km", "to_unit": "mi"}),)
+    accounts = ()                           # accounts it signs in with, e.g. ((GOOGLE_ACCOUNT, "drive"),):
+                                            # unlocked before Run (docs/CREDENTIALS.md)
 
     def build_pipeline(self) -> Pipeline: ...
 
@@ -44,6 +46,10 @@ Python values and raises `StepError` with a message the user can act on.
 `quick_actions` are presets: each one becomes its own palette entry that opens the job with inputs
 pre-filled.
 
+Jobs that copy files somewhere set `nature` to `JobNature.ONE_TIME_COPY` (a fixed snapshot, e.g. an
+archive: mismatching files there are broken leftovers, uploaded fresh) or `JobNature.ONGOING_SYNC` (files
+that keep changing: older versions are updated in place). See [JOB_KINDS.md](JOB_KINDS.md).
+
 ## Pipeline (`core/pipeline.py`)
 
 A `Pipeline` is an ordered list of `Step`s that share a `Context`:
@@ -53,7 +59,17 @@ A `Pipeline` is an ordered list of `Step`s that share a `Context`:
 * A step raises `StepError("message")` to stop with a user-facing error. Any other exception is caught
   and reported with the step's name, so a buggy plugin cannot crash the app.
 * A step can set `ctx.result = Result(text=..., rows=[...])`, which the UI renders. Usually a shared
-  `present_*` step does this.
+  `present_*` step does this. `Result(images=[paths])` adds thumbnails of local image files above the rows
+  (tap one to see it full size); a FILE(S) field with `preview=True` shows the same thumbnails under the
+  field as soon as files are chosen, and its Add… opens the photo picker (`ui/photo_picker.py`): a Google
+  Photos style grid starting at the camera's photos (DCIM), newest first under day headings, with
+  multi-select. `shared/photos.py` finds the photos and reads the small thumbnail stored in each JPEG.
+  `Field.files(..., grouped="product")` keeps the files in groups (a blank line between groups; the value is a
+  list of lists), and the picker then offers **1 product** (all selected photos are one) and **N products**
+  (one each). `Field.files(..., camera="receipt")` adds **Take photos**: TaskDeck's own camera
+  (`ui/camera_capture.py`, the flet-camera plugin, so it needs an APK built with it), with receipt edge guides
+  and an overlap guide; its photos stay in the app's storage (`files.camera_dir()`) until the job sends them.
+* A step that waits on something slow calls `ctx.check_cancelled()` while it waits, so Cancel stops it.
 * `Pipeline.run` reports progress per step, supports cancellation and returns a `RunReport` with
   per-step timings. The UI shows this in the Pipeline panel.
 

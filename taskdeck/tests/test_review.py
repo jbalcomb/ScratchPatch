@@ -113,3 +113,25 @@ def test_cli_on_builtin_plugins_is_clean(tmp_path):
     out = tmp_path / "report.md"
     assert review_cli(["--out", str(out), "--strict"]) == 0
     assert out.read_text().startswith("# Plugin commonality review")
+
+
+def test_one_line_steps_are_not_duplicates():
+    """Two one-line steps that each store one call's result looked 87% alike (decorators included)."""
+    import ast
+
+    from taskdeck.review.analyzer import _tokens
+
+    one = ast.parse(textwrap.dedent('''
+        @step(Stage.EXECUTE, name="project balances")
+        def project(ctx):
+            ctx["timeline"] = timeline.build(ctx["items"], ctx["feed"])
+    ''')).body[0]
+    two = ast.parse(textwrap.dedent('''
+        @step(Stage.EXECUTE, name="project balances")
+        def project(ctx):
+            """Docstrings don't count."""
+            items = ctx["items"]
+            ctx["timeline"] = timeline.build(items, ctx["feed"])
+    ''')).body[0]
+    assert _tokens(one) == [] and _tokens(two)
+    assert not any("step" in t for t in _tokens(two))  # the decorator is not compared

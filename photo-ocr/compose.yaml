@@ -1,0 +1,31 @@
+# From this folder:
+#   docker compose up -d --build                          the service (web.py), always on
+#   docker compose run --rm bakeoff run --all             the bake-off, on demand
+x-common: &common
+  build: .
+  image: photo-ocr:local   # one image for both: rebuilding the service rebuilds the bake-off too
+  # Host networking: reaches the llama.cpp server and Immich on the workstation like any local
+  # program. The service listens on localhost:8093 only; Tailscale Serve makes it reachable (README).
+  network_mode: host
+  user: "${UID:-1000}:${GID:-1000}"   # files in ~/photo-ocr belong to you, not root
+  env_file:
+    - ${HOME}/.config/secrets.env                   # LLM_URL, LLM_API_KEY
+    - path: ${HOME}/.config/photo-ocr.env           # IMMICH_*, PHOTO_OCR_*, GOOGLE_* (README)
+      required: false
+  volumes:
+    - ${HOME}/photo-ocr:/data                       # store, photo cache, bake-off set and results
+    - ./engines.json:/app/engines.json:ro           # edit engines without a rebuild
+    - ${HOME}/budget:/budget:ro                     # budget's bank transactions, read for reconciliation
+    - /etc/localtime:/etc/localtime:ro
+
+services:
+  photo-ocr:
+    <<: *common
+    container_name: photo-ocr
+    restart: unless-stopped
+    environment:
+      BUDGET_DB: /budget/budget.db
+  bakeoff:
+    <<: *common
+    profiles: ["bakeoff"]
+    entrypoint: ["python", "bakeoff.py"]
