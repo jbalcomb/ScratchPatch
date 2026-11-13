@@ -28,6 +28,9 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   in 4 more launches, including a freshly copied exe sampled every 100 ms from 0.35 s on. If you see it, find
   out first whether the app ever presented a frame (the frame counter, or a debugger) before changing
   anything. A dark window-class background would only hide it.
+* Jobs run in `python/taskdeck_host.py`, a child process (README, "How jobs run"). Change its protocol on both
+  sides together (`src/job_host.*`, `src/shell.cpp`) and keep `python/tests` passing. Job settings aren't
+  edited or saved yet: runs and checks get `{}`, so jobs see their defaults (step 3).
 * When measuring window sizes from a script, make the script per-monitor DPI aware
   (`SetThreadDpiAwarenessContext`). Otherwise Windows scales the sizes it reports.
 

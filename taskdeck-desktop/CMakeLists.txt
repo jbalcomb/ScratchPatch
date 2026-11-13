@@ -15,22 +15,33 @@ FetchContent_Declare(imgui
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(imgui)
 
+# nlohmann/json, pinned: the JSON lines spoken with the Python job host.
+FetchContent_Declare(json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(json)
+
 add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_dx11.cpp)
-target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends ${imgui_SOURCE_DIR}/misc/cpp)
 
 add_executable(TaskDeck WIN32
     src/main.cpp
     src/shell.cpp
-    src/perf.cpp)
-target_link_libraries(TaskDeck PRIVATE imgui d3d11 dxgi d3dcompiler dwmapi psapi)
-target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    src/perf.cpp
+    src/job_host.cpp
+    src/file_dialog.cpp)
+target_link_libraries(TaskDeck PRIVATE imgui nlohmann_json::nlohmann_json d3d11 dxgi d3dcompiler dwmapi psapi ole32 shell32 uuid)
+target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    # Where the job host script (python/) is found when TASKDECK_DESKTOP_DIR isn't set: this source tree.
+    TASKDECK_DEV_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 if(MSVC)
     target_compile_options(TaskDeck PRIVATE /W4 /utf-8)
 else()

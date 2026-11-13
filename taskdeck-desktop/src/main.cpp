@@ -11,6 +11,7 @@
 #include "shell.h"
 
 #include <d3d11.h>
+#include <objbase.h>
 #include <windows.h>
 
 #include <cwchar>
@@ -48,6 +49,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     const bool continuous = cmdline && std::wcsstr(cmdline, L"--continuous");
 
     ImGui_ImplWin32_EnableDpiAwareness();
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);  // the file picker
     const float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
 
     WNDCLASSEXW wc = {sizeof(wc), CS_CLASSDC, wnd_proc, 0, 0, instance, nullptr, nullptr, nullptr, nullptr, L"TaskDeck", nullptr};
@@ -78,6 +80,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     ImGui_ImplDX11_Init(g_device, g_context);
 
     Shell shell;
+    shell.start(hwnd);  // the job host loads in the background; its messages wake the loop
     Perf perf;
     PerfSnapshot snap;
     int frames_left = 3;  // draw this many more frames before sleeping (ImGui needs a couple after input)
@@ -110,6 +113,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
         }
 
         perf.frame_begin();
+        shell.pump();
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -124,14 +128,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
         perf.frame_end();
         snap = perf.snapshot();
         frames_left = busy ? 3 : frames_left - 1;
+        shell.after_frame();
     }
 
+    shell.stop();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     cleanup_device();
     ::DestroyWindow(hwnd);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    ::CoUninitialize();
     return 0;
 }
 
@@ -190,6 +197,8 @@ static LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
         case WM_SYSCOMMAND:
             if ((wparam & 0xfff0) == SC_KEYMENU) return 0;  // no Alt menu
             break;
+        case WM_APP:  // the job host sent something; waking the loop is all that's needed
+            return 0;
         case WM_DESTROY:
             ::PostQuitMessage(0);
             return 0;

@@ -5,10 +5,12 @@ on:
   push:
     paths:
       - "taskdeck-desktop/**"
+      - "taskdeck/src/taskdeck/core/**"   # the job contract the job host speaks for
       - ".github/workflows/taskdeck-desktop-ci.yml"
   pull_request:
     paths:
       - "taskdeck-desktop/**"
+      - "taskdeck/src/taskdeck/core/**"
 
 defaults:
   run:
@@ -23,6 +25,11 @@ jobs:
         run: |
           cmake --version
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property displayName
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Job host tests (Python, against the phone app's jobs in ../taskdeck)
+        run: python -m unittest discover -s python/tests -v
       - name: Configure (MSVC)
         # No -G: CMake picks the newest Visual Studio installed (the runner's may be newer than 2022).
         run: cmake -B build -A x64

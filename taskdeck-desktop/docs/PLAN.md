@@ -54,8 +54,10 @@ The questions as they were asked:
 
 1. **Window and shell (done):** Win32 + D3D11 + Dear ImGui; Home (pinned tiles), All jobs, History, Settings,
    command palette (Ctrl+K); performance numbers; idle-friendly frame loop.
-2. **Job model:** after decision 1. Job screens built from a job's fields (text, multiline, number, choice,
-   toggle, file), Run, progress, result, the confirm/commit step.
+2. **Job model (done):** the Python job host (`python/taskdeck_host.py`, JSON lines over stdin/stdout); job
+   screens built from a job's fields (text, multiline, number, choice, toggle, file, files), Run, progress,
+   Cancel, result, the confirm/commit step. All 20 phone jobs load (Python 3.14). Checked on Windows: JSON
+   Formatter and Parse executable (through the file picker) run from the app.
 3. **Core features from the phone app:** pinned tiles and history saved to disk, settings per job, background
    tasks with progress (`taskdeck/src/taskdeck/core/tasks.py`), the palette's ranking
    (`taskdeck/src/taskdeck/core/commands.py`).
@@ -74,6 +76,10 @@ Same machine, Release builds, same window size, 5 runs each, report the median:
 | Frame time | average and worst over 120 frames while scrolling the job list (`--continuous` for ImGui); PresentMon for both |
 | Input latency | key press to the command palette's first visible result (Windows Performance Recorder + Analyzer) |
 | Size | the exe plus everything it needs to ship (WinUI 3: the Windows App SDK runtime) |
+
+Memory: measure before the file picker has been opened, or after in both builds. Opening it loads about 100
+Windows shell DLLs into the process for good (ImGui build: 29 MB working set fresh, 62 MB after a Browse).
+The Python job host is a separate process (about 36 MB); report it on its own line.
 
 Tools: PresentMon (frame times), Windows Performance Recorder/Analyzer (startup, CPU, latency), Visual Studio's
 profiler (hot spots).
