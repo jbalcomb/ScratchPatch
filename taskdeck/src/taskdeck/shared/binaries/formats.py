@@ -13,7 +13,7 @@ import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from . import names
+from . import names, watcom
 
 MZ_FIELDS = (  # (name, struct code, meaning), at offset 0
     ("e_magic", "2s", "signature 'MZ'"),
@@ -122,6 +122,10 @@ class Exe:
     entry: tuple[int, str] | None = None  # (file offset, how it's written in the header)
     exports: list[Export] = field(default_factory=list)  # sorted by ordinal
     imports: list[Import] = field(default_factory=list)  # in file order
+    objects: list = field(default_factory=list)  # LE/LX: le.Object, each with its linear base and file runs
+    # LE/LX: (object number, offset) -> (linear address, file offset); used to place debug symbols
+    locate: object = None
+    debug: object = None  # watcom.DebugInfo when the file carries Watcom debug info
     dll: bool = False  # a library (PE: IMAGE_FILE_DLL; NE: library module), not a program
     warnings: list[str] = field(default_factory=list)
 
@@ -162,12 +166,34 @@ def parse(data: bytes) -> Exe:
     else:
         exe.description = "No MZ signature: not a DOS or Windows executable (a .COM file is raw code)."
         exe.warnings.append("No executable header found; the file is laid out as raw data.")
+    _debug_info(data, exe)
     _fill_gaps(exe)
     for e in exe.exports:
         e.readable = names.readable(e.name)
     if any(e.readable for e in exe.exports):
         exe.facts["exports_cpp"] = sum(1 for e in exe.exports if e.readable)
     return exe
+
+
+def _debug_info(data: bytes, exe: Exe) -> None:
+    """Watcom debug info at the end of the file: decoded (watcom.py) and given its own region."""
+    try:
+        info = watcom.parse(data)
+    except (struct.error, IndexError, ValueError) as exc:  # a damaged trailer must not stop the parse
+        exe.warnings.append(f"The Watcom debug info couldn't be read: {exc}.")
+        return
+    if info is None:
+        return
+    exe.debug = info
+    for r in exe.regions:  # e.g. a DOS program's "overlay": the debug info is the end of it
+        if r.start < info.start < r.end:
+            r.end = info.start
+    exe.regions.append(Region("Watcom debug info", "debug", info.start, info.start + info.size,
+                              note=f"version {info.version}: {len(info.modules):,} modules, "
+                                   f"{len(info.globals):,} global symbols; decoded in debug/"))
+    exe.facts.update(debug_info=f"Watcom {info.version}", debug_modules=len(info.modules),
+                     debug_globals=len(info.globals))
+    exe.warnings += [f"Debug info: {w}" for w in info.warnings]
 
 
 def _fill_gaps(exe: Exe) -> None:
@@ -217,6 +243,11 @@ def _parse_mz(data: bytes, exe: Exe) -> None:
         return
 
     # A plain DOS program: the header's sizes describe the whole load image.
+    if 0 < image_end <= exe.size:
+        inner = _bound_program(data, image_end)
+        if inner:
+            _parse_bound(data, exe, mz, header_size, image_end, *inner)
+            return
     if not 0 < image_end <= exe.size:
         exe.warnings.append(f"The MZ header gives an image end of {h(image_end)}, outside the file "
                             f"({h(exe.size)} bytes); using the file size.")
@@ -257,6 +288,47 @@ def _parse_mz(data: bytes, exe: Exe) -> None:
     if image_end < exe.size:
         exe.regions.append(_overlay(data, image_end, exe.size))
     exe.facts["overlay_bytes"] = exe.size - image_end
+
+
+EXTENDERS = (  # names found in the extender's loader, for the description
+    (b"DOS/4GW", "DOS/4GW"), (b"DOS/4G", "DOS/4G"), (b"PMODE/W", "PMODE/W"), (b"CauseWay", "CauseWay"),
+    (b"DOS32A", "DOS/32A"), (b"WDOSX", "WDOSX"), (b"DOS/16M", "DOS/16M"),
+)
+
+
+def _bound_program(data: bytes, image_end: int) -> tuple[int, int, str] | None:
+    """A program bound to a DOS extender: after the extender's loader (and the extender itself), a DOS
+    stub whose e_lfanew points at an LE/LX header. Returns (stub offset, LE offset, signature)."""
+    at = data.find(b"MZ", image_end)
+    while 0 <= at < len(data) - 0x40:
+        lfanew = struct.unpack_from("<I", data, at + 0x3C)[0]
+        le = at + lfanew
+        if 0x40 <= lfanew and le + 4 <= len(data) and data[le:le + 2] in (b"LE", b"LX") and data[le + 2:le + 4] == b"\0\0":
+            return at, le, data[le:le + 2].decode()
+        at = data.find(b"MZ", at + 2)
+    return None
+
+
+def _parse_bound(data: bytes, exe: Exe, mz: dict, header_size: int, image_end: int, stub: int, le_at: int,
+                 sig: str) -> None:
+    head = data[:image_end] + data[image_end:stub][:0x20000]
+    extender = next((name for marker, name in EXTENDERS if marker in head), "a DOS extender")
+    exe.facts.update(extender=extender, extender_loader_bytes=image_end, bound_stub_offset=stub, le_offset=le_at)
+    exe.regions.append(Region("extender loader: MZ header", "header", 0, header_size,
+                              note=f"the DOS program that starts {extender}"))
+    exe.regions.append(Region("extender loader", "code", header_size, image_end, 0, "image offset",
+                              note=f"16-bit DOS code that loads {extender} and the program"))
+    if stub > image_end:
+        kind = "DOS/16M BW" if data[image_end:image_end + 2] == b"BW" else "extender"
+        exe.regions.append(Region(f"{extender} extender", "data", image_end, stub,
+                                  note=f"the extender itself ({kind} format); not the program"))
+    exe.regions.append(Region("program: DOS stub", "header", stub, le_at,
+                              note="the bound program's own MZ header; its e_lfanew points at the LE header"))
+    _parse_le(data, exe, le_at, file_base=stub)
+    # The LE header names OS/2 (that's how Watcom links for DOS/4G); it runs under DOS with the extender.
+    exe.description = f"32-bit protected-mode DOS program ({sig}, bound to {extender})"
+    exe.facts["os"] = f"{exe.facts.get('os')} in the LE header; runs under DOS with {extender}"
+    exe.format = f"{sig} ({extender})"
 
 
 def _overlay(data: bytes, start: int, end: int) -> Region:
@@ -708,9 +780,7 @@ def _pascal(data: bytes, at: int) -> str:
 
 # ---- LE / LX (VxD, OS/2, DOS extenders) -------------------------------------------------------------
 
-def _parse_le(data: bytes, exe: Exe, le: int) -> None:
-    sig = data[le:le + 2].decode()
-    exe.format = sig
-    exe.description = f"{sig} executable (32-bit linear: VxD, OS/2 or DOS extender); header only"
-    exe.regions.append(Region(f"{sig} image", "data", le, exe.size, note="header and pages (not decoded further)"))
-    exe.warnings.append(f"{sig} objects and pages aren't decoded yet; the image is laid out as one region.")
+def _parse_le(data: bytes, exe: Exe, le_at: int, file_base: int = 0) -> None:
+    from . import le
+
+    le.parse(data, exe, le_at, file_base, h, _read, Region, _ne_names)

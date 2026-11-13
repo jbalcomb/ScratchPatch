@@ -5,7 +5,7 @@ from taskdeck.review.analyzer import check_plugin
 
 BUILTIN = {"voice_rec", "text_stats", "case_convert", "hash_text", "json_format", "unit_convert", "tip_split", "daily_log", "extract_archive", "exe_parse", "dll_parse",
            "daily_log_reconcile", "budget_reconcile", "photo_ocr_capture", "photo_ocr_review",
-           "photo_ocr_unmatched", "photo_ocr_product_photo", "photo_ocr_shopping", "photo_ocr_reconcile"}
+           "photo_ocr_unmatched", "photo_ocr_product_photo", "photo_ocr_shopping", "photo_ocr_reconcile", "pdf_parser"}
 
 
 @pytest.fixture(scope="module")

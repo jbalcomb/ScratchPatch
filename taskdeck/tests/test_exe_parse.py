@@ -318,7 +318,7 @@ def test_job_pushes_in_a_background_task_in_the_app(tmp_path):
     src.write_bytes(dos_exe())
     fake, manager = FakeDrive(), TaskManager(start_thread=lambda fn: fn())
     ctx = Context({}, services={"google_drive": lambda: fake,
-                                "start_task": lambda title, work: manager.start(title, "exe_parse", work)})
+                                "start_task": lambda title, work, **kw: manager.start(title, "exe_parse", work)})
     report = exe_parse.PLUGIN.run({"exe": str(src), "output": str(tmp_path / "out"), "drive": True}, ctx=ctx)
     assert report.ok, report.error
     rows = dict(report.result.rows)
@@ -357,3 +357,25 @@ def test_drive_path_is_shown_under_the_switch():
     assert notes["output"] == "Saves into /storage/emulated/0/Games/MOM/_WIZARDS"
     notes = exe_parse.PLUGIN.field_notes({"exe": "", "drive": False}, {"drive_folder": ""})
     assert notes == {"drive": "Would go to Google Drive › My Drive › TaskDeck › Executables › _EXECUTABLE"}
+
+
+def test_a_refused_sign_in_is_marked_for_connect_again(tmp_path):
+    from taskdeck.shared import google_oauth
+
+    _, out = run_job(tmp_path, dos_exe())
+
+    class Refused(FakeDrive):
+        def upload(self, *a, **kw):
+            raise google_oauth.OAuthError("invalid_grant")
+
+    with pytest.raises(drive.UploadFailed, match="no longer accepts this sign-in") as stopped:
+        drive.push(new_task(), Refused(), out, "X")
+    assert stopped.value.fix == "account:google"
+
+    class Full(FakeDrive):
+        def upload(self, *a, **kw):
+            raise gdrive.DriveError("Your Google Drive is full.", 403)
+
+    with pytest.raises(drive.UploadFailed) as stopped:
+        drive.push(new_task(), Full(), out, "X")
+    assert stopped.value.fix == ""

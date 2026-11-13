@@ -62,8 +62,35 @@ Caster.exe/
 | DOS MZ | Header fields, relocation table (seg:off, image and file offsets), load module, entry CS:IP, overlay (recognises Borland FBOV, an appended MZ, zip/RAR/7z) |
 | PE32 / PE32+ | COFF and optional headers, data directories, sections, imports, exports (see [Parse DLL](dll_parse.md)), base relocations, resource tree, entry point, overlay (notes an Authenticode signature) |
 | NE (Win16, OS/2) | Header, segment table, module name, imported modules, entry point |
-| LE / LX | Detected; the image is one region (not decoded further) |
+| LE / LX | Header, objects (each with its linear address; regions per object, address column = linear address), page map, entry point, fixups (`tables/fixups-*.txt`: every place holding an address and what it points to), entry table and names |
+| Bound to a DOS extender | DOS/4G(W) and similar: the extender's loader, the extender itself (DOS/16M "BW"), and the program's own DOS stub are separate regions, and the LE program inside is decoded as above |
+| Watcom debug info | See **Debug info** below |
 | Anything else | Laid out as raw data |
+
+## Debug info
+
+Watcom debug info (version 3, at the end of the file; what `wlink debug all` writes) is decoded completely
+(`shared/binaries/watcom.py`, from the Open Watcom headers and debugger sources) into `debug/` in the file's
+folder:
+
+```
+debug/DEBUG.md                all of it in one markdown file (the agent can grep it):
+                              modules (object files) with their code/data ranges, every global symbol by
+                              address (file offset, chunk file), and per module: routines (address, size,
+                              prologue/epilogue, prototype, return and parameter locations, local variables
+                              with their stack or register location and type), module variables, types
+                              (typedefs, pointers, arrays, enums with constants, structs/unions with fields
+                              by offset, procedures) and line numbers (line -> address)
+debug/symbols-NNN.txt         every global symbol, one per line, by address, with its chunk file
+debug/modules/NNNN-<name>.md  one module's part of DEBUG.md
+```
+
+Every chunk file's header also names the symbols that start in it (`# symbols: Read_Key_ (0x...)`), the
+summary names the entry point's symbol, and records the decoder doesn't know are kept as hex. Tested on
+ORION2.EXE (Master of Orion II): 388 modules, 8,598 global symbols, 816 routines, 4,197 locals, 2,850 type
+records, 15,271 line numbers, nothing undecoded; symbols checked against the code (function prologues).
+Only modules compiled with full debug info (`-d2`) have locals, types and lines; others have their globals
+and address ranges.
 
 ## Google Drive
 
@@ -75,7 +102,11 @@ reads a stale chunk. Uploads reuse Extract Archive's parallel uploader (`taskdec
 The upload runs as a **background task**, like Extract Archive's: the parse result shows right away, and
 below it a bar for *Checking what's already in Google Drive* and one for *Uploading to Google Drive* (files
 done, speed, time left), "Paused: no connection" while the network is gone, Cancel, the notification while
-TaskDeck is in the background, and **Open in Drive** when it's done. Run is disabled until it finishes. The
+TaskDeck is in the background, and **Open in Drive** when it's done.
+
+If the upload fails or is stopped, **Retry upload** sends the folder already on the phone again (no new
+parse; what's already in Drive is skipped). If Google refused the saved sign-in (revoked, or expired after
+7 days while the consent screen is in Testing), **Connect again** signs in again and then retries by itself. Run is disabled until it finishes. The
 generic job screen offers this to any job (`Context.services["start_task"]`); the widgets are shared with
 Extract Archive (`taskdeck/ui/task_view.py`).
 
@@ -88,6 +119,10 @@ Extract Archive (`taskdeck/ui/task_view.py`).
   nothing it sees (identical files, skipped on upload); there's no reason to parse again anyway.
 
 ## Future
+
+* Other debug formats: Microsoft CodeView (`NBxx` at the end of the file) and Borland Turbo Debugger, for DOS
+  programs not built with Watcom.
+* Watcom debug info version 2 (older tools): detected, not decoded.
 
 * **DOS executables with overlays.** Today the overlay is one region (a Borland FBOV overlay is recognised,
   not decoded). Decode the overlay header and the overlay segments and split by them.

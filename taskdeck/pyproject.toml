@@ -22,6 +22,7 @@ dev = [
     "flet[all]==1.0.4",
     "fastapi<0.120",  # flet-web 1.0.4 passes openapi_prefix, removed in newer FastAPI
     "pytest>=8",
+    "pillow",  # test photos (tests/test_camera_capture.py)
 ]
 
 # Third-party job packages register here, e.g.

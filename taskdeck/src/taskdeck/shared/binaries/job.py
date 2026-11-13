@@ -16,7 +16,7 @@ from pathlib import Path
 from taskdeck.core import GOOGLE_ACCOUNT, WIFI_ONLY, Field, JobPlugin, Pipeline, Stage, StepError, Task, step
 from taskdeck.shared import files, steps
 
-from . import bundle, drive, formats, layout
+from . import bundle, debugdoc, drive, formats, layout
 
 CHUNKS = {"1 KB": 1024, "2 KB": 2048, "4 KB": 4096, "8 KB": 8192, "16 KB": 16384}
 MAX_BYTES = 64 * 1024 * 1024
@@ -193,15 +193,17 @@ def _push(job_id: str):
         if not ctx.get("drive"):
             return
         folder = drive_folder(ctx.settings)
-        client, base, include = ctx.services["google_drive"](), ctx["base"], ctx["include"]
+        connect, base, include = ctx.services["google_drive"], ctx["base"], ctx["include"]
         ctx["drive_target"] = drive.target(folder, base.name)
 
         def work(task: Task) -> str:
-            return drive.push(task, client, base, folder, include=include)
+            # The client is made when the upload starts, so "Retry upload" after "Connect again" signs in anew.
+            return drive.push(task, connect(), base, folder, include=include)
 
         start = ctx.services.get("start_task")
         if start:  # in the app: a background task with its own progress (and notification), like Extract Archive
-            ctx["upload_task"] = start(f"Uploading {base.name} to {drive.target(folder, '')}", work)
+            ctx["upload_task"] = start(f"Uploading {base.name} to {drive.target(folder, '')}", work,
+                                       retry_label="Retry upload")
             return
         try:  # no app (tests, scripts): upload now
             ctx["upload_message"] = work(Task(0, "upload", job_id))
@@ -237,6 +239,14 @@ def _present(expects_dll: bool | None):
                      "Full path": str(ctx["base"])})
         if exe.entry:
             rows["Entry point"] = exe.entry[1]
+            if exe.debug:
+                named = [g.name for g in exe.debug.globals if debugdoc.resolve(exe, g.segment, g.offset)[1] == exe.entry[0]]
+                if named:
+                    rows["Entry point"] += f" ({', '.join(named)})"
+        if exe.debug:
+            info = exe.debug
+            rows["Debug info"] = (f"Watcom {info.version.split()[0]}: {len(info.globals):,} symbols, "
+                                  f"{len(info.modules):,} modules (debug/DEBUG.md)")
         if ctx.get("drive_target"):
             rows["Google Drive"] = ctx["drive_target"]
             rows["Upload"] = ctx.get("upload_message") or "In the background: progress below."
