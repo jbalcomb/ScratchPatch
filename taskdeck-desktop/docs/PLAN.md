@@ -80,7 +80,16 @@ The questions as they were asked:
    tray (notification, then TaskDeck quit, History written), the job host killed while in the tray (a
    warning, TaskDeck stayed), a second start reopening the window; 0.16% CPU and 2 MB working set in the tray
    while a task reports.
-4. **First real jobs** (decision 4).
+4. **First real jobs** (decision 4). **Extract archive in C++ (done, 2026-11-14):** the phone's job on the same
+   engine (7-Zip 26.05's `7z.dll`, built from source with 7-Zip's makefile; the phone's shim adapted for
+   Windows in `src/sevenzip.cpp`), as a C++ job that speaks the job host's messages (`src/native_jobs.*`) and
+   extracts as a background task. `archive_tests.exe` runs the phone's archive tests (zip, 7z, AES and ZipCrypto,
+   encrypted names, RAR 4/5, unsafe paths, cancel) plus a `.tar.gz` in two passes. Checked on Windows: a 600 MB
+   `.tar.gz` (Decompressing ~145 MB/s, then Extracting ~270 MB/s), Cancel while decompressing, a wrong and then
+   the right password, extracting while closed to the tray (the menu listed it; TaskDeck quit after it
+   finished), idle CPU 0.00%. Found and fixed on the way: a tar made with `tar -C folder .` holds a `./`
+   entry, which the phone's path check also counts as unsafe (the phone's code is unchanged). Parse executable
+   already runs from the phone's job. Send to Devices waits for CrossMess to reach `main`.
 5. **Measure** (below), then the **WinUI 3 build** of the same features, then measure that.
 
 ## Measuring (Dear ImGui vs WinUI 3)

@@ -42,6 +42,11 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   overflow (the ^ arrow), where `Shell_NotifyIconGetRect` (hwnd of class `TaskDeck`, uID 1) finds TaskDeck's
   icon only while the overflow is open. A posted `WM_APP+1` doesn't stand in for a click: the menu won't open
   without the foreground rights a real click gives. Force-killed test instances leave ghost icons there.
+* Extract archive is C++ (`src/native_jobs.*`, `src/extract_job.*`, `src/sevenzip.*`); `7z.dll` is built by
+  `cmake/build-7z.cmd` (7-Zip's makefile, about 2 minutes, once per build folder). Keep it to the phone's
+  behaviour (`../taskdeck/src/taskdeck/jobs/extract_archive/logic.py`, `shared/archive.py`) and run
+  `build\Release\archive_tests.exe`. Make large test archives in a scratch folder (Windows'
+  `%SystemRoot%\System32\tar.exe`; Git's `tar` reads `C:` as a host name), never in the repo.
 * Keep the window idle at 0% CPU: `Shell::draw` returns true only while something animates. Measure after a
   change (a stuck focus request once kept it drawing at 8%).
 * When measuring window sizes from a script, make the script per-monitor DPI aware

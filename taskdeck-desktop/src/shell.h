@@ -6,6 +6,7 @@
 #include "commands.h"
 #include "imgui.h"
 #include "job_host.h"
+#include "native_jobs.h"
 #include "perf.h"
 #include "store.h"
 
@@ -52,6 +53,7 @@ struct TaskState {
     };
     int id = 0, run = 0;
     std::string job_id, title, status, note, message, fix, retry_label, drive_url;
+    std::string open_path;  // a folder to offer "Open folder" for, when done (Extract archive)
     long long done = 0, total = 0;
     double fraction = -1, eta = -1, speed = -1;  // -1: not known yet
     std::vector<Phase> phases;
@@ -157,6 +159,11 @@ private:
     void draw_close_notice();
     Activity run_activity(const RunState& run) const;
     void start_host();
+    // Sends an op to whichever runs the job: the C++ jobs (native_) or the Python job host.
+    void send(const nlohmann::json& msg);
+    // The job can run now: a C++ job, or the job host is ready.
+    bool job_ready(const JobSpec& job) const;
+    void add_native_jobs();
     void draw_home();
     void draw_jobs();
     void draw_history();
@@ -209,6 +216,7 @@ private:
     HWND hwnd_ = nullptr;
     Store store_;
     JobHost host_;
+    NativeJobs native_;
     enum class HostState { Starting, Ready, Failed } host_state_ = HostState::Starting;
     std::string host_error_, python_version_, notice_, credential_error_;
     ImVec4 notice_color_;
@@ -236,6 +244,6 @@ private:
     int palette_selected_ = 0;
 
     // File dialogs to show after the frame: Browse/Add for a job field, Import file for a setting.
-    struct Browse { std::string job_id, field; bool multiple = false, settings = false, import = false; std::vector<std::string> extensions; };
+    struct Browse { std::string job_id, field; bool multiple = false, settings = false, import = false; std::vector<std::string> extensions; bool folder = false; };
     std::vector<Browse> browse_;
 };

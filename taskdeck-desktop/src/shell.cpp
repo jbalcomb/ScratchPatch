@@ -215,6 +215,8 @@ void hint(const std::string& text) { wrapped(ImGui::GetStyleColorVec4(ImGuiCol_T
 void Shell::start(HWND hwnd) {
     hwnd_ = hwnd;
     store_.open(Store::default_path());
+    native_.start(hwnd);  // the C++ jobs: there even when Python isn't
+    add_native_jobs();
     if (store_.get("pinned").is_null()) {
         json pins = json::array();
         for (const char* id : kDefaultPins) pins.push_back(id);
@@ -232,11 +234,32 @@ void Shell::start_host() {
 void Shell::stop() {
     for (const auto& [id, form] : forms_)
         if (form.dirty) save_draft(id);
+    native_.stop();
     host_.stop();
 }
 
 void Shell::pump() {
+    for (const auto& msg : native_.take()) on_message(msg);
     for (const auto& msg : host_.take()) on_message(msg);
+}
+
+void Shell::send(const json& msg) {
+    if (!native_.handle(msg)) host_.send(msg);
+}
+
+bool Shell::job_ready(const JobSpec& job) const {
+    return native_.has_job(job.id) || host_state_ == HostState::Ready;
+}
+
+// The C++ jobs replace the Python jobs of the same id (in their place in the list), or come first.
+void Shell::add_native_jobs() {
+    size_t front = 0;
+    for (const auto& j : native_.jobs()) {
+        JobSpec job = parse_job(j);
+        auto it = std::find_if(jobs_.begin(), jobs_.end(), [&](const JobSpec& o) { return o.id == job.id; });
+        if (it != jobs_.end()) *it = std::move(job);
+        else jobs_.insert(jobs_.begin() + static_cast<std::ptrdiff_t>(front++), std::move(job));
+    }
 }
 
 int Shell::running_tasks(std::string* first_title) const {
@@ -263,6 +286,7 @@ void Shell::on_task(const json& msg) {
     t.fix = str(msg, "fix");
     t.retry_label = str(msg, "retry_label");
     t.drive_url = str(msg, "drive_url");
+    t.open_path = str(msg, "open_path");
     t.done = static_cast<long long>(number_or(msg, "done", 0));
     t.total = static_cast<long long>(number_or(msg, "total", 0));
     t.fraction = number_or(msg, "fraction", -1);
@@ -353,13 +377,13 @@ void Shell::cancel(const Activity& a) {
     if (a.task) {
         auto it = tasks_.find(a.id);
         if (it == tasks_.end() || !it->second.running() || it->second.cancel_sent) return;
-        host_.send({{"op", "task_cancel"}, {"task", a.id}});
+        send({{"op", "task_cancel"}, {"task", a.id}});
         it->second.cancel_sent = true;
         it->second.confirm_cancel = false;
     } else {
         auto it = runs_.find(a.id);
         if (it == runs_.end() || it->second.done || it->second.cancel_sent) return;
-        host_.send({{"op", "cancel"}, {"run", a.id}});
+        send({{"op", "cancel"}, {"run", a.id}});
         it->second.cancel_sent = true;
     }
 }
@@ -397,9 +421,14 @@ void Shell::draw_close_notice() {
     ImGui::SetNextWindowSize(ImVec2(580 * dpi(), 0));
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
     const auto list = activities();
-    if (list.empty()) {
-        ImGui::TextWrapped("Everything has finished.");
-    } else {
+    if (list.empty()) {  // it all finished while the notice was open: nothing left to ask, so close as asked
+        close_action_ = CloseAction::Quit;
+        close_notice_ = false;
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    {
         ImGui::TextWrapped(list.size() == 1 ? "This is still running:" : "These are still running:");
         for (const auto& a : list) ImGui::BulletText("%s: %s", a.title.c_str(), a.status.c_str());
         ImGui::Spacing();
@@ -422,7 +451,7 @@ void Shell::draw_close_notice() {
     if (ImGui::Button("Keep running in the tray")) finish(CloseAction::Tray, CloseChoice::Tray);
     ImGui::SetItemDefaultFocus();
     ImGui::SameLine();
-    if (ImGui::Button(list.empty() ? "Quit" : "Stop them and quit")) finish(CloseAction::Quit, CloseChoice::Quit);
+    if (ImGui::Button("Stop them and quit")) finish(CloseAction::Quit, CloseChoice::Quit);
     ImGui::SameLine();
     if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         close_notice_ = false;
@@ -478,7 +507,7 @@ void Shell::google_save(const json& changes) {
 void Shell::send_accounts() {
     if (host_state_ != HostState::Ready) return;
     const json v = google_values();
-    host_.send({{"op", "accounts"}, {"google", {{"client_id", str(v, "client_id")}, {"client_secret", str(v, "client_secret")},
+    send({{"op", "accounts"}, {"google", {{"client_id", str(v, "client_id")}, {"client_secret", str(v, "client_secret")},
                                                {"refresh_token", str(v, "refresh_token")}}}});
 }
 
@@ -498,7 +527,7 @@ void Shell::google_connect(int retry_task) {
     google_.url.clear();
     google_.error.clear();
     google_.status = "Getting a code from Google...";
-    host_.send({{"op", "google_connect"}, {"req", google_.req}, {"client_id", str(v, "client_id")},
+    send({{"op", "google_connect"}, {"req", google_.req}, {"client_id", str(v, "client_id")},
                 {"client_secret", str(v, "client_secret")}});
 }
 
@@ -509,6 +538,7 @@ void Shell::on_message(const json& msg) {
         python_version_ = str(msg, "python");
         jobs_.clear();
         for (const auto& j : msg.value("jobs", json::array())) jobs_.push_back(parse_job(j));
+        add_native_jobs();
         load_errors_.clear();
         for (const auto& [k, v] : msg.value("errors", json::object()).items())
             load_errors_[k] = v.is_string() ? v.get<std::string>() : v.dump();
@@ -525,13 +555,13 @@ void Shell::on_message(const json& msg) {
             host_error_ = "The job host stopped (exit code " + std::to_string(msg.value("code", 0)) + ").";
         }
         for (auto& [id, run] : runs_)
-            if (!run.done) {
+            if (!run.done && !native_.has_job(run.job_id)) {
                 run.done = true;
                 run.error = "The job host stopped while this ran.";
                 ended_.push_back(run_activity(run));
             }
         for (auto& [id, task] : tasks_)
-            if (task.running()) {
+            if (task.running() && !native_.has_job(task.job_id)) {
                 task.status = "failed";
                 task.message = "The job host stopped while this ran.";
                 ended_.push_back(task_activity(task));
@@ -557,7 +587,7 @@ void Shell::on_message(const json& msg) {
         notice_ = "Google Drive connected" + (str(msg, "email").empty() ? std::string(".") : " as " + str(msg, "email") + ".");
         notice_color_ = kOk;
         if (google_.retry_task) {  // "Connect again" on a failed upload: now run it again
-            host_.send({{"op", "task_retry"}, {"task", google_.retry_task}});
+            send({{"op", "task_retry"}, {"task", google_.retry_task}});
             tasks_.erase(google_.retry_task);
             google_.retry_task = 0;
         }
@@ -579,7 +609,9 @@ void Shell::on_message(const json& msg) {
             run.result = msg.contains("result") ? msg["result"] : json();
             run.step = run.total;
             ended_.push_back(run_activity(run));
-            session_runs_[History::add(store_, run.job_id, run.ok, run_summary(run), run.inputs)] = run.id;
+            // A run that only starts background work (Extract archive) leaves History to its task.
+            const bool background = run.result.is_object() && run.result.value("background", false);
+            if (!background) session_runs_[History::add(store_, run.job_id, run.ok, run_summary(run), run.inputs)] = run.id;
             // The draft is kept until the job is done (for jobs with a commit step: until that's done).
             if (run.ok && job && job->commit_label.empty()) Drafts::clear(store_, run.job_id);
         } else {
@@ -686,10 +718,10 @@ JobForm& Shell::form_for(const JobSpec& job) {
         put_defaults(form, job.fields);
         put_values(form, job.fields, Drafts::get(store_, job.id));
     }
-    if (!form.checked && host_state_ == HostState::Ready) {
+    if (!form.checked && job_ready(job)) {
         const int req = next_id_++;
         requests_[req] = {Request::Check, job.id};
-        host_.send({{"op", "check"}, {"req", req}, {"job", job.id}, {"settings", job_settings(job)}, {"online", true}});
+        send({{"op", "check"}, {"req", req}, {"job", job.id}, {"settings", job_settings(job)}, {"online", true}});
         form.checked = form.checking = true;
     }
     return form;
@@ -744,7 +776,7 @@ void Shell::run_job(const JobSpec& job, JobForm& form) {
     save_draft(job.id);
     if (auto old = runs_.find(form.run_id); old != runs_.end() && old->second.done &&
         old->second.commit != RunState::Commit::Committed && flag(old->second.result, "has_payload"))
-        host_.send({{"op", "forget"}, {"run", form.run_id}});  // the previous preview won't be committed now
+        send({{"op", "forget"}, {"run", form.run_id}});  // the previous preview won't be committed now
     RunState run;
     run.id = next_id_++;
     run.job_id = job.id;
@@ -753,7 +785,7 @@ void Shell::run_job(const JobSpec& job, JobForm& form) {
     run.started = now_hms();
     runs_[run.id] = run;
     form.run_id = run.id;
-    host_.send({{"op", "run"}, {"run", run.id}, {"job", job.id}, {"inputs", form_inputs(job, form, false)},
+    send({{"op", "run"}, {"run", run.id}, {"job", job.id}, {"inputs", form_inputs(job, form, false)},
                 {"settings", job_settings(job)}});
 }
 
@@ -916,7 +948,7 @@ void Shell::run_command(const std::string& id) {
             JobForm& form = form_for(*current);
             const bool blocked = std::any_of(form.problems.begin(), form.problems.end(), [](const Problem& p) { return p.blocking; });
             auto it = runs_.find(form.run_id);
-            if (!blocked && host_state_ == HostState::Ready && (it == runs_.end() || it->second.done)) run_job(*current, form);
+            if (!blocked && job_ready(*current) && (it == runs_.end() || it->second.done)) run_job(*current, form);
         }
     } else if (id == "job:settings") { if (current) open_settings(current->id); }
     else if (id.rfind("settings:", 0) == 0) open_settings(id.substr(9));
@@ -1039,6 +1071,15 @@ void Shell::after_frame() {
     auto pending = std::move(browse_);
     browse_.clear();
     for (const auto& b : pending) {
+        if (b.folder) {  // a folder field: starts where it points, if anywhere
+            JobForm& form = forms_[b.job_id];
+            const std::wstring folder = pick_folder(hwnd_, from_utf8(form.text[b.field]));
+            if (!folder.empty()) {
+                form.text[b.field] = to_utf8(folder);
+                form.dirty = true;
+            }
+            continue;
+        }
         const auto paths = pick_files(hwnd_, b.multiple, b.extensions);
         if (paths.empty()) continue;
         if (b.import) {  // Import file: the file's contents become the setting (a key file, say)
@@ -1352,7 +1393,7 @@ void Shell::draw_job(const JobSpec& job) {
     // As on the phone: no new run while the checks run or while the job's background task does.
     const bool task_running = std::any_of(tasks_.begin(), tasks_.end(),
                                           [&](const auto& t) { return t.second.job_id == job.id && t.second.running(); });
-    ImGui::BeginDisabled(blocked || running || task_running || form.checking || host_state_ != HostState::Ready);
+    ImGui::BeginDisabled(blocked || running || task_running || form.checking || !job_ready(job));
     if (ImGui::Button(job.run_label.empty() ? "Run" : job.run_label.c_str())) run_job(job, form);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
@@ -1420,7 +1461,7 @@ void Shell::draw_task(TaskState& t, bool on_job_screen) {
                 ImGui::TextUnformatted("Stop it? What's already done stays.");
                 ImGui::SameLine();
                 if (ImGui::Button("Stop")) {
-                    host_.send({{"op", "task_cancel"}, {"task", t.id}});
+                    send({{"op", "task_cancel"}, {"task", t.id}});
                     t.cancel_sent = true;
                     t.confirm_cancel = false;
                 }
@@ -1442,10 +1483,12 @@ void Shell::draw_task(TaskState& t, bool on_job_screen) {
             return ImGui::Button(label);
         };
         if (!t.drive_url.empty() && button("Open in Drive")) open_url(t.drive_url);
+        if (!t.open_path.empty() && button("Open folder"))
+            ::ShellExecuteW(nullptr, L"open", from_utf8(t.open_path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         const bool retryable = !t.retry_label.empty() && (t.status == "failed" || t.status == "cancelled");
         if (t.status == "failed" && t.fix == kGoogle && button("Connect again")) google_connect(retryable ? t.id : 0);
         if (retryable && button(t.retry_label.c_str())) {
-            host_.send({{"op", "task_retry"}, {"task", t.id}});
+            send({{"op", "task_retry"}, {"task", t.id}});
             const int id = t.id;
             ImGui::EndChild();
             ImGui::PopID();
@@ -1453,7 +1496,7 @@ void Shell::draw_task(TaskState& t, bool on_job_screen) {
             return;
         }
         if (button("Close")) {
-            host_.send({{"op", "task_forget"}, {"task", t.id}});
+            send({{"op", "task_forget"}, {"task", t.id}});
             const int id = t.id;
             ImGui::EndChild();
             ImGui::PopID();
@@ -1482,7 +1525,7 @@ void Shell::draw_google_rows() {
         if (ImGui::SmallButton("Disconnect")) {
             const std::string token = str(v, "refresh_token");
             google_save({{"refresh_token", ""}, {"email", ""}});
-            host_.send({{"op", "google_revoke"}, {"token", token}});
+            send({{"op", "google_revoke"}, {"token", token}});
             notice_ = "Google Drive disconnected.";
             notice_color_ = kOk;
         }
@@ -1570,7 +1613,7 @@ void Shell::draw_google_connect() {
     else hint(g.status);
     ImGui::Spacing();
     if (ImGui::Button(g.error.empty() ? "Cancel" : "Close")) {
-        if (g.error.empty()) host_.send({{"op", "google_cancel"}, {"req", g.req}});
+        if (g.error.empty()) send({{"op", "google_cancel"}, {"req", g.req}});
         g.connecting = false;
         g.retry_task = 0;
         ImGui::CloseCurrentPopup();
@@ -1598,6 +1641,16 @@ bool Shell::draw_field(const std::string& owner, FormValues& form, const FieldSp
                 for (const auto& c : f.choices)
                     if (ImGui::Selectable(c.c_str(), c == value)) { value = c; changed = true; }
                 ImGui::EndCombo();
+            }
+        } else if (f.kind == "folder") {
+            const float w = std::max(button_w("Add files..."), button_w("Browse..."));  // as wide as a file field's
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - w - style.ItemSpacing.x);
+            changed = ImGui::InputText("##v", &value);
+            ImGui::SameLine();
+            if (ImGui::Button("Browse...", ImVec2(w, 0))) {
+                Browse b{owner, f.name, false, shown != nullptr, false, {}};
+                b.folder = true;
+                browse_.push_back(b);
             }
         } else if (f.kind == "file" || f.kind == "files") {
             const bool multiple = f.kind == "files";
@@ -1642,7 +1695,7 @@ void Shell::draw_run(const JobSpec& job, RunState& run) {
         ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0), overlay);
         ImGui::BeginDisabled(run.cancel_sent);
         if (ImGui::Button("Cancel")) {
-            host_.send({{"op", "cancel"}, {"run", run.id}});
+            send({{"op", "cancel"}, {"run", run.id}});
             run.cancel_sent = true;
         }
         ImGui::EndDisabled();
@@ -1653,6 +1706,10 @@ void Shell::draw_run(const JobSpec& job, RunState& run) {
     else if (!run.ok) wrapped(kError, run.error);
 
     const json& r = run.result;
+    if (run.ok && r.is_object() && r.value("background", false)) {  // it only started a task: the task box says it all
+        ImGui::PopID();
+        return;
+    }
     if (r.is_object()) {
         ImGui::SeparatorText(str(r, "title").empty() ? "Result" : str(r, "title").c_str());
         auto two_columns = [](const char* id, const json& rows, bool right_align) {
@@ -1694,7 +1751,7 @@ void Shell::draw_run(const JobSpec& job, RunState& run) {
             ImGui::Spacing();
             auto commit = [&](bool confirm) {
                 run.commit = RunState::Commit::Committing;
-                host_.send({{"op", "commit"}, {"run", run.id}, {"settings", job_settings(job)}, {"confirm", confirm}});
+                send({{"op", "commit"}, {"run", run.id}, {"settings", job_settings(job)}, {"confirm", confirm}});
             };
             switch (run.commit) {
                 case RunState::Commit::Committed:
@@ -1754,7 +1811,7 @@ void Shell::draw_job_settings(const JobSpec& job) {
         if (ImGui::Button(job.settings_actions[i].c_str())) {
             const int req = next_id_++;
             requests_[req] = {Request::Action, job.id, static_cast<int>(i)};
-            host_.send({{"op", "settings_action"}, {"req", req}, {"job", job.id}, {"index", i}, {"values", settings_form_values()}});
+            send({{"op", "settings_action"}, {"req", req}, {"job", job.id}, {"index", i}, {"values", settings_form_values()}});
             sf.action_busy[i] = true;
             sf.action_text[i] = "Working...";
         }
@@ -1772,7 +1829,7 @@ void Shell::draw_job_settings(const JobSpec& job) {
     auto ask = [&](bool save) {
         const int req = next_id_++;
         requests_[req] = {Request::Test, job.id, 0, save};
-        host_.send({{"op", "test_settings"}, {"req", req}, {"job", job.id}, {"values", settings_form_values()}});
+        send({{"op", "test_settings"}, {"req", req}, {"job", job.id}, {"values", settings_form_values()}});
         sf.busy = true;
     };
     ImGui::BeginDisabled(sf.busy || !ready);

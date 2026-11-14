@@ -6,11 +6,13 @@ on:
     paths:
       - "taskdeck-desktop/**"
       - "taskdeck/src/taskdeck/core/**"   # the job contract the job host speaks for
+      - "taskdeck/tests/fixtures/archives/**"   # Extract archive's tests use the phone's test archives
       - ".github/workflows/taskdeck-desktop-ci.yml"
   pull_request:
     paths:
       - "taskdeck-desktop/**"
       - "taskdeck/src/taskdeck/core/**"
+      - "taskdeck/tests/fixtures/archives/**"
 
 defaults:
   run:
@@ -33,12 +35,16 @@ jobs:
       - name: Configure (MSVC)
         # No -G: CMake picks the newest Visual Studio installed (the runner's may be newer than 2022).
         run: cmake -B build -A x64
-      - name: Build
+      - name: Build (7z.dll from 7-Zip's source with its own makefile, then the app)
         run: cmake --build build --config Release
       - name: Core tests (palette ranking, state file, Credential Manager)
         run: build/Release/core_tests.exe
+      - name: Archive tests (Extract archive on 7-Zip, the phone's test archives)
+        run: build/Release/archive_tests.exe
       - uses: actions/upload-artifact@v4
         with:
           name: TaskDeck-windows-x64
-          path: taskdeck-desktop/build/Release/TaskDeck.exe
+          path: |
+            taskdeck-desktop/build/Release/TaskDeck.exe
+            taskdeck-desktop/build/Release/7z.dll
           if-no-files-found: error

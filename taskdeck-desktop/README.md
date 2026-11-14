@@ -13,7 +13,8 @@ Manager. Pins, history, drafts (what you typed and haven't finished) and the pal
 between runs. Background tasks (an upload to Google Drive after Parse executable) show their progress on the
 job's screen and on Home, with Cancel and Retry, and go into History when they end. Closing the window while
 a job or task runs can keep TaskDeck running in the notification area (the tray) until it's done. Google Drive is connected in Settings > Accounts, with the phone's sign-in (a code
-entered at google.com/device). Not yet: the first C++ jobs, releases (docs/PLAN.md).
+entered at google.com/device). Extract archive is the first job in C++ (on 7-Zip, below). Not yet: Send to
+Devices, releases (docs/PLAN.md).
 
 ## What's kept, and where
 
@@ -56,8 +57,23 @@ The UI and core are C++. The jobs are the phone app's Python jobs ([../taskdeck/
 unchanged: at start the app launches `python/taskdeck_host.py` as a child process and talks to it in JSON
 lines over stdin/stdout (the protocol is at the top of that file). The host loads the jobs, runs each on its
 own thread, and reports progress and results; the app's window still sleeps while nothing happens. Anything
-the jobs print goes to `%LOCALAPPDATA%\TaskDeck\job-host.log`. Jobs where speed matters get C++ versions
-later (Extract archive first).
+the jobs print goes to `%LOCALAPPDATA%\TaskDeck\job-host.log`.
+
+Jobs where speed matters are C++ (`src/native_jobs.*`). They answer the same messages as the job host, so the
+shell runs them the same way, and they take the place of the Python job with the same id. They work without
+Python too. So far there is one:
+
+**Extract archive** (`src/extract_job.*`, `src/sevenzip.*`): zip, 7z, RAR (4 and 5), tar, gz/bz2/xz/zst,
+cab, iso and the rest of what 7-Zip reads, password-protected ones too (encrypted names included). It is the
+phone's job (`jobs/extract_archive/logic.py`) on the same engine: 7-Zip 26.05's library, `7z.dll`, built
+from 7-Zip's source with its own makefile and loaded from next to `TaskDeck.exe`, through the phone's C shim
+adapted for Windows. As on the phone: it checks the archive, the password and the destination (exists or
+can be created, writable, enough free space) before starting; it refuses archives with paths that point
+outside the folder; it replaces existing files; and a `.tar.gz` (`.tgz`, `.tar.bz2`, ...) is decompressed and
+then extracted, in two phases. It extracts as a background task: a bar per phase with speed and time left,
+Cancel, the tray, History, and "Open folder" when done. The destination is a new folder next to the archive
+unless one is chosen. 7-Zip is GNU LGPL with the unRAR restriction (the RAR code may not be used to create RAR
+archives): https://www.7-zip.org/license.txt.
 
 This needs **Python 3.10 or newer** (python.org; `python.exe` on PATH, or the `py` launcher). The app finds
 the host script and the jobs in the source tree it was built from; override with environment variables:
@@ -75,13 +91,16 @@ python -m unittest discover -s python/tests -v
 ```
 
 Tests for the C++ parts without a window (the palette's ranking, the state file, Credential Manager; it writes
-and removes a `TaskDeck-tests/<pid>` credential), after building: `build\Release\core_tests.exe`.
+and removes a `TaskDeck-tests/<pid>` credential), after building: `build\Release\core_tests.exe`. Extract
+archive's tests, on the phone's test archives (`../taskdeck/tests/fixtures/archives`) plus a `.tar.gz` made
+with Windows' `tar.exe`: `build\Release\archive_tests.exe`.
 
 ## Build (Windows)
 
 Needs Visual Studio 2022 or newer (or its Build Tools) with the **Desktop development with C++** workload,
-which includes CMake and the Windows SDK. Dear ImGui is downloaded by CMake (pinned to v1.92.9); nothing else
-to install. Run these in a "Developer Command Prompt" (or any prompt where `cmake` is found); CMake picks
+which includes CMake and the Windows SDK. Dear ImGui, nlohmann/json and 7-Zip's source are downloaded by
+CMake (pinned); nothing else to install. The first build also builds `7z.dll` with 7-Zip's makefile (nmake,
+about 2 minutes) and copies it next to the exes. Run these in a "Developer Command Prompt" (or any prompt where `cmake` is found); CMake picks
 the newest Visual Studio installed.
 
 ```bat
