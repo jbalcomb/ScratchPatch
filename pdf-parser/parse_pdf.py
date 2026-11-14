@@ -179,7 +179,9 @@ def tables(page, page_no, out_dir):
     out = []
     for i, table in enumerate(found, 1):
         grid = _grid(table, page.rotation_matrix)
-        rows = [[_cell_text(words, cell) if cell else "" for cell in row] for row in grid]
+        inside = pymupdf.Rect(table.bbox) + (-1, -1, 1, 1)  # look only at the table's own words, not the page's
+        table_words = [w for w in words if inside.contains(pymupdf.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2))]
+        rows = [[_cell_text(table_words, cell) if cell else "" for cell in row] for row in grid]
         if not rows or not any(any(c.strip() for c in row) for row in rows):
             continue
         if max(len(r) for r in rows) < 2:  # one column is a framed list or box of text, not a table
