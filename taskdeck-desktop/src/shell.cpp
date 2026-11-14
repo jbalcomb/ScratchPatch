@@ -248,6 +248,8 @@ int Shell::running_tasks(std::string* first_title) const {
     return n;
 }
 
+static Activity task_activity(const TaskState& t);
+
 void Shell::on_task(const json& msg) {
     const int id = msg.value("id", 0);
     TaskState& t = tasks_[id];
@@ -274,7 +276,159 @@ void Shell::on_task(const json& msg) {
     if (!t.running() && !t.in_history) {  // background work goes into History when it ends, as on the phone
         t.in_history = true;
         History::add(store_, t.job_id, t.status == "done", t.message, plain_values(t.inputs));
+        ended_.push_back(task_activity(t));
     }
+}
+
+// ---- what's running: the tray icon's menu and the close notice -----------------------------------------
+
+static Activity task_activity(const TaskState& t) {
+    Activity a;
+    a.task = true;
+    a.id = t.id;
+    a.title = t.title;
+    a.running = t.running();
+    a.stopping = t.cancel_sent;
+    char buf[64];
+    if (a.running) {
+        if (t.cancel_sent) a.status = "Stopping...";
+        else if (t.fraction >= 0) { std::snprintf(buf, sizeof(buf), "%.0f%%", t.fraction * 100); a.status = buf; }
+        else a.status = "Working...";
+    } else if (t.status == "done") {
+        a.status = "Done";
+    } else if (t.status == "cancelled") {
+        a.status = "Cancelled";
+    } else {
+        a.status = t.message.empty() ? "Failed" : "Failed: " + t.message;
+        a.needs_you = true;
+    }
+    return a;
+}
+
+Activity Shell::run_activity(const RunState& run) const {
+    Activity a;
+    a.id = run.id;
+    a.title = run.job_title;
+    a.running = !run.done;
+    a.stopping = run.cancel_sent;
+    if (a.running) {
+        if (run.cancel_sent) a.status = "Stopping...";
+        else if (run.total == 0) a.status = "Starting...";
+        else {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Step %d of %d", std::min(run.step + 1, run.total), run.total);
+            a.status = buf + (run.step_name.empty() ? std::string() : ": " + run.step_name);
+        }
+    } else if (run.cancelled) {
+        a.status = "Cancelled";
+    } else if (!run.ok) {
+        a.status = run.error.empty() ? "Failed" : "Failed: " + run.error;
+        a.needs_you = true;
+    } else {
+        const JobSpec* job = find_job(run.job_id);
+        const bool commit = job && !job->commit_label.empty() && run.result.is_object() &&
+                            run.result.value("has_payload", false) && run.commit == RunState::Commit::Idle;
+        a.status = commit ? "Done, waiting for " + job->commit_label : "Done";
+        a.needs_you = commit;
+    }
+    return a;
+}
+
+std::vector<Activity> Shell::activities() const {
+    std::vector<Activity> out;
+    for (const auto& [id, run] : runs_)
+        if (!run.done) out.push_back(run_activity(run));
+    for (const auto& [id, task] : tasks_)
+        if (task.running()) out.push_back(task_activity(task));
+    return out;
+}
+
+std::vector<Activity> Shell::take_ended() {
+    std::vector<Activity> out;
+    out.swap(ended_);
+    return out;
+}
+
+void Shell::cancel(const Activity& a) {
+    if (a.task) {
+        auto it = tasks_.find(a.id);
+        if (it == tasks_.end() || !it->second.running() || it->second.cancel_sent) return;
+        host_.send({{"op", "task_cancel"}, {"task", a.id}});
+        it->second.cancel_sent = true;
+        it->second.confirm_cancel = false;
+    } else {
+        auto it = runs_.find(a.id);
+        if (it == runs_.end() || it->second.done || it->second.cancel_sent) return;
+        host_.send({{"op", "cancel"}, {"run", a.id}});
+        it->second.cancel_sent = true;
+    }
+}
+
+void Shell::cancel_all() {
+    for (const auto& a : activities()) cancel(a);
+}
+
+Shell::CloseChoice Shell::close_choice() const {
+    const json& v = store_.get("desktop_close_with_tasks");
+    const std::string s = v.is_string() ? v.get<std::string>() : "";
+    return s == "tray" ? CloseChoice::Tray : s == "quit" ? CloseChoice::Quit : CloseChoice::Ask;
+}
+
+void Shell::set_close_choice(CloseChoice c) {
+    store_.set("desktop_close_with_tasks", c == CloseChoice::Tray ? "tray" : c == CloseChoice::Quit ? "quit" : "ask");
+}
+
+void Shell::ask_close() {
+    close_notice_ = true;
+    close_dont_ask_ = false;
+}
+
+Shell::CloseAction Shell::take_close_action() {
+    const CloseAction a = close_action_;
+    close_action_ = CloseAction::None;
+    return a;
+}
+
+void Shell::draw_close_notice() {
+    const char* title = "Close TaskDeck?";
+    if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(580 * dpi(), 0));
+    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+    const auto list = activities();
+    if (list.empty()) {
+        ImGui::TextWrapped("Everything has finished.");
+    } else {
+        ImGui::TextWrapped(list.size() == 1 ? "This is still running:" : "These are still running:");
+        for (const auto& a : list) ImGui::BulletText("%s: %s", a.title.c_str(), a.status.c_str());
+        ImGui::Spacing();
+        ImGui::TextWrapped(list.size() == 1
+            ? "TaskDeck can keep running in the notification area (by the clock) until it finishes, then close. "
+              "Right-click its icon there to see it or cancel it."
+            : "TaskDeck can keep running in the notification area (by the clock) until they finish, then close. "
+              "Right-click its icon there to see them or cancel them.");
+    }
+    ImGui::Spacing();
+    ImGui::Checkbox("Don't show this again", &close_dont_ask_);
+    if (close_dont_ask_) hint("Closing will do what you pick now. You can change it in Settings, \"Closing the window\".");
+    ImGui::Spacing();
+    auto finish = [&](CloseAction action, CloseChoice choice) {
+        if (close_dont_ask_) set_close_choice(choice);
+        close_action_ = action;
+        close_notice_ = false;
+        ImGui::CloseCurrentPopup();
+    };
+    if (ImGui::Button("Keep running in the tray")) finish(CloseAction::Tray, CloseChoice::Tray);
+    ImGui::SetItemDefaultFocus();
+    ImGui::SameLine();
+    if (ImGui::Button(list.empty() ? "Quit" : "Stop them and quit")) finish(CloseAction::Quit, CloseChoice::Quit);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        close_notice_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 // ---- the Google account ----------------------------------------------------------------------------------
@@ -371,9 +525,17 @@ void Shell::on_message(const json& msg) {
             host_error_ = "The job host stopped (exit code " + std::to_string(msg.value("code", 0)) + ").";
         }
         for (auto& [id, run] : runs_)
-            if (!run.done) { run.done = true; run.error = "The job host stopped while this ran."; }
+            if (!run.done) {
+                run.done = true;
+                run.error = "The job host stopped while this ran.";
+                ended_.push_back(run_activity(run));
+            }
         for (auto& [id, task] : tasks_)
-            if (task.running()) { task.status = "failed"; task.message = "The job host stopped while this ran."; }
+            if (task.running()) {
+                task.status = "failed";
+                task.message = "The job host stopped while this ran.";
+                ended_.push_back(task_activity(task));
+            }
         if (google_.connecting) google_.error = "The job host stopped.";
     } else if (event == "garbled") {
         load_errors_["(job host output)"] = str(msg, "line");
@@ -416,6 +578,7 @@ void Shell::on_message(const json& msg) {
             run.seconds = msg.value("seconds", 0.0);
             run.result = msg.contains("result") ? msg["result"] : json();
             run.step = run.total;
+            ended_.push_back(run_activity(run));
             session_runs_[History::add(store_, run.job_id, run.ok, run_summary(run), run.inputs)] = run.id;
             // The draft is kept until the job is done (for jobs with a commit step: until that's done).
             if (run.ok && job && job->commit_label.empty()) Drafts::clear(store_, run.job_id);
@@ -866,6 +1029,7 @@ bool Shell::draw(const PerfSnapshot& perf) {
 
     if (palette_open_) draw_palette();
     if (google_.connecting) draw_google_connect();
+    if (close_notice_) draw_close_notice();
     if (show_demo_) ImGui::ShowDemoWindow(&show_demo_);
     if (!palette_open_) palette_focus_ = false;  // a focus request for a closed palette would keep drawing
     return palette_focus_ || io.MouseDown[0];
@@ -1105,6 +1269,14 @@ void Shell::draw_settings(const PerfSnapshot& perf) {
 
     ImGui::SeparatorText("Accounts");
     draw_google_rows();
+
+    ImGui::SeparatorText("Closing the window");
+    hint("When jobs or background tasks (uploads) are still running:");
+    int choice = static_cast<int>(close_choice());
+    bool changed = ImGui::RadioButton("Ask", &choice, 0);
+    changed |= ImGui::RadioButton("Keep running in the notification area (tray) until they finish", &choice, 1);
+    changed |= ImGui::RadioButton("Stop them and quit", &choice, 2);
+    if (changed) set_close_choice(static_cast<CloseChoice>(choice));
 
     ImGui::SeparatorText("Jobs");
     const char* state = host_state_ == HostState::Ready ? "running" : host_state_ == HostState::Starting ? "starting" : "stopped";

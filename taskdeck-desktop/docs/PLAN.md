@@ -71,6 +71,15 @@ The questions as they were asked:
    with Connect again and Retry upload; a slow test job (in a scratch copy of the jobs) showed the running
    bars, Cancel, and the close warning; CPU 0.5% while a task reports, 0% idle. Not checked: a real Google
    sign-in and upload (needs the user's OAuth client).
+   Then the tray (2026-11-14, asked for by the user): closing the window while a job or task runs asks (keep
+   running in the tray, stop them and quit, with "Don't show this again", also in Settings); the tray icon's
+   menu lists them with Cancel each, Cancel all, Open and Quit; a notification when they've all ended, then
+   TaskDeck quits unless something needs the user; one TaskDeck per data folder. Same process, window hidden
+   (not a separate service): reopening shows every screen as it was. Checked on Windows: the notice, the
+   real tray menu (Cancel, Cancel all with its confirmation, Open), a task finishing and one cancelled in the
+   tray (notification, then TaskDeck quit, History written), the job host killed while in the tray (a
+   warning, TaskDeck stayed), a second start reopening the window; 0.16% CPU and 2 MB working set in the tray
+   while a task reports.
 4. **First real jobs** (decision 4).
 5. **Measure** (below), then the **WinUI 3 build** of the same features, then measure that.
 

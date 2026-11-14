@@ -11,8 +11,8 @@ result, and the confirm/commit step. Each job's settings have their own screen (
 settings, the job's own buttons such as "Test connection"); keys and passwords are kept in Windows Credential
 Manager. Pins, history, drafts (what you typed and haven't finished) and the palette's ranking are kept
 between runs. Background tasks (an upload to Google Drive after Parse executable) show their progress on the
-job's screen and on Home, with Cancel and Retry, and go into History when they end; closing the window while
-one runs asks first. Google Drive is connected in Settings > Accounts, with the phone's sign-in (a code
+job's screen and on Home, with Cancel and Retry, and go into History when they end. Closing the window while
+a job or task runs can keep TaskDeck running in the notification area (the tray) until it's done. Google Drive is connected in Settings > Accounts, with the phone's sign-in (a code
 entered at google.com/device). Not yet: the first C++ jobs, releases (docs/PLAN.md).
 
 ## What's kept, and where
@@ -31,8 +31,20 @@ Everything stays on this PC (decision 2 in docs/PLAN.md):
   client ID and the address in `state.json`, the client secret and the sign-in (refresh token) in Credential
   Manager. Disconnect forgets the sign-in and asks Google to revoke it.
 
-Background tasks run in the job host, so they stop when TaskDeck closes (it asks first). The phone's "Wi-Fi
-only" setting has no effect here.
+## Closing while something runs
+
+Jobs and background tasks run in the job host, which stops when TaskDeck quits. So closing the window while
+one runs asks first (Settings > "Closing the window" changes that, as does "Don't show this again"):
+
+* **Keep running in the tray**: the window closes, TaskDeck's icon stays in the notification area (by the
+  clock; Windows may put it under the ^ arrow), and the work goes on. Right-click the icon for what's running,
+  each with Cancel, and Cancel all, Open TaskDeck and Quit TaskDeck; click it to open the window again, just as
+  you left it. When everything has ended, a notification says so and TaskDeck quits, unless something needs
+  you (a failed upload to retry, a result waiting for its commit button): then it stays in the tray.
+* **Stop them and quit**.
+
+Only one TaskDeck runs at a time: starting it again opens the one already running (from the tray, too). The
+phone's "Wi-Fi only" setting has no effect here.
 
 Shortcuts: Ctrl+K the palette (`>` actions only, `@` jobs only; arrows and Enter), Ctrl+1 to Ctrl+4 the four
 places, Ctrl+D pin or unpin the open job. Right-click a tile on Home to move or unpin it, or a job in All jobs

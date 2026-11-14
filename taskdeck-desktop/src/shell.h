@@ -113,8 +113,21 @@ struct SettingsForm : FormValues {
     std::vector<bool> action_busy;
 };
 
+// A job run or background task, as the tray icon's menu and the close notice list it.
+struct Activity {
+    bool task = false;  // a background task (tasks_), else a run (runs_)
+    int id = 0;
+    std::string title, status;  // status: "Step 2 of 4: pack", "42%", "Done", "Failed: ..."
+    bool running = false, stopping = false;
+    bool needs_you = false;  // ended badly (failed), or waits for its commit button
+};
+
 class Shell {
 public:
+    // What closing the window does while something runs: ask (the close notice), keep running in the tray
+    // until it's done, or stop it and quit. Kept in state.json ("desktop_close_with_tasks").
+    enum class CloseChoice { Ask, Tray, Quit };
+    enum class CloseAction { None, Tray, Quit };
     // Opens the state file and starts the job host; messages from it wake `hwnd`'s message loop.
     void start(HWND hwnd);
     // Applies what the job host sent since the last frame. Call before the frame.
@@ -128,8 +141,21 @@ public:
     void stop();
     // Background tasks still running (closing the app stops them), and the first one's title.
     int running_tasks(std::string* first_title = nullptr) const;
+    // Runs and background tasks still going, oldest first.
+    std::vector<Activity> activities() const;
+    // Runs and tasks that ended since the last call (for the tray's notification while the window is closed).
+    std::vector<Activity> take_ended();
+    void cancel(const Activity& a);
+    void cancel_all();
+    CloseChoice close_choice() const;
+    void set_close_choice(CloseChoice c);
+    // Shows the close notice in the window; the answer comes from take_close_action() after a frame.
+    void ask_close();
+    CloseAction take_close_action();
 
 private:
+    void draw_close_notice();
+    Activity run_activity(const RunState& run) const;
     void start_host();
     void draw_home();
     void draw_jobs();
@@ -195,6 +221,9 @@ private:
     SettingsForm settings_form_;
     std::map<int, TaskState> tasks_;
     GoogleState google_;
+    std::vector<Activity> ended_;
+    bool close_notice_ = false, close_dont_ask_ = false;
+    CloseAction close_action_ = CloseAction::None;
 
     // Requests waiting for a reply from the job host.
     struct Request { enum Kind { Check, Test, Action } kind; std::string job_id; int index = 0; bool save = false; };

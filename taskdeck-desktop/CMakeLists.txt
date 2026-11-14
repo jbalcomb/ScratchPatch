@@ -40,7 +40,8 @@ add_executable(TaskDeck WIN32
     src/file_dialog.cpp
     src/store.cpp
     src/credentials.cpp
-    src/commands.cpp)
+    src/commands.cpp
+    src/tray.cpp)
 target_link_libraries(TaskDeck PRIVATE imgui nlohmann_json::nlohmann_json d3d11 dxgi d3dcompiler dwmapi psapi ole32 shell32
     uuid advapi32)
 target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
