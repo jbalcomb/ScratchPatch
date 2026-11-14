@@ -32,6 +32,10 @@ def chart(w=400, h=300, seed=0):
     return im
 
 
+SCAN_LINES = ["INVOICE 2041", "Total due 125 dollars", "Thank you"] + [
+    f"Line {i} of the order with some words on it" for i in range(1, 9)]
+
+
 def text_image(lines, w=1700, h=2200):
     im = Image.new("L", (w, h), 255)
     d = ImageDraw.Draw(im)
@@ -62,7 +66,7 @@ def sample_pdf(tmp_path):
     p.insert_image(pymupdf.Rect(72, 600, 84, 612), stream=png(Image.new("RGB", (40, 40), (200, 30, 30))))  # an icon
     # Page 2: a scan (an image of text, no text layer).
     p2 = doc.new_page()
-    p2.insert_image(p2.rect, stream=png(text_image(["INVOICE 2041", "Total due 125 dollars", "Thank you"])))
+    p2.insert_image(p2.rect, stream=png(text_image(SCAN_LINES)))
     path = tmp_path / "sample.pdf"
     doc.save(path)
     return path

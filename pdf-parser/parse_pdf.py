@@ -36,20 +36,24 @@ import vision as vision_mod  # noqa: E402
 
 SCHEMA = "pdf-parser/1"
 OCR_DPI = 300
-SCANNED_MAX_CHARS = 20       # a page with less text than this and a page-sized image is a scan
+SCANNED_MAX_CHARS = 20       # a page with less text than this and a page-sized image has no usable text layer
 SCANNED_IMAGE_SHARE = 0.5
+# ...and it is a scan of text when OCR reads this much off it; otherwise it is an illustration (a title page,
+# a full-page picture), whose picture is kept as an image and whose few words are kept as OCR text.
+SCANNED_MIN_WORDS, SCANNED_MIN_CONF = 40, 60
 
 
 # ---------------------------------------------------------------- per page
 
 def triage(page):
-    """'text' (it has a text layer) or 'scanned' (an image of the page; needs OCR)."""
+    """'text' (it has a text layer) or 'ocr' (a page-sized image and no text layer: OCR decides whether it is
+    a scan of text or an illustration)."""
     chars = len(page.get_text("text").strip())
     if chars >= SCANNED_MAX_CHARS:
         return "text"
     area = abs(page.rect)
     covered = max((abs(pymupdf.Rect(i["bbox"]) & page.rect) for i in page.get_image_info()), default=0)
-    return "scanned" if covered >= SCANNED_IMAGE_SHARE * area or chars == 0 and covered else "text"
+    return "ocr" if covered >= SCANNED_IMAGE_SHARE * area or chars == 0 and covered else "text"
 
 
 def _font(span):
@@ -100,15 +104,32 @@ def ocr_page(page, page_no, out_dir):
                     "ocr_words": len(found)}
 
 
+def _cell_text(words, cell):
+    """The words whose centre is in the cell, line by line. (PyMuPDF's own table text can drop the spaces,
+    e.g. on pages that were rotated; the words of the text layer keep them.)"""
+    r = pymupdf.Rect(cell)
+    lines = {}
+    for x0, y0, x1, y1, word, block, line, _ in words:
+        if r.contains(pymupdf.Point((x0 + x1) / 2, (y0 + y1) / 2)):
+            lines.setdefault((block, line), []).append(word)
+    return "\n".join(" ".join(ws) for ws in lines.values())
+
+
 def tables(page, page_no, out_dir):
     try:
         found = page.find_tables().tables
     except Exception:  # find_tables can trip on odd drawings; text and images still come out
         return []
+    words = page.get_text("words", sort=True)
     out = []
     for i, table in enumerate(found, 1):
-        rows = [[("" if c is None else str(c)) for c in row] for row in table.extract()]
+        extracted = table.extract()
+        rows = [[_cell_text(words, cell) if cell else ("" if raw is None else str(raw))
+                 for cell, raw in zip(row.cells, raw_row)]
+                for row, raw_row in zip(table.rows, extracted)]
         if not rows or not any(any(c.strip() for c in row) for row in rows):
+            continue
+        if max(len(r) for r in rows) < 2:  # one column is a framed list or box of text, not a table
             continue
         tdir = out_dir / "tables"
         tdir.mkdir(exist_ok=True)
@@ -116,9 +137,10 @@ def tables(page, page_no, out_dir):
         with (tdir / name).open("w", newline="") as f:
             csv.writer(f).writerows(rows)
         header = getattr(table, "header", None)
+        has_header = header is not None and not getattr(header, "external", False)
         out.append({"type": "table", "page": page_no, "bbox": _box(table.bbox), "file": f"tables/{name}",
                     "rows": len(rows), "cols": max(len(r) for r in rows),
-                    "header": list(header.names) if header is not None and not getattr(header, "external", False) else None,
+                    "header": [c.replace("\n", " ") for c in rows[0]] if has_header else None,
                     "cells": [[_box(c) if c else None for c in row.cells] for row in table.rows]})
     return out
 
@@ -162,12 +184,17 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
     for index, page in enumerate(doc):
         n = index + 1
         say(f"page {n} of {doc.page_count}")
+        rotation = page.rotation
+        if rotation:  # turn the content upright, so every bbox is as the page is seen and text runs left to right
+            page.remove_rotation()
         kind = triage(page)
         info = {"page": n, "width": round(page.rect.width, 2), "height": round(page.rect.height, 2),
-                "rotation": page.rotation, "kind": kind}
-        if kind == "scanned":
+                "rotation": rotation, "kind": kind}
+        if kind == "ocr":
             texts, extra = ocr_page(page, n, out)
-            info.update(extra)
+            scanned = extra["ocr_words"] >= SCANNED_MIN_WORDS and (extra["ocr_confidence"] or 0) >= SCANNED_MIN_CONF
+            kind = "scanned" if scanned else "image"
+            info.update(extra, kind=kind)
             found_tables = []
         else:
             texts = text_blocks(page, n)
@@ -186,7 +213,8 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
     (out / "text.txt").write_text("\n\n".join(text_out) + "\n")
     manifest = {
         "schema": SCHEMA,
-        "units": "PDF points (1/72 in); bbox is [x0, y0, x1, y1] from the page's top-left corner",
+        "units": "PDF points (1/72 in); bbox is [x0, y0, x1, y1] from the top-left corner of the page as it is "
+                 "displayed (its rotation applied; pages[].rotation is the rotation the PDF had)",
         "source": {"file": pdf_path.name, "sha256": hashlib.sha256(pdf_path.read_bytes()).hexdigest(),
                    "pages": doc.page_count, "metadata": {k: v for k, v in (doc.metadata or {}).items() if v}},
         "created": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -204,6 +232,7 @@ def summarize(pages, elements, budget):
     count = lambda status: sum(e["status"] == status for e in imgs)  # noqa: E731
     return {"pages": len(pages), "text_pages": sum(p["kind"] == "text" for p in pages),
             "scanned_pages": sum(p["kind"] == "scanned" for p in pages),
+            "image_pages": sum(p["kind"] == "image" for p in pages),
             "text_blocks": sum(e["type"] == "text" for e in elements),
             "tables": sum(e["type"] == "table" for e in elements),
             "images_kept": count("kept"), "images_needs_review": count("needs_review"),

@@ -19,9 +19,10 @@ pytest                                   # tests (stand-in vision server; OCR te
 
 | Step | How | Where |
 |---|---|---|
-| Triage | A page with almost no text layer and a page-sized image is **scanned**; the rest are **text** pages. | `parse_pdf.triage` |
+| Rotation | A page stored rotated (`/Rotate`) is turned upright first, so every bbox is as the page is seen and text reads left to right. | `parse_pdf.parse` |
+| Triage | A page with a text layer is a **text** page. One with almost none and a page-sized image is OCR'd: if that reads 40+ words at 60%+ confidence it is **scanned** (the page's picture isn't an image element); otherwise it is an **image** page, like a title page with a full-page drawing, whose picture is kept as an image and whose few words are kept as OCR text. | `parse_pdf.triage` |
 | Text | PyMuPDF blocks → lines → spans in reading order, with bbox, font, size, bold/italic, colour. Scanned pages: rendered at 300 DPI and OCR'd by Tesseract, as blocks with boxes and confidence. | `parse_pdf.text_blocks`, `ocr_page` |
-| Tables | PyMuPDF `find_tables`; each one a CSV, plus its bbox, header and cell boxes in the manifest. Text blocks inside a table are marked `in_table`. | `parse_pdf.tables` |
+| Tables | PyMuPDF `find_tables` finds them; each cell's text comes from the text layer's words in it (PyMuPDF's own table text can lose its spaces). Each table is a CSV, plus its bbox, header and cell boxes in the manifest. One-column "tables" (framed lists) are left as text. Text blocks inside a table are marked `in_table`. | `parse_pdf.tables` |
 | Images | The embedded image first; the page rendered under its box when it can't be taken out. Then the QA loop below. | `images.py` |
 | OCR | Tesseract on every image attempt: text, mean word confidence, word count. | `ocr.py` |
 
@@ -52,7 +53,8 @@ fragment, decoration or background) passes, and the score rises to at least 0.9;
 **Retries.** A failed attempt is retried with the next strategy, in the order **hidpi** (page render at
 300 DPI) → **pad** (box grown 10% each side) → **merge** (with image boxes touching it) → **enhance**
 (deskew + contrast), picking the first that fits the problem (pad and merge for a cut-off crop, enhance for poor
-OCR, hidpi below 200 DPI or for poor OCR / small images) and otherwise the next in order. At most **3 attempts**
+OCR, hidpi below 200 DPI or for poor OCR / small images) and otherwise the next in order. Once the vision model
+has turned an attempt down, every retry of that image is shown to it too, even with no flags. At most **3 attempts**
 per image; the best-scoring one that passed is kept. If none passed, the best is saved with status
 **needs_review**, and every attempt is in `images/attempts/` so a person can pick.
 
@@ -97,7 +99,7 @@ with a message that says to add the model's mmproj. `GET /api/health` reports th
   "units": "PDF points (1/72 in); bbox is [x0, y0, x1, y1] from the page's top-left corner",
   "source": {"file": "report.pdf", "sha256": "…", "pages": 12, "metadata": {"title": "…"}},
   "pages": [{"page": 1, "width": 612, "height": 792, "rotation": 0, "kind": "text"},
-            {"page": 2, "kind": "scanned", "render": "pages/p002.png", "ocr_confidence": 91.4, "ocr_words": 310, …}],
+            {"page": 2, "rotation": 90, "kind": "scanned|image", "render": "pages/p002.png", "ocr_confidence": 91.4, "ocr_words": 310, …}],
   "elements": [   // per page in reading order: "order" 1, 2, 3, …
     {"id": "p1-text1", "type": "text", "page": 1, "order": 1, "bbox": […], "source": "text_layer|ocr",
      "text": "…", "in_table": null, "confidence": null,   // confidence: OCR only
@@ -114,7 +116,7 @@ with a message that says to add the model's mmproj. `GET /api/health` reports th
      "attempts": [{"n": 1, "strategy": "embedded", "dpi": 120, "bbox": […], "score": 1.0, "flags": [], "vision": null}],
      "best_attempt": 1, "duplicate_of": null, "merged": ["p1-i2"], "merged_into": null, "vision_skipped": null}
   ],
-  "summary": {"pages": 12, "text_pages": 11, "scanned_pages": 1, "text_blocks": 140, "tables": 3,
+  "summary": {"pages": 12, "text_pages": 11, "scanned_pages": 1, "image_pages": 0, "text_blocks": 140, "tables": 3,
               "images_kept": 8, "images_needs_review": 1, "images_duplicate": 2, "images_merged": 0,
               "images_small": 5, "vision": {"requests": 4, "failed": 0, "available": true, "stopped": null,
                                             "model": "qwen3-vl-8b"}}

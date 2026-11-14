@@ -323,3 +323,91 @@ def test_clipped_render_is_flagged(tmp_path):
     assert "clipped" in images.check(tmp_path / "c.png", rect, [], "clip", page)[0]
     assert "clipped" not in images.check(tmp_path / "c.png", rect, [], "embedded", page)[0]
     assert images.check(tmp_path / "c.png", rect, [pymupdf.Rect(0, 0, 150, 90)], "embedded", page)[0] == ["text_overlap"]
+
+
+# ---------------------------------------------------------------- found on the first real PDF
+
+def rotated_pdf(tmp_path):
+    """A /Rotate 90 page whose content reads upright when displayed: a heading, a table and a figure."""
+    doc = pymupdf.open()
+    p = doc.new_page(width=377, height=576)
+    p.set_rotation(90)
+    m = p.derotation_matrix  # displayed (upright) coordinates -> the page's stored coordinates
+
+    def text(x, y, s, size=10):
+        p.insert_text(pymupdf.Point(x, y) * m, s, fontsize=size, rotate=90)
+
+    text(40, 40, "Movement types", 14)
+    rows = [("Mode", "Allowed movement"), ("Flying", "All stacked units fly"), ("Sailing", "Only over water")]
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row):
+            box = pymupdf.Rect(40 + c * 160, 60 + r * 20, 200 + c * 160, 80 + r * 20)
+            p.draw_rect(box * m, color=(0, 0, 0), width=0.8)
+            text(box.x0 + 4, box.y1 - 6, cell)
+    p.insert_image(pymupdf.Rect(40, 160, 280, 340) * m, stream=png(chart()), rotate=90)
+    path = tmp_path / "rotated.pdf"
+    doc.save(path)
+    return path
+
+
+def test_rotated_pages_come_out_upright(tmp_path):
+    m = parse_pdf.parse(rotated_pdf(tmp_path), tmp_path / "out", use_vision=False)
+    page = m["pages"][0]
+    assert (page["width"], page["height"], page["rotation"]) == (576, 377, 90)
+    els = m["elements"]
+    assert all(0 <= e["bbox"][0] < e["bbox"][2] <= 576 and 0 <= e["bbox"][1] < e["bbox"][3] <= 377 for e in els)
+    assert els[0]["text"] == "Movement types" and els[0]["lines"][0]["dir"] == [1, 0]
+    table = next(e for e in els if e["type"] == "table")
+    rows = list(csv.reader((tmp_path / "out" / "rotated" / table["file"]).open()))
+    assert rows == [["Mode", "Allowed movement"], ["Flying", "All stacked units fly"], ["Sailing", "Only over water"]]
+    image = next(e for e in els if e["type"] == "image")
+    assert image["status"] == "kept" and "clipped" not in image["flags"]
+    assert image["order"] > table["order"]
+
+
+def test_a_picture_page_without_a_text_layer_keeps_its_picture(tmp_path):
+    """A section title page: one page-sized drawing and a few words. Not a scan: the drawing is an image."""
+    from PIL import ImageDraw
+    art = chart(800, 1200)
+    ImageDraw.Draw(art).text((300, 30), "Getting Started", fill="black")
+    doc = pymupdf.open()
+    p = doc.new_page(width=376, height=575)
+    p.insert_image(p.rect, stream=png(art))
+    path = tmp_path / "title.pdf"
+    doc.save(path)
+    m = parse_pdf.parse(path, tmp_path / "out", use_vision=False)
+    assert m["pages"][0]["kind"] == "image" and m["summary"]["image_pages"] == 1
+    image = next(e for e in m["elements"] if e["type"] == "image")
+    assert image["status"] == "kept" and (tmp_path / "out" / "title" / image["file"]).exists()
+
+
+def test_a_one_column_box_is_not_a_table(tmp_path):
+    doc = pymupdf.open()
+    p = doc.new_page()
+    for r, line in enumerate(("Agility . . . . defense", "Arcane Power . . . ranged", "Armor-Piercing . . . halves")):
+        box = pymupdf.Rect(72, 100 + r * 20, 400, 120 + r * 20)
+        p.draw_rect(box, color=(0, 0, 0), width=0.8)
+        p.insert_text((76, box.y1 - 6), line, fontsize=10)
+    path = tmp_path / "list.pdf"
+    doc.save(path)
+    m = parse_pdf.parse(path, tmp_path / "out", use_vision=False)
+    assert m["summary"]["tables"] == 0 and m["summary"]["text_blocks"] >= 1
+
+
+def test_a_retry_after_the_vision_model_said_no_is_checked_again(sample_pdf, tmp_path, fake_llm, monkeypatch):
+    """The first try is flagged and turned down; the retry has no flags, but still needs the model's OK."""
+    real_check, calls = images.check, []
+
+    def check(path, rect, text_rects, source, page_rect):
+        flags, metrics = real_check(path, rect, text_rects, source, page_rect)
+        calls.append(path.name)
+        return (["low_ocr"] if path.name == "p1-i1-a1.png" else []), metrics
+
+    monkeypatch.setattr(images, "check", check)
+    answers = iter([{"complete": False, "content_type": "chart", "issue": "cut off at the bottom"},
+                    {"complete": True, "content_type": "chart", "issue": None}])
+    fake_llm["answer"] = lambda im: next(answers, {"complete": True, "content_type": "chart", "issue": None})
+    m = parse_pdf.parse(sample_pdf, tmp_path, make_vision(fake_llm))
+    first = by_id(m)["p1-i1"]
+    assert [a["vision"]["complete"] for a in first["attempts"]] == [False, True]
+    assert first["status"] == "kept" and first["best_attempt"] == 2

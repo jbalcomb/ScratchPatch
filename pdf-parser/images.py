@@ -260,9 +260,10 @@ class PageImages:
                 "merged": list(state.get("merged", [])), "flags": flags, "metrics": metrics, "score": score(flags),
                 "vision": None}
 
-    def _judge(self, attempt, cand):
-        """Tier 2 when flagged; -> whether the attempt passes. Adjusts its score with the vision verdict."""
-        if not attempt["flags"] and not vision_for_all():
+    def _judge(self, attempt, cand, recheck=False):
+        """Tier 2 when flagged (or ``recheck``: an earlier attempt failed it); -> whether the attempt passes.
+        Adjusts its score with the vision verdict."""
+        if not attempt["flags"] and not recheck and not vision_for_all():
             return True
         verdict = self.budget.ask(attempt["path"], cand["page"], image=cand["id"], attempt=attempt["n"],
                                   strategy=attempt["strategy"], flags=attempt["flags"])
@@ -292,7 +293,10 @@ class PageImages:
         attempts, tried, passed = [first], set(), []
         attempt = first
         while True:
-            if self._judge(attempt, cand):
+            # Once the vision model has turned an attempt down, a retry needs its OK too, flags or not.
+            recheck = any(a["vision"] and not (a["vision"]["complete"] and vision_mod.meaningful(a["vision"]))
+                          for a in attempts[:-1])
+            if self._judge(attempt, cand, recheck):
                 passed.append(attempt)
                 break
             if len(attempts) >= MAX_ATTEMPTS:
