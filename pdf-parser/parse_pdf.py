@@ -51,8 +51,9 @@ def triage(page):
     chars = len(page.get_text("text").strip())
     if chars >= SCANNED_MAX_CHARS:
         return "text"
-    area = abs(page.rect)
-    covered = max((abs(pymupdf.Rect(i["bbox"]) & page.rect) for i in page.get_image_info()), default=0)
+    page_rect = images_mod.native_rect(page)
+    area = abs(page_rect)
+    covered = max((abs(pymupdf.Rect(i["bbox"]) & page_rect) for i in page.get_image_info()), default=0)
     return "ocr" if covered >= SCANNED_IMAGE_SHARE * area or chars == 0 and covered else "text"
 
 
@@ -115,18 +116,43 @@ def _cell_text(words, cell):
     return "\n".join(" ".join(ws) for ws in lines.values())
 
 
+def _flat_copy(page):
+    """The page alone, with its rotation taken off (content in the page's own coordinates). find_tables on a
+    rotated page answers in another frame than the text and images; on this copy it agrees with them."""
+    copy = pymupdf.open()
+    copy.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+    copy[0].set_rotation(0)
+    return copy
+
+
+def _grid(table, rotation_matrix):
+    """The table's cells as rows of boxes, in reading order on the page as displayed (on a rotated page, the
+    table's own rows run down the displayed columns)."""
+    if rotation_matrix.is_rectilinear and rotation_matrix.b == 0:  # not rotated: the table's rows as they are
+        return [list(row.cells) for row in table.rows]
+    cells = [(pymupdf.Rect(c) * rotation_matrix, pymupdf.Rect(c)) for row in table.rows for c in row.cells if c]
+    cells.sort(key=lambda dc: (round(dc[0].y0), dc[0].x0))
+    rows = []
+    for shown, native in cells:
+        if rows and abs(shown.y0 - rows[-1][0][0].y0) <= 2:
+            rows[-1].append((shown, native))
+        else:
+            rows.append([(shown, native)])
+    return [[native for _, native in sorted(row, key=lambda dc: dc[0].x0)] for row in rows]
+
+
 def tables(page, page_no, out_dir):
+    flat = _flat_copy(page) if page.rotation else None
+    source = flat[0] if flat else page  # kept in a variable: the tables refer back to it while they're read
     try:
-        found = page.find_tables().tables
+        found = source.find_tables().tables
     except Exception:  # find_tables can trip on odd drawings; text and images still come out
         return []
-    words = page.get_text("words", sort=True)
+    words = page.get_text("words")
     out = []
     for i, table in enumerate(found, 1):
-        extracted = table.extract()
-        rows = [[_cell_text(words, cell) if cell else ("" if raw is None else str(raw))
-                 for cell, raw in zip(row.cells, raw_row)]
-                for row, raw_row in zip(table.rows, extracted)]
+        grid = _grid(table, page.rotation_matrix)
+        rows = [[_cell_text(words, cell) if cell else "" for cell in row] for row in grid]
         if not rows or not any(any(c.strip() for c in row) for row in rows):
             continue
         if max(len(r) for r in rows) < 2:  # one column is a framed list or box of text, not a table
@@ -141,8 +167,25 @@ def tables(page, page_no, out_dir):
         out.append({"type": "table", "page": page_no, "bbox": _box(table.bbox), "file": f"tables/{name}",
                     "rows": len(rows), "cols": max(len(r) for r in rows),
                     "header": [c.replace("\n", " ") for c in rows[0]] if has_header else None,
-                    "cells": [[_box(c) if c else None for c in row.cells] for row in table.rows]})
+                    "cells": [[_box(c) if c else None for c in row] for row in grid]})
     return out
+
+
+def _to_displayed(el, m):
+    """Boxes (and text direction) of an element found in the page's own coordinates, as the page is displayed."""
+    shown = lambda b: _box(pymupdf.Rect(b) * m)  # noqa: E731
+    el["bbox"] = shown(el["bbox"])
+    for line in el.get("lines", []):
+        line["bbox"] = shown(line["bbox"])
+        if "dir" in line:
+            dx, dy = line["dir"]
+            line["dir"] = [round(dx * m.a + dy * m.c, 3) + 0.0, round(dx * m.b + dy * m.d, 3) + 0.0]
+        for span in line["spans"]:
+            span["bbox"] = shown(span["bbox"])
+    if el.get("cells"):
+        el["cells"] = [[shown(c) if c else None for c in row] for row in el["cells"]]
+    for a in el.get("attempts", []):
+        a["bbox"] = shown(a["bbox"])
 
 
 def reading_order(elements):
@@ -185,8 +228,6 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
         n = index + 1
         say(f"page {n} of {doc.page_count}")
         rotation = page.rotation
-        if rotation:  # turn the content upright, so every bbox is as the page is seen and text runs left to right
-            page.remove_rotation()
         kind = triage(page)
         info = {"page": n, "width": round(page.rect.width, 2), "height": round(page.rect.height, 2),
                 "rotation": rotation, "kind": kind}
@@ -201,7 +242,13 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
             found_tables = tables(page, n, out)
         for t in texts:
             t["in_table"] = next((tb["file"] for tb in found_tables if _inside(t["bbox"], tb["bbox"])), None)
-        page_images = imgs.page(page, n, [pymupdf.Rect(t["bbox"]) for t in texts], skip_page_scans=kind == "scanned")
+        # Text, tables and images are found in the page's own coordinates; OCR boxes are already as displayed.
+        native_texts = [pymupdf.Rect(t["bbox"]) * (page.derotation_matrix if t["source"] == "ocr" else pymupdf.Identity)
+                        for t in texts]
+        page_images = imgs.page(page, n, native_texts, skip_page_scans=kind == "scanned")
+        for el in texts + found_tables + page_images:
+            if el.get("source") != "ocr" and el.get("bbox"):
+                _to_displayed(el, page.rotation_matrix)
         ordered = reading_order(texts + found_tables + page_images)
         for i, el in enumerate(ordered, 1):
             el["order"] = i

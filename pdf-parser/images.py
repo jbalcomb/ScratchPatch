@@ -48,9 +48,16 @@ def vision_for_all():
 
 # ---------------------------------------------------------------- candidates and attempts
 
+def native_rect(page):
+    """The page in its own (unrotated) coordinates: where text, image and table boxes are found. They are turned
+    into displayed coordinates (``page.rotation_matrix``) only for the manifest."""
+    return page.rect * page.derotation_matrix
+
+
 def candidates(page, page_no, skip_page_scans=False):
     """Image placements on the page: [{id, page, rect, xref}], each placement once."""
-    page_area = abs(page.rect)
+    page_rect = native_rect(page)
+    page_area = abs(page_rect)
     seen, out = set(), []
     for info in page.get_image_info(xrefs=True):
         rect = pymupdf.Rect(info["bbox"])
@@ -60,7 +67,7 @@ def candidates(page, page_no, skip_page_scans=False):
         if key in seen:
             continue
         seen.add(key)
-        if skip_page_scans and abs(rect & page.rect) > 0.5 * page_area:
+        if skip_page_scans and abs(rect & page_rect) > 0.5 * page_area:
             continue  # the scan of a scanned page: the page itself is OCR'd instead
         out.append({"id": f"p{page_no}-i{len(out) + 1}", "page": page_no, "rect": rect, "xref": info.get("xref", 0)})
     return out
@@ -88,7 +95,7 @@ def _save_embedded(doc, xref, dest):
 
 def _render(page, rect, dpi, dest):
     path = dest.with_suffix(".png")
-    page.get_pixmap(clip=rect, dpi=dpi).save(path)
+    page.get_pixmap(clip=rect * page.rotation_matrix, dpi=dpi).save(path)  # the clip is in displayed coordinates
     return path
 
 
@@ -244,7 +251,7 @@ class PageImages:
         elif strategy == "pad":
             r = state["rect"]
             dx, dy = max(PAD_MIN_PT, r.width * PAD_FRACTION), max(PAD_MIN_PT, r.height * PAD_FRACTION)
-            state["rect"] = (r + (-dx, -dy, dx, dy)) & page.rect
+            state["rect"] = (r + (-dx, -dy, dx, dy)) & native_rect(page)
             path = _render(page, state["rect"], max(state["dpi"], FIRST_DPI), dest)
         elif strategy == "merge":
             for other in state["neighbours"]:
@@ -255,7 +262,7 @@ class PageImages:
             path, angle = _enhance(prev["path"], dest)
             state["deskew_degrees"] = angle
         flags, metrics = check(path, state["rect"], self._text_rects, "embedded" if strategy == "embedded" else "clip",
-                               page.rect)
+                               native_rect(page))
         return {"n": n, "strategy": strategy, "path": path, "dpi": state["dpi"], "rect": pymupdf.Rect(state["rect"]),
                 "merged": list(state.get("merged", [])), "flags": flags, "metrics": metrics, "score": score(flags),
                 "vision": None}

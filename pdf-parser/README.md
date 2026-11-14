@@ -19,7 +19,7 @@ pytest                                   # tests (stand-in vision server; OCR te
 
 | Step | How | Where |
 |---|---|---|
-| Rotation | A page stored rotated (`/Rotate`) is turned upright first, so every bbox is as the page is seen and text reads left to right. | `parse_pdf.parse` |
+| Rotation | A page stored rotated (`/Rotate`) is read in its own coordinates (tables from an unrotated copy of it, where PyMuPDF's table finder agrees with the text), and every box is then turned into the page as displayed, inside its CropBox: printer's marks outside the trim stay out. Rotated tables are re-read row by row as displayed. A table whose columns are separated only by white space (no ruled lines) isn't found on a rotated page; its text still comes out in order. | `parse_pdf.parse`, `_grid` |
 | Triage | A page with a text layer is a **text** page. One with almost none and a page-sized image is OCR'd: if that reads 40+ words at 60%+ confidence it is **scanned** (the page's picture isn't an image element); otherwise it is an **image** page, like a title page with a full-page drawing, whose picture is kept as an image and whose few words are kept as OCR text. | `parse_pdf.triage` |
 | Text | PyMuPDF blocks → lines → spans in reading order, with bbox, font, size, bold/italic, colour. Scanned pages: rendered at 300 DPI and OCR'd by Tesseract, as blocks with boxes and confidence. | `parse_pdf.text_blocks`, `ocr_page` |
 | Tables | PyMuPDF `find_tables` finds them; each cell's text comes from the text layer's words in it (PyMuPDF's own table text can lose its spaces). Each table is a CSV, plus its bbox, header and cell boxes in the manifest. One-column "tables" (framed lists) are left as text. Text blocks inside a table are marked `in_table`. | `parse_pdf.tables` |
