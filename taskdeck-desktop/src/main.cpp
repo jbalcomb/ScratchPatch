@@ -23,6 +23,7 @@ static IDXGISwapChain* g_swap_chain = nullptr;
 static ID3D11RenderTargetView* g_rtv = nullptr;
 static bool g_occluded = false;
 static UINT g_resize_w = 0, g_resize_h = 0;
+static Shell* g_shell = nullptr;  // asked before closing while background tasks run
 
 static bool create_device(HWND hwnd);
 static void cleanup_device();
@@ -80,6 +81,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     ImGui_ImplDX11_Init(g_device, g_context);
 
     Shell shell;
+    g_shell = &shell;
     shell.start(hwnd);  // the job host loads in the background; its messages wake the loop
     Perf perf;
     PerfSnapshot snap;
@@ -132,6 +134,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     }
 
     shell.stop();
+    g_shell = nullptr;
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -199,6 +202,18 @@ static LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam
             break;
         case WM_APP:  // the job host sent something; waking the loop is all that's needed
             return 0;
+        case WM_CLOSE: {  // background tasks (uploads) run in the job host, which stops with the app
+            std::string title;
+            const int n = g_shell ? g_shell->running_tasks(&title) : 0;
+            if (n > 0) {
+                const std::wstring text = L"“" + from_utf8(title) + L"”" +
+                    (n > 1 ? L" and " + std::to_wstring(n - 1) + L" more are" : std::wstring(L" is")) +
+                    L" still running. Closing TaskDeck stops it; what's already done stays.\n\nClose anyway?";
+                if (::MessageBoxW(hwnd, text.c_str(), L"TaskDeck", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+                    return 0;
+            }
+            break;
+        }
         case WM_DESTROY:
             ::PostQuitMessage(0);
             return 0;

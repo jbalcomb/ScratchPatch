@@ -33,6 +33,7 @@ struct JobSpec {
     std::string id, title, description, category, run_label, commit_label, committed_label, search;
     std::string settings_id;  // whose stored settings it uses (another job's, for jobs that share them)
     std::vector<std::string> tags, settings_actions;
+    std::vector<std::pair<std::string, std::string>> accounts;  // account id, the toggle input that turns it on
     std::vector<FieldSpec> fields, settings;
     std::vector<QuickSpec> quick_actions;
 };
@@ -40,6 +41,34 @@ struct JobSpec {
 struct Problem {
     std::string message, fix;  // fix: "settings" offers Open settings, "recheck" only Check again
     bool blocking = true;
+};
+
+// A background task a job started (the host's core/tasks.py Task): an upload that goes on after the run.
+struct TaskState {
+    struct Phase {
+        std::string label, unit;  // unit: "bytes" or "files"
+        long long done = 0, total = 0;
+        double fraction = -1;     // -1: not known
+    };
+    int id = 0, run = 0;
+    std::string job_id, title, status, note, message, fix, retry_label, drive_url;
+    long long done = 0, total = 0;
+    double fraction = -1, eta = -1, speed = -1;  // -1: not known yet
+    std::vector<Phase> phases;
+    nlohmann::json inputs;
+    bool in_history = false, cancel_sent = false, confirm_cancel = false;
+    bool running() const { return status == "running"; }
+};
+
+// The Google account jobs sign in with (Drive): settings id "account:google", as on the phone (ui/accounts.py).
+// client_id and email in state.json; client_secret and refresh_token in Credential Manager.
+struct GoogleState {
+    bool setup_open = false;       // the Set up screen (client ID and secret)
+    std::string client_id, client_secret, setup_error;
+    bool connecting = false;       // the sign-in window
+    int req = 0;
+    std::string user_code, url, status, error;
+    int retry_task = 0;            // a task to retry once connected ("Connect again")
 };
 
 struct RunState {
@@ -97,6 +126,8 @@ public:
     void after_frame();
     // Saves the open job's draft and stops the job host.
     void stop();
+    // Background tasks still running (closing the app stops them), and the first one's title.
+    int running_tasks(std::string* first_title = nullptr) const;
 
 private:
     void start_host();
@@ -112,6 +143,15 @@ private:
     void draw_run(const JobSpec& job, RunState& run);
     void draw_host_status();
     void draw_notice();
+    void draw_task(TaskState& task, bool on_job_screen);
+    void draw_google_rows();
+    void draw_google_setup();
+    void draw_google_connect();
+    void on_task(const nlohmann::json& msg);
+    nlohmann::json google_values();
+    void google_save(const nlohmann::json& changes);
+    void google_connect(int retry_task = 0);
+    void send_accounts();
     void tile_menu(const JobSpec& job, int index, int count);
 
     void go(int tab);
@@ -153,6 +193,8 @@ private:
     std::map<double, int> session_runs_;  // history entry time -> run id, for runs of this session
     std::map<std::string, std::map<std::string, std::string>> secrets_;  // settings id -> field -> value
     SettingsForm settings_form_;
+    std::map<int, TaskState> tasks_;
+    GoogleState google_;
 
     // Requests waiting for a reply from the job host.
     struct Request { enum Kind { Check, Test, Action } kind; std::string job_id; int index = 0; bool save = false; };

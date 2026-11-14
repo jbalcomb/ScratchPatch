@@ -35,6 +35,9 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   testing the app, set `TASKDECK_DATA_DIR` to a scratch folder so the user's own state isn't touched, and
   remove any credential you create (`cmdkey /list | findstr TaskDeck`). `build\Release\core_tests.exe`
   tests these and the palette ranking.
+* To see a background task run without Google Drive, copy `../taskdeck/src` to a scratch folder, add a job
+  whose step calls `ctx.services["start_task"]` with slow work, and point `TASKDECK_SRC` at the copy (never add
+  test jobs to `../taskdeck`). Remove any fake `TaskDeck/settings:account:google:*` credential afterwards.
 * Keep the window idle at 0% CPU: `Shell::draw` returns true only while something animates. Measure after a
   change (a stuck focus request once kept it drawing at 8%).
 * When measuring window sizes from a script, make the script per-monitor DPI aware

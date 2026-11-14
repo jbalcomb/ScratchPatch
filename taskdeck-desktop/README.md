@@ -10,8 +10,10 @@ gets a screen built from its fields (with the Windows file picker for files), Ru
 result, and the confirm/commit step. Each job's settings have their own screen (Save checks them first, Test
 settings, the job's own buttons such as "Test connection"); keys and passwords are kept in Windows Credential
 Manager. Pins, history, drafts (what you typed and haven't finished) and the palette's ranking are kept
-between runs. Not yet: background tasks shown after their screen is closed, the first C++ jobs, releases
-(docs/PLAN.md).
+between runs. Background tasks (an upload to Google Drive after Parse executable) show their progress on the
+job's screen and on Home, with Cancel and Retry, and go into History when they end; closing the window while
+one runs asks first. Google Drive is connected in Settings > Accounts, with the phone's sign-in (a code
+entered at google.com/device). Not yet: the first C++ jobs, releases (docs/PLAN.md).
 
 ## What's kept, and where
 
@@ -25,6 +27,12 @@ Everything stays on this PC (decision 2 in docs/PLAN.md):
   only (not roamed) and readable only by your Windows account while you're signed in. They never go into
   `state.json`. A value over Credential Manager's 2,560-byte limit is kept in parts (`...#2`, `...#3`).
   Passwords typed into a job's screen (an archive's) are not kept in drafts or history.
+* The **Google account** (Settings > Accounts) is kept like a job's settings under `account:google`: the
+  client ID and the address in `state.json`, the client secret and the sign-in (refresh token) in Credential
+  Manager. Disconnect forgets the sign-in and asks Google to revoke it.
+
+Background tasks run in the job host, so they stop when TaskDeck closes (it asks first). The phone's "Wi-Fi
+only" setting has no effect here.
 
 Shortcuts: Ctrl+K the palette (`>` actions only, `@` jobs only; arrows and Enter), Ctrl+1 to Ctrl+4 the four
 places, Ctrl+D pin or unpin the open job. Right-click a tile on Home to move or unpin it, or a job in All jobs
