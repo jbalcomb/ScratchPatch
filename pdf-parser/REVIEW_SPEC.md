@@ -1,6 +1,7 @@
 # PDF Parser: human review — specification (draft)
 
-**Status:** draft for discussion; nothing here is built yet. The open decisions are listed at the end.
+**Status:** draft, with the decisions of 2026-11-14 folded in; nothing here is built yet. What is still open is
+listed at the end.
 
 ## Why
 
@@ -34,8 +35,8 @@ still be wrong. The only check of a parse is a person comparing it with the page
 
 ## 2. The review site
 
-The site is static: HTML, JavaScript, and the bundle's files. It can be served from GitHub Pages or from the
-pdf-parser service. One site per bundle, built by `python parse_pdf.py --review-site BUNDLE OUT`.
+The site is served by the pdf-parser service, one per job, at `/jobs/<id>/review/`. Reviews are saved
+through the service. There is no GitHub Pages copy, so no document is published.
 
 **Page view.** On the left, the page render. On top of it, a box for every element, coloured by source and
 outlined by review state. On the right, the selected element:
@@ -51,12 +52,14 @@ outlined by review state. On the right, the selected element:
 
 **Lists.** The queues from section 1, and per-page progress, showing what is left.
 
-**Reviewer.** Each review records who made it (`by`) and when (`at`).
+**Reviewer.** Each review records who made it (`by`: the reviewer's signed-in identity, section 6) and when
+(`at`).
 
 ## 3. Reviews, and feeding them back
 
-Reviews are stored as one JSON file per document, next to the bundle (`reviews.json`), and never edited by the
-pipeline:
+Reviews are stored as one JSON file per document on the workstation: `~/pdf-parser/reviews/<sha256>.json`,
+keyed by the PDF's hash, so that every upload of the same PDF shares its reviews. Only the service appends to
+it, and the pipeline never edits it:
 
 ```jsonc
 {"document": {"file": "25934_game_extra_1.pdf", "sha256": "…"},
@@ -88,6 +91,31 @@ reviews are applied.
 So yes: the location and size of images and tables go back through the process, and the extracted images and
 tables are produced again from the corrected boxes.
 
+## 3a. More than one review of an element
+
+| Reviews so far | State | Counts as checked? |
+|---|---|---|
+| none | **unreviewed** | no |
+| one | **reviewed** | yes |
+| two that agree | **confirmed** | yes |
+| two that disagree | **disputed**: a third review is needed as a tiebreaker | **no** |
+| three, two of which agree | **settled**: the two that agree win | yes |
+| three, all different | **escalated**: the document's owner decides | no, until the owner's review |
+
+- **Agree** means:
+  - the same decision;
+  - for a correction, the same content: text equal after trimming and collapsing whitespace, the same table
+    grid, and boxes whose overlap (intersection over union) is at least 0.9.
+- **The tiebreaker must be someone else.** It can't be either of the first two reviewers. A reviewer who changes
+  their mind replaces their own earlier review rather than adding one.
+- **While disputed:**
+  - the element shows the **newest** review's version, the one the pipeline applies until the dispute is settled;
+  - the element is in a **Disputed** queue at the top of the review site;
+  - the review screen highlights where the earlier reviews differ from it: changed characters in the text, changed
+    table cells, and the earlier boxes drawn over the page beside the newest one.
+- **Measured accuracy** (section 4) uses the settled outcome. A disputed element counts toward neither accepted
+  nor corrected until it is settled.
+
 ## 4. Coverage scores
 
 These are computed from the manifest and `reviews.json`. They're shown on the review site, and written to
@@ -102,6 +130,7 @@ or rejected.
 | **Images** | % of images checked (kept and needs_review; duplicates and icons are counted separately) |
 | **Mixed pages** | % of pages with at least one image and one text block whose every element is checked |
 | **Required queues** | % of the vision and needs-review queues checked. The document can't be called reviewed below 100%. |
+| **Disputed / escalated** | how many elements are waiting for a tiebreaker or the owner (not counted as checked above) |
 
 **Measured accuracy.** These come from the same reviews, and are the real check of the parser's confidence: of
 the checked elements from each source, the share **accepted** without change. For example: text layer 99%, OCR
@@ -113,7 +142,9 @@ anything, and gives the vision model a measured accuracy in place of no number a
 Each element gains:
 
 ```jsonc
-"review": {"decision": "accepted|corrected|rejected|added|null", "by": "jim", "at": "…", "reviews": 2},
+"review": {"state": "unreviewed|reviewed|confirmed|disputed|settled|escalated",
+           "decision": "accepted|corrected|rejected|added|null",   // of the version applied
+           "by": ["jim", "alex"], "at": "…", "reviews": 2},
 "confidence": {"source": "text_layer|ocr|vision|human",
                "score": 0.62,              // ocr: Tesseract's mean confidence / 100; text_layer: none;
                                            // vision: none (the model gives none)
@@ -123,29 +154,40 @@ Each element gains:
 When the document is rebuilt (not built yet), each section shows whether a person has checked it, and the
 confidence from its source (text layer, OCR or vision) and how that source has measured.
 
-## 6. Hosting and submitting reviews
+## 6. Access for reviewers
 
-A static site can't write anything, so reviews come back another way.
+The service stays on the tailnet for everything it does today. For reviewers who aren't on the tailnet, only the
+review pages are published through **Cloudflare**:
 
-- **GitHub Pages:** the review site for a document is published as a static folder. **Submit** opens a new GitHub
-  issue, pre-filled with the reviews as JSON and labelled `pdf-review`. A larger batch is downloaded as a file and
-  attached to an issue. A GitHub Action checks the JSON (right document hash, known elements) and commits it to the
-  document's `reviews.json` in the repository. That commit is what the next parse reads. Reviewers need a GitHub
-  account; that is also what identifies them.
-- **The pdf-parser service:** the same site served at `/jobs/<id>/review/`, posting reviews to the service
-  directly. It's reachable only on the tailnet.
+- **Cloudflare Tunnel** (`cloudflared`, another sidecar on the workstation) publishes the review site at a
+  hostname on your Cloudflare domain, for example `review.<your-domain>`. No port is opened on the workstation.
+  The tunnel forwards only `/review/...` and the review API. Uploads, job status, bundles and health stay
+  tailnet-only.
+- **Cloudflare Access** in front of that hostname makes reviewers sign in before any request reaches the service.
+  - It supports Google and GitHub logins directly.
+  - Discord isn't a built-in login. It can be added as a generic OpenID Connect provider through a small
+    Cloudflare Worker that bridges Discord's OAuth (for example the community discord-oidc-worker); that is
+    third-party code to review before use.
+  - An Access policy lists who may get in, by e-mail address (or GitHub organization or Discord server, through the
+    bridge).
+  - Check the current Zero Trust plan limits for the number of free users.
+- **The service trusts the sign-in, not the request.** Each request through Access carries a signed
+  `Cf-Access-Jwt-Assertion` header. The service checks its signature (against your Access team's public keys) and
+  its audience, and takes the reviewer's identity (`by`) from it. A review request without a valid assertion is
+  refused, so the review API can't be reached around Access.
+- **Unique URL per reviewer:** the owner creates an invitation in the service for one person and one or more
+  documents, `review.<your-domain>/r/<random token>`. Opening it requires signing in through Access. The first
+  sign-in binds the invitation to that identity, so a forwarded link is useless to anyone else. Invitations can
+  expire and can be revoked. The owner on the tailnet needs no invitation.
 
-## Open decisions
+Reviews are saved by the service as soon as a reviewer submits them (Accept, Save correction, Reject).
 
-1. **Copyright and public hosting.** GitHub Pages sites are public, and this repository is public. Publishing a
-   review site puts the document's page images and text on the internet: fine for your own documents, not for a
-   commercial manual such as Master of Magic. Options:
-   - (a) Pages only for documents you may publish; others reviewed through the service, on the tailnet;
-   - (b) a separate private repository with Pages; Pages sites of private repositories are still public, unless
-     on GitHub Enterprise.
-2. **Who reviews, and how reviews come in:** GitHub accounts with issue-based submission (as above), or only
-   people on your tailnet through the service?
-3. **Where `reviews.json` lives:** in this repository (`pdf-parser/reviews/<sha256>.json`), so reviews are
-   versioned and shared, or on the workstation next to the jobs.
-4. **When there are several reviews of one element:** the latest wins (proposed), or two must agree before it
-   counts as checked.
+## Still open
+
+1. **Cloudflare details:** the domain or hostname for the review site, and whether the Zero Trust free plan's user
+   limit covers your reviewers.
+2. **Discord:** worth the Worker bridge, or start with Google and GitHub only?
+3. **The owner:** who decides escalated elements (three different reviews): you only, or anyone you name per
+   document?
+4. **`reviews.json` on the workstation:** assumed above, since reviews go through the service. They should
+   be backed up like the jobs.
