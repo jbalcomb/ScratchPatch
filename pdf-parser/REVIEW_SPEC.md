@@ -1,7 +1,14 @@
 # PDF Parser: human review — specification (draft)
 
-**Status:** draft, with the decisions of 2026-11-14 folded in; nothing here is built yet. What is still open is
-listed at the end.
+**Status:** draft, with the decisions of 2026-11-14 folded in. Proof of concept built: sections 1–2, 3a
+and 4, on the tailnet (`reviews.py`, `review.html`; see the README). Not yet built:
+- feeding reviews back (section 3);
+- adding missed elements;
+- the owner role;
+- section 5;
+- section 6, which is the final phase.
+
+What is still open is listed at the end.
 
 ## Why
 

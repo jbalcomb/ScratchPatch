@@ -141,8 +141,43 @@ unfinished jobs up again.
 | `GET /api/jobs` | the latest 50 jobs |
 | `GET /jobs/<id>/` | a page listing the bundle's files, with links; `/jobs/<id>/<path>` is one file |
 | `GET /jobs/<id>.zip` | the whole bundle |
+| `GET /jobs/<id>/review/` | the review page (below) |
+| `GET /api/jobs/<id>/review` | pages, the reviewable elements with their reviews and state, coverage scores |
+| `POST /api/jobs/<id>/reviews` | one review, JSON: `{element, decision: accepted\|corrected\|rejected, by, text?, rows?, bbox?, reason?}` |
+| `GET /jobs/<id>/page/<n>.png` | page *n* as displayed, at 144 DPI (made once, kept in the job folder) |
 
 Errors are `{"error": "..."}`. No login: keep it behind Tailscale.
+
+### Reviewing a parse (proof of concept)
+
+Open the bundle page (`/jobs/<id>/`) and follow **Review**, or go to `/jobs/<id>/review/`. It's on the tailnet only
+for now. The design, including what's still to come, is in [REVIEW_SPEC.md](REVIEW_SPEC.md).
+
+- **The page:** every reviewable element is a box over the page: blue text layer, orange OCR, purple vision,
+  green table, teal image. A dashed box isn't checked yet; a red box is disputed.
+- **An element:** click a box to see the page under it beside what was parsed.
+  - **Accept** it.
+  - **Save correction** after editing the text, editing the table's cells (rows and columns can be added and
+    removed), or moving or resizing the box (drag it, or its corners).
+  - **Reject** it as noise.
+- **Queues:** *Disputed*, *Vision model* and *Needs review* (the two required ones), *OCR text*, and
+  *Everything not checked*. **Next in queue** walks one.
+- **Reviewer:** type your name; the browser remembers it.
+- **Several reviews:** a second review that disagrees makes the element **disputed**. It waits for a third
+  reviewer, and the page shows the newest review with its differences from the earlier ones marked. Two of three
+  that agree settle it; three different reviews escalate it to the owner. Your own newer review replaces your
+  earlier one.
+- **Coverage, along the top:** the required queues, whole pages, text characters, tables, images, mixed pages,
+  disputed and escalated elements, and how often each source was accepted as parsed.
+
+Reviews are kept per PDF (by its SHA-256) in `~/pdf-parser/reviews/`, so re-uploading the same PDF keeps them.
+
+**Not built yet:**
+- applying reviews to a new parse (`--reviews`: re-cutting images and re-reading tables from corrected boxes);
+- drawing a box for something the parser missed;
+- the owner's role for escalations;
+- review state in `manifest.json` for the rebuild;
+- access from outside the tailnet.
 
 ### On the workstation (Docker)
 
