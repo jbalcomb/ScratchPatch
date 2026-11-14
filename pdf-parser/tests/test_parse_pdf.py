@@ -429,3 +429,63 @@ def test_a_retry_after_the_vision_model_said_no_is_checked_again(sample_pdf, tmp
     first = by_id(m)["p1-i1"]
     assert [a["vision"]["complete"] for a in first["attempts"]] == [False, True]
     assert first["status"] == "kept" and first["best_attempt"] == 2
+
+
+# ---------------------------------------------------------------- illustration pages: OCR re-read, low confidence
+
+def title_page_pdf(tmp_path):
+    """A section title page: no text layer, one page-sized picture with a title above a drawing."""
+    from PIL import ImageDraw, ImageFont
+    art = chart(800, 1200)
+    ImageDraw.Draw(art).text((150, 40), "Getting Started", fill="black", font=ImageFont.load_default(size=64))
+    doc = pymupdf.open()
+    p = doc.new_page(width=376, height=575)
+    p.insert_image(p.rect, stream=png(art))
+    path = tmp_path / "title.pdf"
+    doc.save(path)
+    return path
+
+
+def ocr_blocks(m):
+    return [e for e in m["elements"] if e["type"] == "text"]
+
+
+@needs_tesseract
+def test_illustration_page_text_is_reread_by_the_vision_model(tmp_path, fake_llm):
+    prompts = []
+    fake_llm["read"] = lambda im, prompt: prompts.append(prompt) or "Getting Started"
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    assert m["pages"][0]["kind"] == "image"
+    blocks = ocr_blocks(m)
+    assert blocks and blocks[0]["text"] == "Getting Started" and blocks[0]["source"] == "vision"
+    assert blocks[0]["ocr_text"] and "low_confidence" not in blocks[0]
+    assert len(prompts) == len(blocks) and "Tesseract OCR read it as" in prompts[0]
+    log = [json.loads(line) for line in (tmp_path / "out" / "title" / "qa_log.jsonl").read_text().splitlines()]
+    assert [e["task"] for e in log if e["event"] == "vision" and e["task"] == "read_text"] == ["read_text"] * len(blocks)
+    assert "Getting Started" in (tmp_path / "out" / "title" / "text.txt").read_text()
+
+
+@needs_tesseract
+def test_text_the_vision_model_cant_find_is_emptied_not_dropped(tmp_path, fake_llm):
+    fake_llm["read"] = lambda im, prompt: ""
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    block = ocr_blocks(m)[0]
+    assert block["text"] == "" and block["ocr_text"] and block["lines"] == []
+    assert "--- page 1 ---\n\n" in (tmp_path / "out" / "title" / "text.txt").read_text() + "\n"
+
+
+@needs_tesseract
+def test_without_the_vision_model_ocr_text_stays_and_is_flagged(tmp_path, sample_pdf, fake_llm):
+    fake_llm["fail"] = 99
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    block = ocr_blocks(m)[0]
+    assert block["source"] == "ocr" and "ocr_text" not in block
+    assert block["low_confidence"] is (block["confidence"] < parse_pdf.OCR_LOW_CONF)
+    scan = parse_pdf.parse(sample_pdf, tmp_path / "out2", use_vision=False)  # a scan: not re-read, flagged
+    assert all(e["low_confidence"] is False for e in ocr_blocks(scan) if e["page"] == 2)
+
+
+def test_parse_text():
+    assert vision.parse_text('{"text": " Getting Started "}') == "Getting Started"
+    with pytest.raises(vision.VisionError):
+        vision.parse_text('{"words": 1}')

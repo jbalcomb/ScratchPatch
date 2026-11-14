@@ -21,6 +21,7 @@ pytest                                   # tests (stand-in vision server; OCR te
 |---|---|---|
 | Rotation | A page stored rotated (`/Rotate`) is read in its own coordinates (tables from an unrotated copy of it, where PyMuPDF's table finder agrees with the text), and every box is then turned into the page as displayed, inside its CropBox: printer's marks outside the trim stay out. Rotated tables are re-read row by row as displayed. A table whose columns are separated only by white space (no ruled lines) isn't found on a rotated page; its text still comes out in order. | `parse_pdf.parse`, `_grid` |
 | Triage | A page with a text layer is a **text** page. One with almost none and a page-sized image is OCR'd: if that reads 40+ words at 60%+ confidence it is **scanned** (the page's picture isn't an image element); otherwise it is an **image** page, like a title page with a full-page drawing, whose picture is kept as an image and whose few words are kept as OCR text. | `parse_pdf.triage` |
+| OCR text | OCR blocks read at under 60% mean confidence are marked `low_confidence` and kept. On **image** pages the vision model reads every OCR block again from the page render (Tesseract does badly on decorative lettering, and its confidence doesn't always show it): its reading becomes the block's `text` (`source: "vision"`), Tesseract's stays as `ocr_text`, and a block it finds no text in is left with empty text. Without the vision model the Tesseract text stays. | `parse_pdf.reread_with_vision` |
 | Text | PyMuPDF blocks → lines → spans in reading order, with bbox, font, size, bold/italic, colour. Scanned pages: rendered at 300 DPI and OCR'd by Tesseract, as blocks with boxes and confidence. | `parse_pdf.text_blocks`, `ocr_page` |
 | Tables | PyMuPDF `find_tables` finds them; each cell's text comes from the text layer's words in it (PyMuPDF's own table text can lose its spaces). Each table is a CSV, plus its bbox, header and cell boxes in the manifest. One-column "tables" (framed lists) are left as text. Text blocks inside a table are marked `in_table`. | `parse_pdf.tables` |
 | Images | The embedded image first; the page rendered under its box when it can't be taken out. Then the QA loop below. | `images.py` |
@@ -66,7 +67,7 @@ on failed requests, or it answers that it can't take images; after that the PDF 
 it would have checked go to needs_review only when they look wrong (`vision_skipped` on the image says why).
 The next PDF tries again.
 
-Every request (time, how long, outcome, verdict) and every image's outcome is written to the bundle's
+Every request (time, how long, outcome, verdict or text read) and every image's outcome is written to the bundle's
 `qa_log.jsonl`. `python parse_pdf.py --stats DIR` adds them up over all bundles under DIR (on the workstation:
 `~/pdf-parser/jobs`): how many images tier 1 flagged, how many needed the model, its availability and median
 time, how many images it rescued (`kept_by_vision`) and how many went to review because it wasn't there
@@ -101,8 +102,9 @@ with a message that says to add the model's mmproj. `GET /api/health` reports th
   "pages": [{"page": 1, "width": 612, "height": 792, "rotation": 0, "kind": "text"},
             {"page": 2, "rotation": 90, "kind": "scanned|image", "render": "pages/p002.png", "ocr_confidence": 91.4, "ocr_words": 310, …}],
   "elements": [   // per page in reading order: "order" 1, 2, 3, …
-    {"id": "p1-text1", "type": "text", "page": 1, "order": 1, "bbox": […], "source": "text_layer|ocr",
-     "text": "…", "in_table": null, "confidence": null,   // confidence: OCR only
+    {"id": "p1-text1", "type": "text", "page": 1, "order": 1, "bbox": […], "source": "text_layer|ocr|vision",
+     "text": "…", "in_table": null, "confidence": null,   // confidence, low_confidence: OCR only
+     "ocr_text": "…",                                     // source "vision": what Tesseract had read
      "lines": [{"bbox": […], "dir": [1, 0], "spans": [{"text": "…", "bbox": […], "font": "Helvetica-Bold",
                 "size": 20, "bold": true, "italic": false, "monospace": false, "serif": false,
                 "superscript": false, "color": "#000000"}]}]},

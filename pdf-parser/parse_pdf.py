@@ -24,6 +24,7 @@ import datetime as dt
 import hashlib
 import json
 import shutil
+import tempfile
 import sys
 from pathlib import Path
 
@@ -41,6 +42,8 @@ SCANNED_IMAGE_SHARE = 0.5
 # ...and it is a scan of text when OCR reads this much off it; otherwise it is an illustration (a title page,
 # a full-page picture), whose picture is kept as an image and whose few words are kept as OCR text.
 SCANNED_MIN_WORDS, SCANNED_MIN_CONF = 40, 60
+OCR_LOW_CONF = 60            # OCR blocks read with less mean confidence are marked low_confidence (and kept)
+REREAD_PAD_PT = 6
 
 
 # ---------------------------------------------------------------- per page
@@ -103,6 +106,30 @@ def ocr_page(page, page_no, out_dir):
                                  for ln in b["lines"]]})
     return blocks, {"render": f"pages/{path.name}", "ocr_confidence": ocr.summary(found)["confidence"],
                     "ocr_words": len(found)}
+
+
+def reread_with_vision(blocks, render, page_no, budget):
+    """Illustration pages: the vision model reads each OCR block again (Tesseract does badly on decorative
+    lettering). Its reading becomes the block's text (source "vision"); Tesseract's stays as ocr_text. A block it
+    finds no text in keeps an empty text: drawing or noise that Tesseract took for letters."""
+    if not budget.available or not blocks:
+        return
+    from PIL import Image
+    scale = OCR_DPI / 72
+    with Image.open(render) as im, tempfile.TemporaryDirectory() as tmp:
+        for i, block in enumerate(blocks, 1):
+            box = pymupdf.Rect(block["bbox"]) + (-REREAD_PAD_PT, -REREAD_PAD_PT, REREAD_PAD_PT, REREAD_PAD_PT)
+            crop = Path(tmp) / f"b{i}.png"
+            im.crop(tuple(round(v * scale) for v in box)).save(crop)
+            text = budget.read_text(crop, page_no, block["text"], block=f"p{page_no}-ocr{i}")
+            if text is None:
+                continue
+            ocr_lines = block["lines"]
+            new_lines = text.splitlines() if text else []
+            block.update(ocr_text=block["text"], text=text, source="vision")
+            block["lines"] = ([{**ln, "spans": [{**ln["spans"][0], "text": t}]} for ln, t in zip(ocr_lines, new_lines)]
+                              if len(new_lines) == len(ocr_lines) else
+                              [{"bbox": block["bbox"], "spans": [{"text": t, "bbox": block["bbox"]}]} for t in new_lines])
 
 
 def _cell_text(words, cell):
@@ -236,6 +263,11 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
             scanned = extra["ocr_words"] >= SCANNED_MIN_WORDS and (extra["ocr_confidence"] or 0) >= SCANNED_MIN_CONF
             kind = "scanned" if scanned else "image"
             info.update(extra, kind=kind)
+            if kind == "image":
+                reread_with_vision(texts, out / extra["render"], n, budget)
+            for t in texts:
+                if t["source"] == "ocr":
+                    t["low_confidence"] = (t["confidence"] or 0) < OCR_LOW_CONF
             found_tables = []
         else:
             texts = text_blocks(page, n)
@@ -243,11 +275,11 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
         for t in texts:
             t["in_table"] = next((tb["file"] for tb in found_tables if _inside(t["bbox"], tb["bbox"])), None)
         # Text, tables and images are found in the page's own coordinates; OCR boxes are already as displayed.
-        native_texts = [pymupdf.Rect(t["bbox"]) * (page.derotation_matrix if t["source"] == "ocr" else pymupdf.Identity)
-                        for t in texts]
+        native_texts = [pymupdf.Rect(t["bbox"]) * (page.derotation_matrix if t["source"] != "text_layer"
+                                                   else pymupdf.Identity) for t in texts]
         page_images = imgs.page(page, n, native_texts, skip_page_scans=kind == "scanned")
         for el in texts + found_tables + page_images:
-            if el.get("source") != "ocr" and el.get("bbox"):
+            if el.get("source") not in ("ocr", "vision") and el.get("bbox"):
                 _to_displayed(el, page.rotation_matrix)
         ordered = reading_order(texts + found_tables + page_images)
         for i, el in enumerate(ordered, 1):
@@ -255,7 +287,7 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
             el["id"] = el.get("id") if el["type"] == "image" else f"p{n}-{el['type']}{i}"
         elements.extend(ordered)
         pages.append(info)
-        text_out.append(f"--- page {n} ---\n" + "\n\n".join(t["text"] for t in reading_order(texts)))
+        text_out.append(f"--- page {n} ---\n" + "\n\n".join(t["text"] for t in reading_order(texts) if t["text"]))
     imgs.finish()
     (out / "text.txt").write_text("\n\n".join(text_out) + "\n")
     manifest = {
@@ -295,7 +327,7 @@ def stats(root):
     ``kept_by_vision``: images tier 1 flagged that the vision model passed (without it they'd be needs_review or
     retried). ``needs_review_without_vision``: images that went to review because it wasn't there to ask.
     """
-    s = {"pdfs": 0, "images": 0, "flagged_by_tier1": 0, "needed_vision": 0, "vision_requests": 0, "vision_failed": 0,
+    s = {"pdfs": 0, "images": 0, "flagged_by_tier1": 0, "needed_vision": 0, "vision_requests": 0, "text_rereads": 0, "vision_failed": 0,
          "pdfs_that_stopped_asking": 0, "kept_by_vision": 0, "needs_review": 0, "needs_review_without_vision": 0}
     ms = []
     for log in Path(root).rglob("qa_log.jsonl"):
@@ -304,6 +336,7 @@ def stats(root):
             e = json.loads(line)
             if e["event"] == "vision":
                 s["vision_requests"] += 1
+                s["text_rereads"] += e.get("task") == "read_text"
                 s["vision_failed"] += not e["ok"]
                 if e["ok"]:
                     ms.append(e["ms"])
