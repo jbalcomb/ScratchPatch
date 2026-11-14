@@ -7,8 +7,28 @@ First built with **Dear ImGui** (Win32 + Direct3D 11, C++20); later measured and
 **Status:** the phone app's four places (Home with pinned tiles, All jobs, History, Settings), the command
 palette (Ctrl+K), live performance numbers in Settings, and the phone app's own jobs, run by Python: each job
 gets a screen built from its fields (with the Windows file picker for files), Run, progress, Cancel, the
-result, and the confirm/commit step. Not yet: job settings, pins, history and drafts saved to disk
-(docs/PLAN.md, step 3).
+result, and the confirm/commit step. Each job's settings have their own screen (Save checks them first, Test
+settings, the job's own buttons such as "Test connection"); keys and passwords are kept in Windows Credential
+Manager. Pins, history, drafts (what you typed and haven't finished) and the palette's ranking are kept
+between runs. Not yet: background tasks shown after their screen is closed, the first C++ jobs, releases
+(docs/PLAN.md).
+
+## What's kept, and where
+
+Everything stays on this PC (decision 2 in docs/PLAN.md):
+
+* `%LOCALAPPDATA%\TaskDeck\state.json`: pins, history (the last 100 runs), drafts, how often each palette
+  command is used, and job settings, in the phone app's layout (`taskdeck/src/taskdeck/core/storage.py`,
+  `favorites.py`). Set `TASKDECK_DATA_DIR` to use another folder (for tests).
+* **Credential Manager** (Control Panel > Credential Manager > Windows Credentials): the settings a job marks
+  secret (API keys, the Google service-account key), as `TaskDeck/settings:<job>:<setting>`, kept on this PC
+  only (not roamed) and readable only by your Windows account while you're signed in. They never go into
+  `state.json`. A value over Credential Manager's 2,560-byte limit is kept in parts (`...#2`, `...#3`).
+  Passwords typed into a job's screen (an archive's) are not kept in drafts or history.
+
+Shortcuts: Ctrl+K the palette (`>` actions only, `@` jobs only; arrows and Enter), Ctrl+1 to Ctrl+4 the four
+places, Ctrl+D pin or unpin the open job. Right-click a tile on Home to move or unpin it, or a job in All jobs
+to pin it.
 
 ## How jobs run
 
@@ -33,6 +53,9 @@ Tests for the host (they also start it against the real jobs):
 ```bat
 python -m unittest discover -s python/tests -v
 ```
+
+Tests for the C++ parts without a window (the palette's ranking, the state file, Credential Manager; it writes
+and removes a `TaskDeck-tests/<pid>` credential), after building: `build\Release\core_tests.exe`.
 
 ## Build (Windows)
 
@@ -63,12 +86,16 @@ GitHub Actions builds it with MSVC on every push that changes this folder
 ## Layout
 
 ```
-CMakeLists.txt        build; fetches Dear ImGui and nlohmann/json
+CMakeLists.txt        build; fetches Dear ImGui and nlohmann/json; TaskDeck.exe and core_tests.exe
 cmake/mingw-w64.cmake toolchain for building on Linux
 src/main.cpp          Win32 window, Direct3D 11, the (idle-friendly) frame loop
 src/shell.*           the TaskDeck UI: navigation, tiles, job list, job screens, history, settings, palette
 src/job_host.*        the Python job host as a child process (pipes, JSON lines, a reader thread)
 src/file_dialog.*     the Windows file picker
+src/store.*           state.json: pins, history, drafts, settings
+src/credentials.*     secret settings in Credential Manager
+src/commands.*        the palette's matching and ranking (ported from the phone app's core/commands.py)
+tests/core_tests.cpp  tests for those three
 python/taskdeck_host.py   runs the phone app's jobs for the app; python/tests/ its tests
 src/perf.*            first-frame time, frame time, CPU, memory: the numbers to compare against WinUI 3
 docs/PLAN.md          the plan, the open decisions, and how the two builds will be compared

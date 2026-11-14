@@ -15,14 +15,23 @@ Host -> app, unasked:
     {"event": "committed", "run": 7, "ok": true, "message": "...", "confirm_label": null}
 
 App -> host:
-    {"op": "check", "req": 3, "job": "exe_parse", "settings": {}}  -> {"reply": 3, "problems": [<problem>...]}
+    {"op": "check", "req": 3, "job": "exe_parse", "settings": {...}, "online": false}
+        -> {"reply": 3, "problems": [<problem>...], "fixes": {...}}
+        online: also the job's online checks (network), when the offline ones found nothing blocking. fixes:
+        settings the checks found that work (a corrected address, say); the app saves them.
+    {"op": "test_settings", "req": 4, "job": "daily_log", "values": {...}}   settings as entered, unsaved
+        -> {"reply": 4, "settings": {...}, "passed": ["..."], "problems": [<problem>...], "fixes": {...}}
+        tidies them (clean_settings), then runs the offline and online checks; settings: as tested, fixed
+    {"op": "settings_action", "req": 5, "job": "voice_rec", "index": 0, "values": {...}}
+        -> {"reply": 5, "text": "...", "values": {...}}   a settings screen button ("Test connection")
     {"op": "run", "run": 7, "job": "exe_parse", "inputs": {...}, "settings": {}}
     {"op": "cancel", "run": 7}
     {"op": "commit", "run": 7, "settings": {}, "confirm": false}   confirm: commit the payload a
                                                                     "needs confirmation" answer offered
     {"op": "forget", "run": 7}                                      drop the run's commit payload
 
-Run ids and request ids are chosen by the app. Jobs run on their own threads, so several can run at once
+Settings sent by the app are the job's stored settings (secrets included); the host keeps none. Run ids and
+request ids are chosen by the app. Jobs run on their own threads, so several can run at once
 and a cancel arrives while one runs. Anything a job prints goes to the log, never to stdout, which carries
 only the protocol. A job's commit payload stays here (it needn't be JSON) until committed or forgotten.
 """
@@ -51,7 +60,7 @@ def field_json(f: Any) -> dict[str, Any]:
     return {
         "name": f.name, "label": f.label, "kind": f.kind.value, "required": f.required,
         "default": f.default, "help": f.help, "choices": list(f.choices), "secret": f.secret,
-        "lines": f.lines, "extensions": list(f.extensions), "grouped": f.grouped,
+        "lines": f.lines, "extensions": list(f.extensions), "grouped": f.grouped, "importable": f.importable,
     }
 
 
@@ -59,7 +68,8 @@ def job_json(p: Any) -> dict[str, Any]:
     return {
         "id": p.id, "title": p.title, "description": p.description, "category": p.category,
         "tags": list(p.tags), "fields": [field_json(f) for f in p.fields],
-        "settings": [field_json(f) for f in p.settings], "run_label": p.run_label,
+        "settings": [field_json(f) for f in p.settings], "settings_id": p.settings_id,
+        "settings_actions": [a.label for a in p.settings_actions], "run_label": p.run_label,
         "commit_label": p.commit_label, "committed_label": p.committed_label,
         "quick_actions": [{"title": q.title, "inputs": q.inputs} for q in p.quick_actions],
     }
@@ -76,7 +86,14 @@ def result_json(r: Any) -> dict[str, Any] | None:
         "title": r.title, "text": r.text, "rows": [list(map(str, row)) for row in r.rows], "warning": r.warning,
         "table_title": r.table_title, "table": [list(map(str, row)) for row in r.table],
         "images": [i for i in r.images if isinstance(i, str)], "has_payload": r.payload is not None,
+        "summary": (r.as_plain_text().splitlines() or ["Done"])[0],  # the line history shows, as on the phone
     }
+
+
+def _problem(message: str) -> Any:
+    from taskdeck.core import Problem
+
+    return Problem(message, blocking=False, fix="recheck")
 
 
 class Host:
@@ -92,18 +109,8 @@ class Host:
 
     def handle(self, msg: dict[str, Any]) -> None:
         op = msg.get("op")
-        if op == "check":
-            plugin = self.registry.get(msg.get("job", ""))
-            problems = []
-            if plugin is None:
-                problems = [{"message": f"Unknown job: {msg.get('job')}", "blocking": True, "fix": "", "ok": False}]
-            else:
-                try:
-                    problems = [problem_json(p) for p in plugin.check_ready(plugin.resolve_settings(msg.get("settings")))]
-                except Exception as exc:
-                    problems = [{"message": f"Couldn't check: {type(exc).__name__}: {exc}", "blocking": False,
-                                 "fix": "recheck", "ok": False}]
-            send({"reply": msg.get("req"), "problems": problems})
+        if op in ("check", "test_settings", "settings_action"):  # these may use the network
+            threading.Thread(target=self.answer, args=(msg,), daemon=True).start()
         elif op == "run":
             threading.Thread(target=self.run, args=(msg,), daemon=True).start()
         elif op == "cancel":
@@ -117,6 +124,53 @@ class Host:
             with self.lock:
                 self.payloads.pop(msg.get("run"), None)
                 self.confirms.pop(msg.get("run"), None)
+
+    def answer(self, msg: dict[str, Any]) -> None:
+        req, op = msg.get("req"), msg.get("op")
+        plugin = self.registry.get(msg.get("job", ""))
+        try:
+            if plugin is None:
+                raise LookupError(f"Unknown job: {msg.get('job')}")
+            if op == "check":
+                send({"reply": req, **self.check(plugin, msg.get("settings"), bool(msg.get("online")))})
+            elif op == "test_settings":
+                from taskdeck.core import check_settings
+
+                found = check_settings(plugin, dict(msg.get("values") or {}))
+                send({"reply": req, "settings": found.settings, "passed": found.passed,
+                      "problems": [problem_json(p) for p in found.problems], "fixes": found.fixes})
+            else:
+                send({"reply": req, **self.settings_action(plugin, msg.get("index"), msg.get("values"))})
+        except Exception as exc:  # a broken check must not break the screen, nor the host
+            traceback.print_exc()
+            message = str(exc) if isinstance(exc, LookupError) else f"Couldn't check: {type(exc).__name__}: {exc}"
+            problem = {"message": message, "blocking": plugin is None, "fix": "recheck", "ok": False}
+            send({"reply": req, "problems": [problem], "passed": [], "fixes": {}, "settings": msg.get("values") or {},
+                  "text": message, "values": {}})
+
+    @staticmethod
+    def check(plugin: Any, stored: dict[str, Any] | None, online: bool) -> dict[str, Any]:
+        settings = plugin.resolve_settings(stored)
+        found = list(plugin.check_ready(settings))
+        if online and not any(p.blocking for p in found):
+            try:
+                found += plugin.check_ready_online(settings)
+            except Exception as exc:  # a broken check must not lock the job
+                found.append(_problem(f"Couldn't finish checking: {type(exc).__name__}: {exc}"))
+        fixes = {k: v for p in found if p.settings for k, v in p.settings.items()}
+        return {"problems": [problem_json(p) for p in found], "fixes": fixes}
+
+    @staticmethod
+    def settings_action(plugin: Any, index: Any, values: dict[str, Any] | None) -> dict[str, Any]:
+        from taskdeck.core import SettingsResult
+
+        actions = plugin.settings_actions
+        if not isinstance(index, int) or not 0 <= index < len(actions):
+            return {"text": f"No such button: {index}", "values": {}}
+        found = actions[index].run(plugin.resolve_settings(values))
+        if isinstance(found, SettingsResult):
+            return {"text": found.text, "values": dict(found.values)}
+        return {"text": str(found or ""), "values": {}}
 
     def run(self, msg: dict[str, Any]) -> None:
         rid = msg.get("run")

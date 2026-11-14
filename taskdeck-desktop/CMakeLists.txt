@@ -37,14 +37,29 @@ add_executable(TaskDeck WIN32
     src/shell.cpp
     src/perf.cpp
     src/job_host.cpp
-    src/file_dialog.cpp)
-target_link_libraries(TaskDeck PRIVATE imgui nlohmann_json::nlohmann_json d3d11 dxgi d3dcompiler dwmapi psapi ole32 shell32 uuid)
+    src/file_dialog.cpp
+    src/store.cpp
+    src/credentials.cpp
+    src/commands.cpp)
+target_link_libraries(TaskDeck PRIVATE imgui nlohmann_json::nlohmann_json d3d11 dxgi d3dcompiler dwmapi psapi ole32 shell32
+    uuid advapi32)
 target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
     # Where the job host script (python/) is found when TASKDECK_DESKTOP_DIR isn't set: this source tree.
     TASKDECK_DEV_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-if(MSVC)
-    target_compile_options(TaskDeck PRIVATE /W4 /utf-8)
-else()
-    target_compile_options(TaskDeck PRIVATE -Wall -Wextra)
-    target_link_options(TaskDeck PRIVATE -static -municode)
+
+# Tests for the parts without a window (palette ranking, the state file, Credential Manager).
+add_executable(core_tests tests/core_tests.cpp src/store.cpp src/credentials.cpp src/commands.cpp)
+target_link_libraries(core_tests PRIVATE nlohmann_json::nlohmann_json advapi32)
+target_compile_definitions(core_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+foreach(target TaskDeck core_tests)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
+        target_link_options(${target} PRIVATE -static)
+    endif()
+endforeach()
+if(NOT MSVC)
+    target_link_options(TaskDeck PRIVATE -municode)
 endif()

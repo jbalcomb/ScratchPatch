@@ -58,9 +58,15 @@ The questions as they were asked:
    screens built from a job's fields (text, multiline, number, choice, toggle, file, files), Run, progress,
    Cancel, result, the confirm/commit step. All 20 phone jobs load (Python 3.14). Checked on Windows: JSON
    Formatter and Parse executable (through the file picker) run from the app.
-3. **Core features from the phone app:** pinned tiles and history saved to disk, settings per job, background
-   tasks with progress (`taskdeck/src/taskdeck/core/tasks.py`), the palette's ranking
-   (`taskdeck/src/taskdeck/core/commands.py`).
+3. **Core features from the phone app (mostly done, 2026-11-14):** pins (move, unpin), history (the last 100
+   runs, reopened with their inputs), drafts, settings per job (Save checks first, Test settings, the job's
+   settings buttons, Import file for key files, fixes the checks find are saved), secrets in Credential
+   Manager, the palette's ranking with usage and quick actions (`core/commands.py`), all in `state.json` in
+   the phone's layout. Checked on Windows: a key saved, read back after a restart, and removed; a draft kept
+   across a restart; idle CPU still 0.00%. Not yet: background tasks that go on after their screen is closed
+   (`core/tasks.py`; jobs that start one, such as uploads to Drive, need it), and the Google account
+   (`account:google`, signed in on the phone through `ui/accounts.py`): Drive uploads don't work on the
+   desktop until then.
 4. **First real jobs** (decision 4).
 5. **Measure** (below), then the **WinUI 3 build** of the same features, then measure that.
 

@@ -29,8 +29,14 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   out first whether the app ever presented a frame (the frame counter, or a debugger) before changing
   anything. A dark window-class background would only hide it.
 * Jobs run in `python/taskdeck_host.py`, a child process (README, "How jobs run"). Change its protocol on both
-  sides together (`src/job_host.*`, `src/shell.cpp`) and keep `python/tests` passing. Job settings aren't
-  edited or saved yet: runs and checks get `{}`, so jobs see their defaults (step 3).
+  sides together (`src/job_host.*`, `src/shell.cpp`) and keep `python/tests` passing.
+* Pins, history, drafts and plain settings are in `%LOCALAPPDATA%\TaskDeck\state.json` (`src/store.*`, the
+  phone's layout); secret settings in Credential Manager (`src/credentials.*`), never in state.json. When
+  testing the app, set `TASKDECK_DATA_DIR` to a scratch folder so the user's own state isn't touched, and
+  remove any credential you create (`cmdkey /list | findstr TaskDeck`). `build\Release\core_tests.exe`
+  tests these and the palette ranking.
+* Keep the window idle at 0% CPU: `Shell::draw` returns true only while something animates. Measure after a
+  change (a stuck focus request once kept it drawing at 8%).
 * When measuring window sizes from a script, make the script per-monitor DPI aware
   (`SetThreadDpiAwarenessContext`). Otherwise Windows scales the sizes it reports.
 

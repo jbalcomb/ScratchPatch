@@ -35,6 +35,8 @@ jobs:
         run: cmake -B build -A x64
       - name: Build
         run: cmake --build build --config Release
+      - name: Core tests (palette ranking, state file, Credential Manager)
+        run: build/Release/core_tests.exe
       - uses: actions/upload-artifact@v4
         with:
           name: TaskDeck-windows-x64
