@@ -39,12 +39,16 @@ from urllib.parse import unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ocr  # noqa: E402
 import parse_pdf  # noqa: E402
+import pymupdf  # noqa: E402
+import reviews  # noqa: E402
 import vision as vision_mod  # noqa: E402
 
 log = logging.getLogger("pdf-parser")
 PORT = 8096
 MAX_BYTES = 200 * 1024 * 1024
 RECHECK_SECONDS = 300   # /api/health asks the model server again when vision isn't known to work
+REVIEW_DPI = 144        # page images for the review page: 2 pixels per PDF point
+REVIEW_PAGE = Path(__file__).resolve().parent / "review.html"
 
 
 def home():
@@ -133,6 +137,37 @@ class Jobs:
                 continue
             self.run_one(job_id)
 
+    def manifest(self, job_id):
+        bundle = self.bundle_dir(job_id)
+        return json.loads((bundle / "manifest.json").read_text()) if bundle else None
+
+    def review_store(self, manifest):
+        return reviews.Store(self.root.parent, manifest["source"]["sha256"], manifest["source"]["file"])
+
+    def review_data(self, job_id):
+        """What the review page shows: pages, the reviewable elements with their reviews, and coverage."""
+        manifest = self.manifest(job_id)
+        if not manifest:
+            return None
+        elements = reviews.annotate(manifest, self.review_store(manifest).load())
+        st = self.status(job_id)
+        return {"job": job_id, "file": st["file"], "pages": manifest["pages"], "elements": elements,
+                "coverage": reviews.coverage(manifest, elements)}
+
+    def page_image(self, job_id, page_no):
+        """The page as displayed, rendered at REVIEW_DPI (made once, then kept in the job folder)."""
+        folder, st = self.folder(job_id), self.status(job_id)
+        if not folder or st["status"] != "done":
+            return None
+        path = folder / "review-pages" / f"p{page_no:03d}.png"
+        if not path.exists():
+            with pymupdf.open(folder / st["file"]) as doc:
+                if not 1 <= page_no <= doc.page_count:
+                    return None
+                path.parent.mkdir(exist_ok=True)
+                doc[page_no - 1].get_pixmap(dpi=REVIEW_DPI).save(path)
+        return path
+
     def bundle_dir(self, job_id):
         st = self.status(job_id)
         return (self.root / job_id / "out" / Path(st["file"]).stem) if st and st["status"] == "done" else None
@@ -153,7 +188,8 @@ def listing_page(job_id, bundle):
                    for p in sorted(bundle.rglob("*")) if p.is_file())
     return (f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
             f"<title>{html.escape(bundle.name)}</title><body style='font-family:sans-serif;margin:16px'>"
-            f"<h2>{html.escape(bundle.name)}</h2><p><a href='/jobs/{job_id}.zip'>Download all (.zip)</a> · "
+            f"<h2>{html.escape(bundle.name)}</h2><p><a href='/jobs/{job_id}/review/'>Review</a> · "
+            f"<a href='/jobs/{job_id}.zip'>Download all (.zip)</a> · "
             f"<a href='manifest.json'>manifest.json</a></p><ul>{rows}</ul>")
 
 
@@ -196,6 +232,21 @@ def make_handler(jobs, vision):
                 st = jobs.status(m.group(1))
                 return self._send(200, (folder / "bundle.zip").read_bytes(), "application/zip",
                                   {"Content-Disposition": f'attachment; filename="{Path(st["file"]).stem}.zip"'})
+            m = re.fullmatch(r"/jobs/([^/]+)/review/?", path)
+            if m:
+                if not jobs.bundle_dir(m.group(1)):
+                    return self._error(404, "no such job, or it isn't done")
+                return self._send(200, REVIEW_PAGE.read_bytes(), "text/html; charset=utf-8")
+            m = re.fullmatch(r"/api/jobs/([^/]+)/review", path)
+            if m:
+                data = jobs.review_data(m.group(1))
+                return self._send(200, data) if data else self._error(404, "no such job, or it isn't done")
+            m = re.fullmatch(r"/jobs/([^/]+)/page/([0-9]+)\.png", path)
+            if m:
+                image = jobs.page_image(m.group(1), int(m.group(2)))
+                if not image:
+                    return self._error(404, "no such page")
+                return self._send(200, image.read_bytes(), "image/png", {"Cache-Control": "max-age=86400"})
             m = re.fullmatch(r"/jobs/([^/]+)/(.*)", path)
             if m:
                 bundle = jobs.bundle_dir(m.group(1))
@@ -211,6 +262,9 @@ def make_handler(jobs, vision):
             return self._error(404, "not found")
 
         def do_POST(self):
+            m = re.fullmatch(r"/api/jobs/([^/]+)/reviews", urlparse(self.path).path)
+            if m:
+                return self._post_review(m.group(1))
             if urlparse(self.path).path != "/api/jobs":
                 return self._error(404, "not found")
             length = int(self.headers.get("Content-Length") or 0)
@@ -226,6 +280,22 @@ def make_handler(jobs, vision):
             if not pdf[1].startswith(b"%PDF"):
                 return self._error(400, f"{pdf[0] or 'the file'} isn't a PDF")
             self._send(202, jobs.create(pdf[0], pdf[1]))
+
+        def _post_review(self, job_id):
+            manifest = jobs.manifest(job_id)
+            if not manifest:
+                return self._error(404, "no such job, or it isn't done")
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("send one review as a JSON object")
+                ids = {e["id"] for e in manifest["elements"] if reviews.reviewable(e)}
+                stored = jobs.review_store(manifest).add(body, ids)
+            except (ValueError, reviews.ReviewError) as exc:
+                return self._error(400, str(exc))
+            data = jobs.review_data(job_id)
+            element = next(e for e in data["elements"] if e["id"] == stored["element"])
+            self._send(200, {"review": stored, "element": element, "coverage": data["coverage"]})
 
     return Handler
 

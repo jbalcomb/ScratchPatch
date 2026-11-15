@@ -323,3 +323,169 @@ def test_clipped_render_is_flagged(tmp_path):
     assert "clipped" in images.check(tmp_path / "c.png", rect, [], "clip", page)[0]
     assert "clipped" not in images.check(tmp_path / "c.png", rect, [], "embedded", page)[0]
     assert images.check(tmp_path / "c.png", rect, [pymupdf.Rect(0, 0, 150, 90)], "embedded", page)[0] == ["text_overlap"]
+
+
+# ---------------------------------------------------------------- found on the first real PDF
+
+def rotated_pdf(tmp_path):
+    """Like the manual's table pages: a print sheet (612 x 792) with a trimmed page inside it (CropBox) and a
+    printer's slug outside the trim, stored sideways with /Rotate 90 so it reads upright when displayed."""
+    doc = pymupdf.open()
+    p = doc.new_page(width=612, height=792)
+    p.insert_text((70, 780), "MOM Manual pgs113-149 2/26/97 Page 118", fontsize=7)  # outside the trim
+    p.set_cropbox(pymupdf.Rect(60, 61, 437, 637))
+    p.set_rotation(90)
+    m = p.derotation_matrix  # displayed (upright) coordinates -> the page's stored coordinates
+    p.insert_text(pymupdf.Point(40, 40) * m, "Movement types", fontsize=14, rotate=90)
+    p.insert_text(pymupdf.Point(40, 70) * m, "Flying lets every unit in the stack move over all terrain.",
+                  fontsize=10, rotate=90)
+    # (insert_image on a cropped, rotated page lands elsewhere than insert_text: this shift, found by rendering,
+    # puts the chart at 40,160-280,340 as displayed)
+    p.insert_image(pymupdf.Rect(40, 160, 280, 340) * m + (60, -155, 60, -155), stream=png(chart()), rotate=90)
+    path = tmp_path / "rotated.pdf"
+    doc.save(path)
+    return path
+
+
+def test_rotated_cropped_pages_come_out_upright(tmp_path):
+    m = parse_pdf.parse(rotated_pdf(tmp_path), tmp_path / "out", use_vision=False)
+    page = m["pages"][0]
+    assert (page["width"], page["height"], page["rotation"]) == (576, 377, 90)
+    els = m["elements"]
+    assert all(0 <= e["bbox"][0] < e["bbox"][2] <= 576 and 0 <= e["bbox"][1] < e["bbox"][3] <= 377 for e in els)
+    texts = [e for e in els if e["type"] == "text"]
+    assert [t["text"] for t in texts] == ["Movement types", "Flying lets every unit in the stack move over all terrain."]
+    assert texts[0]["lines"][0]["dir"] == [1, 0] and texts[0]["bbox"][:2] == pytest.approx([40, 26], abs=2)
+    assert "MOM Manual" not in (tmp_path / "out" / "rotated" / "text.txt").read_text()
+    image = next(e for e in els if e["type"] == "image")
+    assert image["status"] == "kept" and "clipped" not in image["flags"]
+    assert image["bbox"] == pytest.approx([40, 160, 280, 340], abs=1)
+
+
+class FakeTable:
+    """What _grid reads from a PyMuPDF table: rows of cell boxes, in the page's own coordinates."""
+
+    def __init__(self, rows):
+        self.rows = [type("Row", (), {"cells": r}) for r in rows]
+
+
+def test_a_sideways_table_is_read_as_displayed():
+    # Stored sideways on a /Rotate 90 page (377 x 576 stored, 576 x 377 displayed): the table's stored rows
+    # are displayed columns.
+    page = pymupdf.open().new_page(width=377, height=576)
+    page.set_rotation(90)
+    m = page.derotation_matrix
+    shown = [[pymupdf.Rect(40 + c * 160, 60 + r * 20, 200 + c * 160, 80 + r * 20) for c in range(2)] for r in range(3)]
+    stored = [[tuple(shown[r][c] * m) for r in range(3)] for c in range(2)]  # stored row = displayed column
+    grid = parse_pdf._grid(FakeTable(stored), page.rotation_matrix)
+    assert [[pymupdf.Rect(c) * page.rotation_matrix for c in row] for row in grid] == shown
+    flat = [[(0, 0, 10, 10), (10, 0, 20, 10)]]
+    assert parse_pdf._grid(FakeTable(flat), pymupdf.Identity) == flat
+
+
+def test_a_picture_page_without_a_text_layer_keeps_its_picture(tmp_path):
+    """A section title page: one page-sized drawing and a few words. Not a scan: the drawing is an image."""
+    from PIL import ImageDraw
+    art = chart(800, 1200)
+    ImageDraw.Draw(art).text((300, 30), "Getting Started", fill="black")
+    doc = pymupdf.open()
+    p = doc.new_page(width=376, height=575)
+    p.insert_image(p.rect, stream=png(art))
+    path = tmp_path / "title.pdf"
+    doc.save(path)
+    m = parse_pdf.parse(path, tmp_path / "out", use_vision=False)
+    assert m["pages"][0]["kind"] == "image" and m["summary"]["image_pages"] == 1
+    image = next(e for e in m["elements"] if e["type"] == "image")
+    assert image["status"] == "kept" and (tmp_path / "out" / "title" / image["file"]).exists()
+
+
+def test_a_one_column_box_is_not_a_table(tmp_path):
+    doc = pymupdf.open()
+    p = doc.new_page()
+    for r, line in enumerate(("Agility . . . . defense", "Arcane Power . . . ranged", "Armor-Piercing . . . halves")):
+        box = pymupdf.Rect(72, 100 + r * 20, 400, 120 + r * 20)
+        p.draw_rect(box, color=(0, 0, 0), width=0.8)
+        p.insert_text((76, box.y1 - 6), line, fontsize=10)
+    path = tmp_path / "list.pdf"
+    doc.save(path)
+    m = parse_pdf.parse(path, tmp_path / "out", use_vision=False)
+    assert m["summary"]["tables"] == 0 and m["summary"]["text_blocks"] >= 1
+
+
+def test_a_retry_after_the_vision_model_said_no_is_checked_again(sample_pdf, tmp_path, fake_llm, monkeypatch):
+    """The first try is flagged and turned down; the retry has no flags, but still needs the model's OK."""
+    real_check, calls = images.check, []
+
+    def check(path, rect, text_rects, source, page_rect):
+        flags, metrics = real_check(path, rect, text_rects, source, page_rect)
+        calls.append(path.name)
+        return (["low_ocr"] if path.name == "p1-i1-a1.png" else []), metrics
+
+    monkeypatch.setattr(images, "check", check)
+    answers = iter([{"complete": False, "content_type": "chart", "issue": "cut off at the bottom"},
+                    {"complete": True, "content_type": "chart", "issue": None}])
+    fake_llm["answer"] = lambda im: next(answers, {"complete": True, "content_type": "chart", "issue": None})
+    m = parse_pdf.parse(sample_pdf, tmp_path, make_vision(fake_llm))
+    first = by_id(m)["p1-i1"]
+    assert [a["vision"]["complete"] for a in first["attempts"]] == [False, True]
+    assert first["status"] == "kept" and first["best_attempt"] == 2
+
+
+# ---------------------------------------------------------------- illustration pages: OCR re-read, low confidence
+
+def title_page_pdf(tmp_path):
+    """A section title page: no text layer, one page-sized picture with a title above a drawing."""
+    from PIL import ImageDraw, ImageFont
+    art = chart(800, 1200)
+    ImageDraw.Draw(art).text((150, 40), "Getting Started", fill="black", font=ImageFont.load_default(size=64))
+    doc = pymupdf.open()
+    p = doc.new_page(width=376, height=575)
+    p.insert_image(p.rect, stream=png(art))
+    path = tmp_path / "title.pdf"
+    doc.save(path)
+    return path
+
+
+def ocr_blocks(m):
+    return [e for e in m["elements"] if e["type"] == "text"]
+
+
+@needs_tesseract
+def test_illustration_page_text_is_reread_by_the_vision_model(tmp_path, fake_llm):
+    prompts = []
+    fake_llm["read"] = lambda im, prompt: prompts.append(prompt) or "Getting Started"
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    assert m["pages"][0]["kind"] == "image"
+    blocks = ocr_blocks(m)
+    assert blocks and blocks[0]["text"] == "Getting Started" and blocks[0]["source"] == "vision"
+    assert blocks[0]["ocr_text"] and "low_confidence" not in blocks[0]
+    assert len(prompts) == len(blocks) and "Tesseract OCR read it as" in prompts[0]
+    log = [json.loads(line) for line in (tmp_path / "out" / "title" / "qa_log.jsonl").read_text().splitlines()]
+    assert [e["task"] for e in log if e["event"] == "vision" and e["task"] == "read_text"] == ["read_text"] * len(blocks)
+    assert "Getting Started" in (tmp_path / "out" / "title" / "text.txt").read_text()
+
+
+@needs_tesseract
+def test_text_the_vision_model_cant_find_is_emptied_not_dropped(tmp_path, fake_llm):
+    fake_llm["read"] = lambda im, prompt: ""
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    block = ocr_blocks(m)[0]
+    assert block["text"] == "" and block["ocr_text"] and block["lines"] == []
+    assert "--- page 1 ---\n\n" in (tmp_path / "out" / "title" / "text.txt").read_text() + "\n"
+
+
+@needs_tesseract
+def test_without_the_vision_model_ocr_text_stays_and_is_flagged(tmp_path, sample_pdf, fake_llm):
+    fake_llm["fail"] = 99
+    m = parse_pdf.parse(title_page_pdf(tmp_path), tmp_path / "out", make_vision(fake_llm))
+    block = ocr_blocks(m)[0]
+    assert block["source"] == "ocr" and "ocr_text" not in block
+    assert block["low_confidence"] is (block["confidence"] < parse_pdf.OCR_LOW_CONF)
+    scan = parse_pdf.parse(sample_pdf, tmp_path / "out2", use_vision=False)  # a scan: not re-read, flagged
+    assert all(e["low_confidence"] is False for e in ocr_blocks(scan) if e["page"] == 2)
+
+
+def test_parse_text():
+    assert vision.parse_text('{"text": " Getting Started "}') == "Getting Started"
+    with pytest.raises(vision.VisionError):
+        vision.parse_text('{"words": 1}')

@@ -78,10 +78,7 @@ def wait_for_reading(path: str):
                     waiting.discard(i)
             if not waiting or time.monotonic() >= deadline:
                 return
-            pause_until = time.monotonic() + READ_POLL_SECONDS
-            while time.monotonic() < pause_until:
-                ctx.check_cancelled()
-                time.sleep(0.2)
+            ctx.sleep(READ_POLL_SECONDS)
 
     return wait
 

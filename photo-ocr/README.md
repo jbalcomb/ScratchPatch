@@ -171,6 +171,28 @@ nobody checked them. Receipts approved before this was added are compared by the
 `/stats` shows the errors by prompt version, engine and store (readings, how many had errors, each category)
 and the latest ones with links; JSON at `/api/errors`. The log is `reading_reviews` and `reading_errors`.
 
+### Handwritten notes and cork boards
+
+The third kind of photo (NOTES-PRD.md). Phase 1: TaskDeck sends a note's pages (or a board's photos) to
+`POST /api/notes`; the originals go into Postgres, full size; the worker reads them with the vision model into
+Markdown that keeps the layout (→ arrows, `[box]` groups, **emphasis**, ~~crossed out~~) and marks what it
+couldn't read as `[word?]`; `/notes` lists them and `/notes/<id>` shows the photo beside the transcript to fix
+and approve. *Turn ↻* sets a photo upright (kept; the next reading gets it upright). Approving measures every
+reading of the note against the approved transcript: words and characters wrong, and how many `[?]` marks
+were right anyway; `/stats` shows it by prompt version and engine. Filing into Obsidian and Neo4j is phase 4.
+
+Notes live in voice-rec's Postgres server, in a database of their own. Once, on the workstation (it reads
+voice-rec's database password and port from `voice-rec/.env`):
+
+```bash
+cd ~/develai/ScratchPatch/voice-rec && P=$(grep '^VOICE_REC_DB_PASSWORD=' .env | cut -d= -f2-) && PORT=$(grep '^VOICE_REC_DB_PORT=' .env | cut -d= -f2-) && docker exec voice-rec-db createdb -U voicerec notes && echo "NOTES_DATABASE_URL=postgresql://voicerec:$P@127.0.0.1:${PORT:-5433}/notes" >> ~/.config/photo-ocr.env
+```
+
+Then rebuild photo-ocr (`docker compose up -d --build photo-ocr`). The tables are made on start;
+`/api/health` says `"notes": "ok"` (or why the database doesn't answer; `null` when `NOTES_DATABASE_URL` isn't
+set). `PHOTO_OCR_NOTE_ENGINE` picks the vision engine (default: the receipt engine). Back up with voice-rec's
+`pg_dump` line, with `notes` for the database name.
+
 ### Catalog, shopping, reconciliation
 
 - **`/items`:** receipt lines with no product yet, with a suggestion (text similarity, or the text model for
@@ -344,6 +366,9 @@ cd photo-ocr && pytest -q
 
 They use stand-ins for llama-server, Immich and Google (`tests/fakes.py`), so they need no GPU, models,
 accounts or OCR installs.
+
+The notes tests (`tests/test_notes.py`) need a Postgres they may create databases on: `NOTES_TEST_DSN`,
+default `postgresql://postgres@127.0.0.1:5432/postgres`. Without one they are skipped.
 
 ## Not yet tried for real
 

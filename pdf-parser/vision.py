@@ -48,6 +48,25 @@ PROMPT = (
 )
 
 
+TEXT_SCHEMA = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+TEXT_PROMPT = (
+    "This image was cut out of page {page} of a PDF; Tesseract OCR read it as: {ocr!r}. Transcribe the text in the "
+    "image exactly as written, line by line, in reading order. If it holds no readable text (only drawing, "
+    "texture or noise), answer with an empty string. Answer only with JSON: {{\"text\": \"...\"}}"
+)
+
+
+def parse_text(text):
+    match = re.search(r"\{.*\}", text or "", re.S)
+    try:
+        data = json.loads(match.group(0)) if match else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+        raise VisionError(f"reply isn't {{text: str}}: {(text or '')[:120]!r}")
+    return data["text"].strip()
+
+
 class VisionError(Exception):
     pass
 
@@ -177,19 +196,17 @@ class Vision:
         self.message = f"{self.model}: listed; whether it takes images is checked on the first image"
         return None, self.message
 
-    def verdict(self, path, page):
-        """Ask about one crop. -> {complete, content_type, issue}. Raises VisionError / NotMultimodal."""
+    def _ask(self, prompt, path, schema_name, schema, parse, max_tokens):
         if self.multimodal is False:
             raise NotMultimodal(self.message)
-        body = {"model": self.model, "temperature": 0, "max_tokens": 200,
+        body = {"model": self.model, "temperature": 0, "max_tokens": max_tokens,
                 "chat_template_kwargs": {"enable_thinking": False},
-                "response_format": {"type": "json_schema", "json_schema": {"name": "verdict", "schema": VERDICT_SCHEMA}},
-                "messages": [{"role": "user", "content": [{"type": "text", "text": PROMPT.format(page=page)},
-                                                           image_part(path)]}]}
+                "response_format": {"type": "json_schema", "json_schema": {"name": schema_name, "schema": schema}},
+                "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, image_part(path)]}]}
         self.requests += 1
         try:
             reply = self._http("POST", "/v1/chat/completions", body, timeout=self.timeout)
-            result = parse_verdict(reply["choices"][0]["message"].get("content"))
+            result = parse(reply["choices"][0]["message"].get("content"))
         except NotMultimodal as exc:
             self.multimodal, self.message = False, str(exc)
             self._failed(exc)
@@ -200,6 +217,14 @@ class Vision:
         self.multimodal, self.in_a_row = True, 0
         self.last_ok = time.time()
         return result
+
+    def verdict(self, path, page):
+        """Ask about one crop. -> {complete, content_type, issue}. Raises VisionError / NotMultimodal."""
+        return self._ask(PROMPT.format(page=page), path, "verdict", VERDICT_SCHEMA, parse_verdict, 200)
+
+    def read_text(self, path, page, ocr_text=""):
+        """Read the text in a crop. -> str ("" when there is none). Raises VisionError / NotMultimodal."""
+        return self._ask(TEXT_PROMPT.format(page=page, ocr=ocr_text[:300]), path, "text", TEXT_SCHEMA, parse_text, 1000)
 
     def _failed(self, exc):
         self.failures += 1
@@ -248,18 +273,25 @@ class Budget:
 
     def ask(self, path, page, **context):
         """-> verdict, or None when the model didn't answer (or this PDF stopped asking)."""
+        return self._call(lambda: self.vision.verdict(path, page), "verdict", context)
+
+    def read_text(self, path, page, ocr_text="", **context):
+        """-> the text the model reads in the crop, or None when it didn't answer (or this PDF stopped asking)."""
+        return self._call(lambda: self.vision.read_text(path, page, ocr_text), "read_text", context)
+
+    def _call(self, request, task, context):
         if not self.available:
             return None
         started = time.monotonic()
         self.requests += 1
         try:
-            verdict = self.vision.verdict(path, page)
+            answer = request()
         except VisionError as exc:
             seconds = time.monotonic() - started
             self.failures += 1
             self.in_a_row += 1
             self.failed_seconds += seconds
-            self.log(event="vision", ok=False, ms=round(seconds * 1000), error=str(exc)[:300], **context)
+            self.log(event="vision", task=task, ok=False, ms=round(seconds * 1000), error=str(exc)[:300], **context)
             if isinstance(exc, NotMultimodal):
                 self.stopped = str(exc)
             elif self.in_a_row >= MAX_CONSECUTIVE_FAILURES:
@@ -270,8 +302,10 @@ class Budget:
                 self.log(event="vision_stopped", reason=self.stopped)
             return None
         self.in_a_row = 0
-        self.log(event="vision", ok=True, ms=round((time.monotonic() - started) * 1000), verdict=verdict, **context)
-        return verdict
+        key = "verdict" if task == "verdict" else "text"
+        self.log(event="vision", task=task, ok=True, ms=round((time.monotonic() - started) * 1000),
+                 **{key: answer}, **context)
+        return answer
 
     def summary(self):
         return {"requests": self.requests, "failed": self.failures, "available": self.available,

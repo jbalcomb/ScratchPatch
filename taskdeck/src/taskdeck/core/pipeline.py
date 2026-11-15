@@ -109,6 +109,16 @@ class Context:
         if self._cancelled:
             raise Cancelled()
 
+    def sleep(self, seconds: float) -> None:
+        """Wait, e.g. between polls of a service, but stop at once (Cancelled) when the run is cancelled."""
+        end = time.monotonic() + seconds
+        while True:
+            self.check_cancelled()
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.2, left))
+
 
 StepFn = Callable[[Context], None]
 

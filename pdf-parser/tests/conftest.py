@@ -32,6 +32,10 @@ def chart(w=400, h=300, seed=0):
     return im
 
 
+SCAN_LINES = ["INVOICE 2041", "Total due 125 dollars", "Thank you"] + [
+    f"Line {i} of the order with some words on it" for i in range(1, 9)]
+
+
 def text_image(lines, w=1700, h=2200):
     im = Image.new("L", (w, h), 255)
     d = ImageDraw.Draw(im)
@@ -62,7 +66,7 @@ def sample_pdf(tmp_path):
     p.insert_image(pymupdf.Rect(72, 600, 84, 612), stream=png(Image.new("RGB", (40, 40), (200, 30, 30))))  # an icon
     # Page 2: a scan (an image of text, no text layer).
     p2 = doc.new_page()
-    p2.insert_image(p2.rect, stream=png(text_image(["INVOICE 2041", "Total due 125 dollars", "Thank you"])))
+    p2.insert_image(p2.rect, stream=png(text_image(SCAN_LINES)))
     path = tmp_path / "sample.pdf"
     doc.save(path)
     return path
@@ -72,6 +76,7 @@ def sample_pdf(tmp_path):
 def fake_llm():
     """A llama.cpp-like server. ``answer(image)`` decides each verdict; ``fail`` makes requests fail."""
     state = {"answer": lambda im: {"complete": True, "content_type": "chart", "issue": None}, "fail": 0,
+             "read": lambda im, prompt: "Getting Started",
              "models": [{"id": "qwen3-vl-8b", "status": {"value": "unloaded",
                                                          "args": ["--mmproj", "/models/mmproj.gguf"]}}],
              "requests": [], "refuse_images": False}
@@ -102,9 +107,10 @@ def fake_llm():
             if state["fail"]:
                 state["fail"] -= 1
                 return self._send(503, {"error": "loading model"})
-            url = body["messages"][0]["content"][1]["image_url"]["url"]
-            im = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
-            return self._send(200, {"choices": [{"message": {"content": json.dumps(state["answer"](im))}}]})
+            prompt, image = body["messages"][0]["content"]
+            im = Image.open(io.BytesIO(base64.b64decode(image["image_url"]["url"].split(",", 1)[1])))
+            answer = {"text": state["read"](im, prompt["text"])} if "Transcribe" in prompt["text"] else state["answer"](im)
+            return self._send(200, {"choices": [{"message": {"content": json.dumps(answer)}}]})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

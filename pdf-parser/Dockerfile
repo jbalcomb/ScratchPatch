@@ -5,5 +5,5 @@ COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 ENV PYTHONUNBUFFERED=1 PDF_PARSER_HOME=/data
 WORKDIR /app
-COPY *.py ./
+COPY *.py review.html ./
 CMD ["python", "web.py", "--host", "127.0.0.1", "--port", "8096"]
