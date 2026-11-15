@@ -1,0 +1,4 @@
+# What the phone's jobs need beyond Python's standard library, installed into the Python a release comes with
+# (tools/package.ps1). The rest of ../taskdeck/pyproject.toml is the phone's UI (Flet) and Android-only parts.
+rsa==4.9.1     # Google service-account sign-in (shared/google.py: Google Sheets jobs)
+pyasn1==0.6.5  # rsa's dependency

@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Dear ImGui and the app agree (a mismatch fails to link with unresolved __imp_ symbols).
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# The build number: the release workflow's run number (cmake -DTASKDECK_BUILD=42). 0, the default, is a build
+# from source, which never offers updates (src/updater.h).
+set(TASKDECK_BUILD 0 CACHE STRING "Release build number (0: built from source)")
+
 # Dear ImGui, pinned (no package manager needed: CMake fetches the sources at configure time).
 include(FetchContent)
 FetchContent_Declare(imgui
@@ -91,7 +95,12 @@ else()
 endif()
 target_include_directories(sevenzip PUBLIC src)
 
+# The icon and version info (src/taskdeck.rc.in; the icon is drawn by tools/make_icon.py).
+set(TASKDECK_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/taskdeck.ico")
+configure_file(src/taskdeck.rc.in "${CMAKE_BINARY_DIR}/taskdeck.rc" @ONLY)
+
 add_executable(TaskDeck WIN32
+    "${CMAKE_BINARY_DIR}/taskdeck.rc"
     src/main.cpp
     src/shell.cpp
     src/perf.cpp
@@ -102,10 +111,11 @@ add_executable(TaskDeck WIN32
     src/commands.cpp
     src/tray.cpp
     src/native_jobs.cpp
-    src/extract_job.cpp)
+    src/extract_job.cpp
+    src/updater.cpp)
 target_link_libraries(TaskDeck PRIVATE imgui nlohmann_json::nlohmann_json sevenzip d3d11 dxgi d3dcompiler dwmapi psapi ole32 shell32
-    uuid advapi32)
-target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    uuid advapi32 winhttp bcrypt)
+target_compile_definitions(TaskDeck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN TASKDECK_BUILD=${TASKDECK_BUILD}
     # Where the job host script (python/) is found when TASKDECK_DESKTOP_DIR isn't set: this source tree.
     TASKDECK_DEV_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 

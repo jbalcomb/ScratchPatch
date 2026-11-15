@@ -1,0 +1,69 @@
+name: TaskDeck Desktop release
+
+# Builds TaskDeck for Windows, tests it, and publishes the zip (TaskDeck.exe, 7z.dll, the job host, the phone
+# app's jobs, Python, the licences) with its manifest to the `taskdeck-desktop-latest` release. Installed copies
+# check that manifest at start and offer the update (taskdeck-desktop/src/updater.h). The build number is this
+# workflow's run number, so every publish is newer than the last.
+on:
+  workflow_dispatch:
+  push:
+    # Only this branch publishes: a branch that is behind (main before TaskDeck Desktop is merged into it, an
+    # old copy) must never replace what is installed. Switch to main once the work lands there.
+    branches:
+      - taskdeck-desktop
+    paths:
+      - "taskdeck-desktop/**"
+      - "taskdeck/src/taskdeck/**"   # the jobs ship with each release
+      - ".github/workflows/taskdeck-desktop-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: taskdeck-desktop-release
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: taskdeck-desktop
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Job host tests
+        run: python -m unittest discover -s python/tests -v
+      - name: Configure
+        run: cmake -B build -A x64 "-DTASKDECK_BUILD=${{ github.run_number }}"
+      - name: Build (7z.dll from 7-Zip's source, then the app)
+        run: cmake --build build --config Release
+      - name: Core tests
+        run: build/Release/core_tests.exe
+      - name: Archive tests
+        run: build/Release/archive_tests.exe
+      - name: Package (with Python's embeddable package; checks that every job loads in it)
+        run: ./tools/package.ps1 -Build ${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TaskDeck-windows-x64-${{ github.run_number }}
+          path: taskdeck-desktop/dist/TaskDeck
+          if-no-files-found: error
+      - name: Publish to the taskdeck-desktop-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view taskdeck-desktop-latest *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create taskdeck-desktop-latest --prerelease --title "TaskDeck for Windows" `
+              --notes "TaskDeck Desktop: download TaskDeck-windows-x64.zip, unzip it into a folder you can write to, run TaskDeck.exe. It updates itself from here (Settings > App updates)."
+          }
+          $global:LASTEXITCODE = 0
+          # The zip first, the manifest last: a copy that reads the new manifest finds the new zip (and an old
+          # manifest with a new zip fails the checksum and is tried again later).
+          gh release upload taskdeck-desktop-latest dist/TaskDeck-windows-x64.zip --clobber
+          gh release upload taskdeck-desktop-latest dist/taskdeck-desktop-manifest.json --clobber

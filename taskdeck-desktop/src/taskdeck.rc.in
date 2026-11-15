@@ -1,0 +1,28 @@
+// TaskDeck.exe's resources: the icon (resource 1: the window, the taskbar, the tray) and the version shown in
+// the file's Properties. CMakeLists.txt fills in the build number (0 for a build from source).
+#include <winres.h>
+
+1 ICON "@TASKDECK_ICON@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,@TASKDECK_BUILD@,0
+PRODUCTVERSION 0,1,@TASKDECK_BUILD@,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "TaskDeck"
+            VALUE "ProductName", "TaskDeck Desktop"
+            VALUE "FileVersion", "0.1.@TASKDECK_BUILD@"
+            VALUE "ProductVersion", "0.1.@TASKDECK_BUILD@"
+            VALUE "OriginalFilename", "TaskDeck.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

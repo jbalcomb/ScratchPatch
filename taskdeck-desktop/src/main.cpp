@@ -6,6 +6,8 @@
 // * the tray: closing the window while jobs or background tasks run can keep TaskDeck running in the
 //   notification area until they finish (src/tray.h). One TaskDeck per data folder: starting another shows
 //   the one already running.
+// * updates (src/updater.h): Restart on a downloaded update ends the loop; the files are swapped after the job
+//   host has stopped, and the new TaskDeck.exe is started.
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -14,12 +16,14 @@
 #include "shell.h"
 #include "store.h"
 #include "tray.h"
+#include "updater.h"
 
 #include <d3d11.h>
 #include <objbase.h>
 #include <windows.h>
 #include <shellapi.h>
 
+#include <cstdio>
 #include <cwchar>
 #include <cwctype>
 #include <functional>
@@ -40,6 +44,35 @@ static std::wstring g_instance;               // the window property that marks 
 static UINT g_show_message = 0;               // "show your window", from a second TaskDeck started
 static UINT g_taskbar_created = 0;            // Explorer restarted
 static constexpr UINT_PTR kQuitTimer = 1;     // closes TaskDeck a little after the last task ended in the tray
+static bool g_restart_for_update = false;     // install the downloaded update after the loop, then start again
+
+// What the loop did in its first 15 seconds, written to startup-trace.log in the data folder (each start
+// replaces it). For the blank white window seen twice on a first start (CLAUDE.md): whether frames were
+// presented, what Present returned, when the loop slept and woke.
+struct StartupTrace {
+    ULONGLONG start = ::GetTickCount64();
+    std::string text;
+    bool written = false;
+    void add(const char* what, long long value = 0) {
+        if (written) return;
+        const ULONGLONG t = ::GetTickCount64() - start;
+        char line[160];
+        std::snprintf(line, sizeof(line), "%6llu ms  %s %lld\n", t, what, value);
+        text += line;
+        if (t > 15000 || text.size() > 64 * 1024) write();
+    }
+    void write() {
+        if (written) return;
+        written = true;
+        const auto path = Store::default_path().parent_path() / L"startup-trace.log";
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, path.c_str(), L"wb") == 0 && f) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+    }
+};
+static StartupTrace g_trace;
 
 static bool create_device(HWND hwnd);
 static void cleanup_device();
@@ -213,11 +246,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
         return 0;
     }
 
+    Updater::clean_up();  // what the last update left behind
     ImGui_ImplWin32_EnableDpiAwareness();
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);  // the file picker
     const float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
 
-    WNDCLASSEXW wc = {sizeof(wc), CS_CLASSDC, wnd_proc, 0, 0, instance, nullptr, nullptr, nullptr, nullptr, L"TaskDeck", nullptr};
+    // The icon (resource 1, assets/taskdeck.ico), in the sizes the title bar and the taskbar want.
+    HICON icon = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, ::GetSystemMetrics(SM_CXICON),
+                                                 ::GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    HICON icon_small = static_cast<HICON>(::LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, ::GetSystemMetrics(SM_CXSMICON),
+                                                       ::GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+    WNDCLASSEXW wc = {sizeof(wc), CS_CLASSDC, wnd_proc, 0, 0, instance, icon, nullptr, nullptr, nullptr, L"TaskDeck", icon_small};
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"TaskDeck", WS_OVERLAPPEDWINDOW, 100, 100,
                                 static_cast<int>(1100 * scale), static_cast<int>(720 * scale), nullptr, nullptr, instance, nullptr);
@@ -229,6 +268,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     ::SetPropW(hwnd, g_instance.c_str(), reinterpret_cast<HANDLE>(1));
     ::ShowWindow(hwnd, SW_SHOWDEFAULT);
     ::UpdateWindow(hwnd);
+    g_trace.add("window shown, visible", ::IsWindowVisible(hwnd));
+    g_trace.add("foreground", ::GetForegroundWindow() == hwnd);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -270,11 +311,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
         }
         if (!continuous && frames_left <= 0) {
             // Idle: sleep until input. While typing, wake twice a second for the blinking cursor.
+            g_trace.add("idle, frames drawn", static_cast<long long>(snap.frames));
             ::MsgWaitForMultipleObjects(0, nullptr, FALSE, io.WantTextInput ? 500 : INFINITE, QS_ALLINPUT);
+            g_trace.add("woke");
             frames_left = 1;
             continue;
         }
         if (g_occluded && g_swap_chain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED) {
+            if (g_trace.text.size() < 8000) g_trace.add("still occluded");
             ::Sleep(10);  // minimized or screen locked
             continue;
         }
@@ -298,6 +342,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         const HRESULT hr = g_swap_chain->Present(1, 0);  // vsync
         g_occluded = (hr == DXGI_STATUS_OCCLUDED);
+        if (perf.snapshot().frames < 30 || hr != S_OK) g_trace.add("present, hr", hr);
         perf.frame_end();
         snap = perf.snapshot();
         frames_left = busy ? 3 : frames_left - 1;
@@ -307,8 +352,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
             case Shell::CloseAction::Quit: ::DestroyWindow(hwnd); break;
             case Shell::CloseAction::None: break;
         }
+        if (shell.take_restart_for_update()) {
+            g_restart_for_update = true;
+            ::DestroyWindow(hwnd);
+        }
     }
 
+    g_trace.add("quit");
+    g_trace.write();
     g_tray.remove();
     shell.stop();
     g_shell = nullptr;
@@ -319,7 +370,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
     ::DestroyWindow(hwnd);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
     ::CoUninitialize();
-    if (single) ::CloseHandle(single);
+    if (single) ::CloseHandle(single);  // before starting the new TaskDeck, which would otherwise just show us
+    if (g_restart_for_update) {
+        std::string error;
+        if (!Updater::install(&error))  // nothing changed: start this version again
+            ::MessageBoxW(nullptr, (L"The update couldn't be installed: " + from_utf8(error) +
+                                    L"\n\nTaskDeck starts again on the version you had.").c_str(),
+                          L"TaskDeck", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+        const std::wstring exe = (install::dir() / L"TaskDeck.exe").wstring();
+        std::wstring cmd = L"\"" + exe + L"\"";
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        ::AllowSetForegroundWindow(ASFW_ANY);  // the new window comes to the front, as this one was
+        if (::CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, install::dir().c_str(), &si, &pi)) {
+            ::CloseHandle(pi.hThread);
+            ::CloseHandle(pi.hProcess);
+        }
+    }
+    if (icon) ::DestroyIcon(icon);
+    if (icon_small) ::DestroyIcon(icon_small);
     return 0;
 }
 

@@ -9,6 +9,7 @@
 #include "native_jobs.h"
 #include "perf.h"
 #include "store.h"
+#include "updater.h"
 
 #include <nlohmann/json.hpp>
 
@@ -154,9 +155,14 @@ public:
     // Shows the close notice in the window; the answer comes from take_close_action() after a frame.
     void ask_close();
     CloseAction take_close_action();
+    // Restart was pressed on an unpacked update: true once, then the app quits, installs it and restarts.
+    bool take_restart_for_update();
 
 private:
     void draw_close_notice();
+    void draw_update_banner();
+    void draw_update_status();
+    bool update_checks() const;  // check for updates at start (Settings)
     Activity run_activity(const RunState& run) const;
     void start_host();
     // Sends an op to whichever runs the job: the C++ jobs (native_) or the Python job host.
@@ -232,6 +238,8 @@ private:
     std::vector<Activity> ended_;
     bool close_notice_ = false, close_dont_ask_ = false;
     CloseAction close_action_ = CloseAction::None;
+    Updater updater_;
+    bool update_banner_hidden_ = false, restart_for_update_ = false;
 
     // Requests waiting for a reply from the job host.
     struct Request { enum Kind { Check, Test, Action } kind; std::string job_id; int index = 0; bool save = false; };

@@ -24,10 +24,13 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
 
   The UI font is Segoe UI from the Windows fonts folder, at 16 px before DPI scaling (`load_ui_font` in
   `main.cpp`).
-* Unexplained, seen once (2026-11-12): the window showed blank white 3 s after launch. It didn't happen again
-  in 4 more launches, including a freshly copied exe sampled every 100 ms from 0.35 s on. If you see it, find
-  out first whether the app ever presented a frame (the frame counter, or a debugger) before changing
-  anything. A dark window-class background would only hide it.
+* Unexplained, seen twice (2026-11-12, and 2026-11-14 on the first start of a freshly unzipped release): the
+  window stays blank white after launch. The second time it stayed white for over 7 s, with ~0 CPU, through
+  the job host's and the update check's wake-ups, until the mouse moved over it; then it drew at once. It
+  didn't happen again in 6 more launches (3 of them freshly copied folders, sampled every second). Every
+  start now writes `startup-trace.log` in the data folder (the first 15 s: window shown and foreground, each
+  Present's result, idle and wake, occlusion; written at 15 s or at quit). If you see it, read that before
+  changing anything. A dark window-class background would only hide it.
 * Jobs run in `python/taskdeck_host.py`, a child process (README, "How jobs run"). Change its protocol on both
   sides together (`src/job_host.*`, `src/shell.cpp`) and keep `python/tests` passing.
 * Pins, history, drafts and plain settings are in `%LOCALAPPDATA%\TaskDeck\state.json` (`src/store.*`, the
@@ -47,6 +50,13 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   behaviour (`../taskdeck/src/taskdeck/jobs/extract_archive/logic.py`, `shared/archive.py`) and run
   `build\Release\archive_tests.exe`. Make large test archives in a scratch folder (Windows'
   `%SystemRoot%\System32\tar.exe`; Git's `tar` reads `C:` as a host name), never in the repo.
+* Releases and updates: `src/updater.*`, `tools/package.ps1`, `.github/workflows/taskdeck-desktop-release.yml`
+  (README "Install"). To test an update without publishing: configure with `-DTASKDECK_BUILD=1`, build,
+  `pwsh tools/package.ps1 -Build 1 -Out <scratch>\rel1`; the same with 2; copy `rel1\TaskDeck` to a scratch
+  folder, serve `rel2`'s zip and manifest with `python -m http.server 8765 --bind 127.0.0.1`, and start the
+  copy with `TASKDECK_UPDATE_URL=http://127.0.0.1:8765/` (and `TASKDECK_DATA_DIR`). Configure with
+  `-DTASKDECK_BUILD=0` again afterwards. A MessageBox's single OK button has control id 2 (`WM_COMMAND` 2
+  closes it; 1 doesn't).
 * Keep the window idle at 0% CPU: `Shell::draw` returns true only while something animates. Measure after a
   change (a stuck focus request once kept it drawing at 8%).
 * When measuring window sizes from a script, make the script per-monitor DPI aware

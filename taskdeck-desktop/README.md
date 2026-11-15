@@ -13,8 +13,37 @@ Manager. Pins, history, drafts (what you typed and haven't finished) and the pal
 between runs. Background tasks (an upload to Google Drive after Parse executable) show their progress on the
 job's screen and on Home, with Cancel and Retry, and go into History when they end. Closing the window while
 a job or task runs can keep TaskDeck running in the notification area (the tray) until it's done. Google Drive is connected in Settings > Accounts, with the phone's sign-in (a code
-entered at google.com/device). Extract archive is the first job in C++ (on 7-Zip, below). Not yet: Send to
-Devices, releases (docs/PLAN.md).
+entered at google.com/device). Extract archive is the first job in C++ (on 7-Zip, below). Releases come as
+a zip with Python included, and TaskDeck updates itself (below). Not yet: Send to Devices (docs/PLAN.md).
+
+## Install
+
+Download `TaskDeck-windows-x64.zip` from the
+[taskdeck-desktop-latest release](https://github.com/jbalcomb/ScratchPatch/releases/tag/taskdeck-desktop-latest),
+unzip it into a folder you can write to (`%LOCALAPPDATA%\Programs\TaskDeck`, say; not Program Files) and run
+`TaskDeck.exe`. Nothing else to install: Python comes with it. The exe isn't signed, so Windows SmartScreen may
+warn the first time ("More info", "Run anyway").
+
+The zip holds `TaskDeck.exe`, `7z.dll`, the job host (`python\`), the phone app's jobs (`jobs\`), Python 3.14
+(`python-runtime\`, python.org's embeddable package, with `rsa` and `pyasn1` for Google service accounts) and
+the licences (`LICENSES\`). About 16 MB zipped.
+
+**Updates** (decision 5): a few seconds after start TaskDeck reads the release's manifest
+(`taskdeck-desktop-manifest.json`: build number, SHA-256, size). When there's a newer build, a banner offers
+it (Update, What's new, Later; also Settings > App updates, where the check at start can be turned off).
+Update downloads the zip into `.update\` in TaskDeck's folder, checks its SHA-256 and unpacks it there;
+"Restart TaskDeck to update" (once nothing runs) stops the jobs, moves the files it replaces into `.old\`,
+moves the new ones in, and starts the new TaskDeck. If a file can't be moved (open in another program), what
+was moved is put back, TaskDeck says why and starts again on the old version, still offering the update. The
+next start removes `.old\`. Pins, history, settings and keys aren't in that folder, so they stay. Downloads
+are HTTPS from github.com; anyone who can push to the `taskdeck-desktop` branch can change what installed
+copies run (the same trust as the phone's live updates, `../taskdeck/docs/UPDATES.md`).
+
+The release workflow (`.github/workflows/taskdeck-desktop-release.yml`) runs on every push to the
+`taskdeck-desktop` branch that changes this folder or the phone's jobs: tests, a build numbered with the run
+number (shown as version `0.1.<build>`), `tools/package.ps1` (which also checks that every job loads in the
+bundled Python), then the zip and the manifest are uploaded. A build from source is build 0: it uses Python
+from PATH and the source tree's jobs, and never offers updates.
 
 ## What's kept, and where
 
@@ -75,14 +104,16 @@ Cancel, the tray, History, and "Open folder" when done. The destination is a new
 unless one is chosen. 7-Zip is GNU LGPL with the unRAR restriction (the RAR code may not be used to create RAR
 archives): https://www.7-zip.org/license.txt.
 
-This needs **Python 3.10 or newer** (python.org; `python.exe` on PATH, or the `py` launcher). The app finds
-the host script and the jobs in the source tree it was built from; override with environment variables:
+A release brings its own Python (above). A build from source needs **Python 3.10 or newer** (python.org;
+`python.exe` on PATH, or the `py` launcher) and finds the host script and the jobs in the source tree it was
+built from. Environment variables override either:
 
-| Variable | Default |
-|---|---|
-| `TASKDECK_PYTHON` | `python.exe` on PATH (not the Microsoft Store stub), else `py -3` |
-| `TASKDECK_DESKTOP_DIR` | this folder (holds `python/taskdeck_host.py`) |
-| `TASKDECK_SRC` | `../taskdeck/src` (holds the `taskdeck` package) |
+| Variable | Release | Built from source |
+|---|---|---|
+| `TASKDECK_PYTHON` | `python-runtime\python.exe` | `python.exe` on PATH (not the Microsoft Store stub), else `py -3` |
+| `TASKDECK_DESKTOP_DIR` | the exe's folder | this folder (holds `python/taskdeck_host.py`) |
+| `TASKDECK_SRC` | `jobs\` | `../taskdeck/src` (holds the `taskdeck` package) |
+| `TASKDECK_UPDATE_URL` | the release's download folder | (no updates) |
 
 Tests for the host (they also start it against the real jobs):
 
@@ -111,6 +142,10 @@ build\Release\TaskDeck.exe
 
 `TaskDeck.exe --continuous` draws every frame instead of only after input (for frame-time measurements).
 
+A release folder from a build: `pwsh tools/package.ps1 -Build 1` (writes `dist\TaskDeck\`, the zip and the
+manifest; `-DTASKDECK_BUILD=1` at configure time gives the exe the same number). The icon is drawn by
+`python tools/make_icon.py` (writes `assets/taskdeck.ico`).
+
 ## Build (Linux, cross-compile check)
 
 ```bash
@@ -120,7 +155,8 @@ cmake --build build-mingw    # -> build-mingw/TaskDeck.exe
 ```
 
 GitHub Actions builds it with MSVC on every push that changes this folder
-(`.github/workflows/taskdeck-desktop-ci.yml`) and keeps `TaskDeck.exe` as a download on the run.
+(`.github/workflows/taskdeck-desktop-ci.yml`) and keeps `TaskDeck.exe` as a download on the run; the release
+workflow (above) publishes from the `taskdeck-desktop` branch.
 
 ## Layout
 
@@ -137,6 +173,12 @@ src/commands.*        the palette's matching and ranking (ported from the phone 
 tests/core_tests.cpp  tests for those three
 python/taskdeck_host.py   runs the phone app's jobs for the app; python/tests/ its tests
 src/perf.*            first-frame time, frame time, CPU, memory: the numbers to compare against WinUI 3
+src/tray.*            the notification-area icon
+src/native_jobs.*, src/extract_job.*, src/sevenzip.*   Extract archive in C++ on 7-Zip (cmake/build-7z.cmd)
+src/updater.*         the update check, download and install; where a release keeps its parts
+src/taskdeck.rc.in    the icon and version info (assets/taskdeck.ico, drawn by tools/make_icon.py)
+tools/package.ps1     the release folder and zip (with Python's embeddable package), and its manifest
+python/requirements-release.txt   what the jobs need beyond Python's standard library, for releases
 docs/PLAN.md          the plan, the open decisions, and how the two builds will be compared
 CLAUDE.md             briefing for Claude Code sessions working here
 ```

@@ -1,5 +1,7 @@
 #include "job_host.h"
 
+#include "updater.h"
+
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -27,11 +29,16 @@ std::wstring env(const wchar_t* name) {
     return (n > 0 && n < 32768) ? std::wstring(buf, n) : std::wstring();
 }
 
-// The Python interpreter: TASKDECK_PYTHON, else python.exe on PATH (not the Microsoft Store stub, which only
-// opens the Store), else the py launcher.
+// The Python interpreter: TASKDECK_PYTHON, else the one a release comes with (python-runtime, next to the exe),
+// else python.exe on PATH (not the Microsoft Store stub, which only opens the Store), else the py launcher.
 bool find_python(std::wstring& exe, std::wstring& args) {
     exe = env(L"TASKDECK_PYTHON");
     if (!exe.empty()) return fs::exists(exe);
+    const fs::path bundled = install::dir() / L"python-runtime" / L"python.exe";
+    if (install::packaged() && fs::exists(bundled)) {
+        exe = bundled.wstring();
+        return true;
+    }
     wchar_t found[MAX_PATH];
     if (::SearchPathW(nullptr, L"python.exe", nullptr, MAX_PATH, found, nullptr) &&
         std::wstring(found).find(L"\\WindowsApps\\") == std::wstring::npos) {
@@ -60,13 +67,16 @@ bool JobHost::start(HWND notify, std::string& error) {
         error = "Python wasn't found. Install Python 3.10 or newer (python.org) or set TASKDECK_PYTHON to python.exe.";
         return false;
     }
-    // The host script and the phone app's job sources: TASKDECK_DESKTOP_DIR and TASKDECK_SRC override the
-    // folders of the source tree this exe was built from. (Shipping them with the exe comes with releases.)
+    // The host script and the phone app's job sources: in a release, python\ and jobs\ next to the exe; else
+    // the source tree this exe was built from. TASKDECK_DESKTOP_DIR and TASKDECK_SRC override either.
+    const bool packaged = install::packaged();
     std::wstring desktop_dir = env(L"TASKDECK_DESKTOP_DIR");
-    if (desktop_dir.empty()) desktop_dir = from_utf8(TASKDECK_DEV_DIR);
+    if (desktop_dir.empty()) desktop_dir = packaged ? install::dir().wstring() : from_utf8(TASKDECK_DEV_DIR);
     const fs::path script = fs::path(desktop_dir) / L"python" / L"taskdeck_host.py";
     std::wstring src = env(L"TASKDECK_SRC");
-    const fs::path src_dir = src.empty() ? (fs::path(desktop_dir) / L".." / L"taskdeck" / L"src").lexically_normal() : fs::path(src);
+    const fs::path src_dir = !src.empty() ? fs::path(src)
+                             : packaged   ? install::dir() / L"jobs"
+                                          : (fs::path(desktop_dir) / L".." / L"taskdeck" / L"src").lexically_normal();
     if (!fs::exists(script)) {
         error = "The job host script is missing: " + to_utf8(script.wstring());
         return false;

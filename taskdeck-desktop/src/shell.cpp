@@ -1,6 +1,7 @@
 #include "shell.h"
 
 #include "credentials.h"
+#include "extract_job.h"  // human_size
 #include "file_dialog.h"
 #include "imgui.h"
 #include "imgui_stdlib.h"
@@ -223,6 +224,8 @@ void Shell::start(HWND hwnd) {
         store_.set("pinned", pins);
     }
     start_host();
+    if (install::build() > 0 && install::packaged() && update_checks())
+        updater_.check(hwnd_, 4000);  // after the window and the jobs are up
 }
 
 void Shell::start_host() {
@@ -411,6 +414,86 @@ Shell::CloseAction Shell::take_close_action() {
     const CloseAction a = close_action_;
     close_action_ = CloseAction::None;
     return a;
+}
+
+// ---- updates (updater.h) -----------------------------------------------------------------------------------
+
+bool Shell::take_restart_for_update() {
+    const bool r = restart_for_update_;
+    restart_for_update_ = false;
+    return r;
+}
+
+bool Shell::update_checks() const {
+    const json& v = store_.get("desktop_check_updates");
+    return !v.is_boolean() || v.get<bool>();
+}
+
+// What the updater is doing, with its buttons: in the banner and in Settings.
+void Shell::draw_update_status() {
+    const Updater::Status u = updater_.status();
+    using S = Updater::State;
+    switch (u.state) {
+        case S::Idle: break;
+        case S::Checking: ImGui::TextDisabled("Checking for updates..."); break;
+        case S::UpToDate: hint("TaskDeck is up to date (checked at " + u.checked_at + ")."); break;
+        case S::Available:
+            ImGui::TextUnformatted(("TaskDeck " + u.latest_version + " is available" +
+                                    (u.size > 0 ? " (" + extract::human_size(static_cast<double>(u.size)) + ")." : "."))
+                                       .c_str());
+            if (ImGui::Button("Update")) updater_.download(hwnd_);
+            ImGui::SameLine();
+            if (ImGui::Button("What's new")) open_url(install::release_page());
+            break;
+        case S::Downloading: {
+            const float f = u.size > 0 ? static_cast<float>(static_cast<double>(u.done) / static_cast<double>(u.size)) : 0.0f;
+            ImGui::TextUnformatted(("Downloading TaskDeck " + u.latest_version + "...").c_str());
+            const std::string over = extract::human_size(static_cast<double>(u.done)) +
+                                     (u.size > 0 ? " of " + extract::human_size(static_cast<double>(u.size)) : "");
+            ImGui::ProgressBar(f, ImVec2(320 * dpi(), 0), over.c_str());
+            break;
+        }
+        case S::Ready: {
+            ImGui::TextColored(kOk, "TaskDeck %s is ready.", u.latest_version.c_str());
+            const size_t running = activities().size();
+            ImGui::BeginDisabled(running > 0);
+            if (ImGui::Button("Restart TaskDeck to update")) restart_for_update_ = true;
+            ImGui::EndDisabled();
+            if (running > 0)
+                hint(running == 1 ? "A job or task is still running: restart when it's done (or cancel it)."
+                                  : "Jobs or tasks are still running: restart when they're done (or cancel them).");
+            else
+                hint("TaskDeck closes and opens again on the new version, in a few seconds. Pins, history and settings stay.");
+            break;
+        }
+        case S::Failed:
+            wrapped(kError, (u.failed_download ? "The update failed: " : "Couldn't check for updates: ") + u.error);
+            if (u.failed_download) {  // (a failed check: Settings has Check for updates)
+                if (ImGui::Button("Try again")) updater_.download(hwnd_);
+                ImGui::SameLine();
+                if (ImGui::Button("Open the release page")) open_url(install::release_page());
+            }
+            break;
+    }
+}
+
+// At the top of every page while an update is on offer, until Later.
+void Shell::draw_update_banner() {
+    using S = Updater::State;
+    const Updater::Status u = updater_.status();
+    const bool offered = u.state == S::Available || u.state == S::Downloading || u.state == S::Ready ||
+                         (u.state == S::Failed && u.failed_download);
+    if (!offered || update_banner_hidden_ || tab_ == Tab::Settings) return;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.16f, 0.22f, 0.36f, 1.0f));
+    ImGui::BeginChild("update", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+    draw_update_status();
+    if (u.state != S::Downloading) {
+        if (u.state != S::Ready) ImGui::SameLine();
+        if (ImGui::SmallButton("Later")) update_banner_hidden_ = true;
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
 }
 
 void Shell::draw_close_notice() {
@@ -1045,6 +1128,7 @@ bool Shell::draw(const PerfSnapshot& perf) {
     ImGui::SameLine();
 
     ImGui::BeginChild("page");
+    draw_update_banner();
     const JobSpec* settings_job = settings_job_id_.empty() ? nullptr : find_job(settings_job_id_);
     const JobSpec* job = open_job_id_.empty() ? nullptr : find_job(open_job_id_);
     if (google_.setup_open) draw_google_setup();
@@ -1326,6 +1410,23 @@ void Shell::draw_settings(const PerfSnapshot& perf) {
     for (const auto& [name, error] : load_errors_) ImGui::TextColored(kWarn, "Not loaded: %s: %s", name.c_str(), error.c_str());
     ImGui::TextDisabled("Log: %s", to_utf8(host_.log_path()).c_str());
     if (ImGui::Button("Restart the job host")) start_host();
+
+    ImGui::SeparatorText("App updates");
+    if (install::build() > 0 && install::packaged()) {
+        ImGui::Text("Version:       TaskDeck %s", install::version().c_str());
+        bool checks = update_checks();
+        if (ImGui::Checkbox("Check for updates when TaskDeck starts", &checks)) store_.set("desktop_check_updates", checks);
+        const auto st = updater_.status().state;
+        if (st == Updater::State::Idle || st == Updater::State::UpToDate ||
+            (st == Updater::State::Failed && !updater_.status().failed_download)) {
+            if (ImGui::Button("Check for updates")) updater_.check(hwnd_);
+            ImGui::SameLine();
+        }
+        draw_update_status();
+    } else {
+        hint("Built from source: this TaskDeck doesn't update itself. Releases, which do, are at " +
+             install::release_page());
+    }
 
     ImGui::SeparatorText("Your data");
     hint("Pins, history, drafts and settings: " + to_utf8(store_.path().wstring()));

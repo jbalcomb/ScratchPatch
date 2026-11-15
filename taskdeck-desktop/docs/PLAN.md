@@ -90,6 +90,16 @@ The questions as they were asked:
    finished), idle CPU 0.00%. Found and fixed on the way: a tar made with `tar -C folder .` holds a `./`
    entry, which the phone's path check also counts as unsafe (the phone's code is unchanged). Parse executable
    already runs from the phone's job. Send to Devices waits for CrossMess to reach `main`.
+   **Releases and updates (decision 5, done 2026-11-14):** `.github/workflows/taskdeck-desktop-release.yml`
+   publishes a zip (the exe, `7z.dll`, the job host, the phone's jobs, Python 3.14's embeddable package, the
+   licences; about 16 MB) and a manifest to the `taskdeck-desktop-latest` release from the `taskdeck-desktop`
+   branch; the app checks the manifest at start, downloads and checks the zip, and swaps its files on Restart
+   (`src/updater.*`, README "Install"). Python is bundled (the decision left it open: a plain exe shouldn't need
+   an install). An icon (`assets/taskdeck.ico`) for the window, taskbar and tray. Checked on Windows with two
+   local builds (0.1.1 updating to 0.1.2 from a local web server): the banner, Update, Restart (the new version
+   started from the same folder, `.old` removed, the job host on the bundled Python, 20 jobs); a file held open
+   in `jobs\` (the install rolled back, said why, restarted on 0.1.1 still offering the update; Restart again
+   then worked); a wrong checksum; no server. Not yet checked: an update from the real GitHub release.
 5. **Measure** (below), then the **WinUI 3 build** of the same features, then measure that.
 
 ## Measuring (Dear ImGui vs WinUI 3)
