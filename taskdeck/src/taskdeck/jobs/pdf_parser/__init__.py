@@ -4,13 +4,11 @@ See docs/jobs/pdf_parser.md."""
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
-from typing import Any
 
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
-from taskdeck.shared import http, tailscale
+from taskdeck.shared import service
 
 DEFAULT_URL = "https://pdf-parser.tailc54221.ts.net"  # the Tailscale Service "pdf-parser" on the AI Workstation
 MAX_MB = 200
@@ -19,40 +17,14 @@ POLL_SECONDS = 3
 WAIT_SECONDS = 20 * 60  # then the result says it's still parsing and links the job page
 
 
-def base_url(settings: dict[str, Any]) -> str:
-    return str(settings.get("service_url") or "").strip().rstrip("/")
-
-
-def _error(exc: http.HttpError, url: str) -> str:
-    if exc.status is None:
-        why = tailscale.why_unreachable(url)
-        return f"Can't reach the PDF parser service: {why}." if why else str(exc)
-    try:
-        error = json.loads(exc.body).get("error")
-    except (ValueError, AttributeError):
-        error = None
-    return str(error) if error else f"the PDF parser service answered: {exc}"
-
-
-def call(settings: dict[str, Any], method: str, path: str, *, files=(), timeout: float = 30) -> dict[str, Any]:
-    url = base_url(settings) + path
-    try:
-        data = (http.post_multipart(url, [], list(files), timeout=timeout) if files
-                else http.request(method, url, timeout=timeout))
-    except http.HttpError as exc:
-        raise StepError(_error(exc, url)) from None
-    if not isinstance(data, dict):
-        raise StepError(f"{base_url(settings)} didn't answer like the PDF parser service. Check the service URL.")
-    return data
+SERVICE = service.Service("PDF parser service", DEFAULT_URL)
+base_url = SERVICE.base_url
+call = SERVICE.call
 
 
 @step(Stage.VALIDATE, name="check service URL")
 def service_configured(ctx):
-    url = base_url(ctx.settings)
-    if not url:
-        raise StepError("Set the PDF parser service URL in this job's settings (the tune icon at the top).")
-    if not url.startswith(("http://", "https://")):
-        raise StepError(f"the PDF parser service URL must start with https:// (e.g. {DEFAULT_URL}).")
+    SERVICE.check_url(ctx.settings)
 
 
 @step(Stage.VALIDATE)
@@ -83,10 +55,7 @@ def wait_for_parsing(ctx):
     job = ctx["job"]
     deadline = time.monotonic() + WAIT_SECONDS
     while job.get("status") in ("queued", "running") and time.monotonic() < deadline:
-        pause_until = time.monotonic() + POLL_SECONDS
-        while time.monotonic() < pause_until:
-            ctx.check_cancelled()
-            time.sleep(0.2)
+        ctx.sleep(POLL_SECONDS)
         job = call(ctx.settings, "GET", f"/api/jobs/{job['id']}")
     ctx["job"] = job
 
@@ -159,21 +128,12 @@ class PdfParser(JobPlugin):
         return {**values, "service_url": url}
 
     def check_ready(self, settings):
-        problems = super().check_ready(settings)
-        url = base_url(settings)
-        if url and tailscale.host_of(url) in ("localhost", "127.0.0.1"):
-            problems.append(Problem("the PDF parser service URL points at the phone itself (localhost). "
-                                    "Use the workstation's Tailscale address."))
-        return problems
+        return super().check_ready(settings) + (SERVICE.url_problems(settings) if base_url(settings) else [])
 
     def check_ready_online(self, settings):
-        try:
-            health = call(settings, "GET", "/api/health", timeout=8)
-        except StepError as exc:
-            return [Problem(str(exc), fix="recheck")]
-        if health.get("ok") is not True:
-            return [Problem("the PDF parser service isn't ready (its health check failed).", fix="recheck")]
-        problems = []
+        health, problems = SERVICE.health(settings)
+        if problems:
+            return problems
         vision = health.get("vision") or {}
         if vision.get("state") == "unavailable":
             problems.append(Problem(f"The vision model isn't available ({vision.get('message') or 'no answer'}); "

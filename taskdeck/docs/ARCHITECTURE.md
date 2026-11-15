@@ -69,7 +69,11 @@ A `Pipeline` is an ordered list of `Step`s that share a `Context`:
   (one each). `Field.files(..., camera="receipt")` adds **Take photos**: TaskDeck's own camera
   (`ui/camera_capture.py`, the flet-camera plugin, so it needs an APK built with it), with receipt edge guides
   and an overlap guide; its photos stay in the app's storage (`files.camera_dir()`) until the job sends them.
-* A step that waits on something slow calls `ctx.check_cancelled()` while it waits, so Cancel stops it.
+* A step that waits on something slow calls `ctx.check_cancelled()` while it waits, so Cancel stops it; to pause
+  between polls, `ctx.sleep(seconds)` does both.
+* Jobs that call a JSON service on the AI Workstation (Photo OCR, PDF Parser) use `shared/service.py`'s `Service`:
+  the request (the service's `{"error"}` or "can't reach it: the phone isn't on Tailscale" as the job's error),
+  the checks of the service URL setting, and `GET /api/health`.
 * `Pipeline.run` reports progress per step, supports cancellation and returns a `RunReport` with
   per-step timings. The UI shows this in the Pipeline panel.
 

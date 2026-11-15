@@ -76,3 +76,20 @@ def test_step_decorator_and_default_key():
 def test_result_plain_text_aligns_rows():
     text = Result(rows=[("a", "1"), ("long", "2")], text="body").as_plain_text()
     assert text.splitlines() == ["a     1", "long  2", "body"]
+
+
+def test_sleep_waits_and_stops_when_cancelled():
+    import threading
+    import time
+
+    from taskdeck.core import Cancelled, Context
+
+    ctx = Context({})
+    started = time.monotonic()
+    ctx.sleep(0.3)
+    assert time.monotonic() - started >= 0.3
+    threading.Timer(0.1, ctx.cancel).start()
+    started = time.monotonic()
+    with pytest.raises(Cancelled):
+        ctx.sleep(30)
+    assert time.monotonic() - started < 1
