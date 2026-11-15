@@ -135,6 +135,7 @@ unfinished jobs up again.
 
 | Request | Answer |
 |---|---|
+| `GET /` | a page with the latest jobs, newest first, each with links to its files, review and .zip |
 | `GET /api/health` | `{ok, vision: {state, model, multimodal, message, requests, failures, …}, tesseract, queued}` |
 | `POST /api/jobs` | multipart, the PDF as field `pdf` (at most 200 MB) → `202 {id, file, status: "queued", url, zip}` |
 | `GET /api/jobs/<id>` | `{id, file, status: queued/running/done/failed, step ("page 3 of 12"), error, summary, url, zip}` |

@@ -489,3 +489,19 @@ def test_parse_text():
     assert vision.parse_text('{"text": " Getting Started "}') == "Getting Started"
     with pytest.raises(vision.VisionError):
         vision.parse_text('{"words": 1}')
+
+
+def test_home_page_lists_jobs_with_links(service, sample_pdf):
+    jobs, base = service
+    _, empty = get(base + "/")[1:]
+    assert b"No PDFs parsed yet" in empty
+    _, done = upload(base, "Report <1>.pdf", sample_pdf.read_bytes())
+    jobs.run_one(jobs.queue.get_nowait())
+    _, waiting = upload(base, "later.pdf", sample_pdf.read_bytes())
+    kind, page = get(base + "/")[1:]
+    page = page.decode()
+    assert kind.startswith("text/html")
+    assert page.index("later.pdf") < page.index("Report _1_.pdf")      # newest first; names made safe
+    assert "queued" in page and "2 pages · 1 tables" in page
+    assert f"/jobs/{done['id']}.zip" in page and f"/jobs/{done['id']}/review/" in page
+    assert f"/jobs/{waiting['id']}.zip" not in page                     # no links until it's done
