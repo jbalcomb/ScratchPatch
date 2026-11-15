@@ -196,3 +196,12 @@ def test_unsent_photos_are_cleared_after_a_week():
     week_ago = time.time() - 8 * 86400
     os.utime(old, (week_ago, week_ago))
     assert camera_capture.clear_old_photos() == 1 and not old.exists() and new.exists()
+
+
+def test_the_page_camera_has_no_receipt_guides():
+    screen = CameraCapture(FakeApp(), "Note photos", lambda p: None, guides="page", make_camera=FakeCamera)
+    asyncio.run(screen.start())
+    asyncio.run(screen.shoot())
+    asyncio.run(screen.shoot())
+    layers = screen.camera.content.controls
+    assert not any(isinstance(layer.content, (ft.RotatedBox, ft.Stack)) for layer in layers)  # no edges, no overlap

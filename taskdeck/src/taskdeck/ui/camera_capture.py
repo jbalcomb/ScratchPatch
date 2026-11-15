@@ -265,7 +265,7 @@ class CameraCapture:
         n = len(self.photos)
         page.show_dialog(ft.AlertDialog(
             title=ft.Text(f"Throw away {n} photo{'s' * (n != 1)}?"),
-            content=ft.Text("They haven't been sent. ✓ keeps them for the receipt instead."),
+            content=ft.Text("They haven't been sent. ✓ keeps them instead."),
             actions=[ft.TextButton("Keep taking photos", on_click=lambda e: page.pop_dialog()),
                      ft.TextButton("Throw away", on_click=discard)]))
 
@@ -319,7 +319,9 @@ class CameraCapture:
 
     def _overlap_guide(self) -> ft.Control | None:
         """The bottom of the last photo, faded, across the top of the view (none before the first photo, or
-        while retaking the first)."""
+        while retaking the first). Receipts only: the pages of a note or the parts of a board stand alone."""
+        if self.guides != "receipt":
+            return None
         last = self.photos[-1] if self.photos and self.retake_at is None else \
             (self.photos[self.retake_at - 1] if self.retake_at else None)
         if last is None:
