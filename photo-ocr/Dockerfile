@@ -4,7 +4,7 @@
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*
 ARG EXTRAS=""
-RUN pip install --no-cache-dir Pillow $EXTRAS
+RUN pip install --no-cache-dir Pillow "psycopg[binary]>=3.2,<4" $EXTRAS
 ENV PYTHONUNBUFFERED=1 PHOTO_OCR_HOME=/data PHOTO_OCR_BAKEOFF_HOME=/data/bakeoff
 WORKDIR /app
 COPY *.py engines.json ./

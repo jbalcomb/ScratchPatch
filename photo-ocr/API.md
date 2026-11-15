@@ -183,3 +183,29 @@ tax equal the total. An approval (`POST /api/receipts/{id}` with `approve`) may 
 "price"}]`, the lines removed with that button, so their errors are logged as found by it.
 
 Readings now also have `savings`, the total savings printed (or null), checked against the discount lines.
+
+## Handwritten notes and cork boards
+
+Only when `NOTES_DATABASE_URL` is set (else 400 "notes aren't set up").
+
+`POST /api/notes`: multipart, `photo` repeated (pages in order), `kind` (`handwritten`, the default, or
+`board`), `event`, `written_on` (YYYY-MM-DD; default the first photo's date, else today), `board` (required
+for a board) → 201 `{"id", "photos", "status": "pending", "url": "/notes/<id>"}`. A photo already stored → 400.
+
+`GET /api/notes?status=&q=&limit=` → `{"notes": [{id, kind, board, event, written_on, status, error, first_line,
+uncertain, photos, created_at, url}]}`; `q` is full-text search over the transcript, event and board.
+
+`GET /api/notes/{id}` → the summary plus `transcript`, `photos` `[{position, width, height, bytes, turn, url}]`
+and the last four `runs`. `GET /api/notes/{id}/runs` → every reading: engine, prompt, prompt_version, raw,
+transcript, seconds, error, and once approved words, wer, cer, uncertain, uncertain_right.
+
+`POST /api/notes/{id}` `{"transcript", "event", "board", "written_on", "approve"}` (all optional): each change
+kept as a correction; `approve` makes the transcript final and measures every reading against it.
+`POST /api/notes/{id}/reparse` reads it again. `DELETE /api/notes/{id}` removes it and its photos.
+
+`GET /api/notes/{id}/photos/{n}` the original; `?w=1200` a copy at most that wide, upright.
+`POST /api/notes/{id}/photos/{n}` `{"turn": 90}`: degrees clockwise to make the writing upright (0, 90, 180,
+270); pages and later readings use it, the original is never changed.
+
+`GET /api/notes/accuracy` → `{"by_prompt", "by_engine": {name: {readings, wer, cer, words, uncertain,
+uncertain_right}}, "worst": [...]}` over approved notes.

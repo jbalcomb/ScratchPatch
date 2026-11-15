@@ -417,7 +417,8 @@ def test_api_receipt_flow(api):
     assert r["status"] == "approved" and r["total"] == 720
     status, s = api("GET", "/api/summary")
     assert s["approved"] == 1 and s["review"] == 0
-    assert api("GET", "/api/health")[1] == {"ok": True, "immich": None, "engines": ["vl-a"], "product_engines": ["vl-a"], "version": 1}
+    assert api("GET", "/api/health")[1] == {"ok": True, "immich": None, "engines": ["vl-a"], "product_engines": ["vl-a"],
+                                                 "notes": None, "version": 1}
 
 
 def test_api_errors(api):

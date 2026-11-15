@@ -56,7 +56,7 @@ td.num, th.num { text-align:right; }
 """
 
 NAV = [("", "Home"), ("capture", "Capture"), ("review", "Review"), ("items", "Items"), ("products", "Products"),
-       ("shopping", "Shopping"), ("reconcile", "Reconcile"), ("picker", "Google Photos")]
+       ("shopping", "Shopping"), ("reconcile", "Reconcile"), ("picker", "Google Photos"), ("notes", "Notes")]
 
 COMMON_JS = r"""
 const $ = s => document.querySelector(s);
@@ -515,6 +515,9 @@ load().catch(e => say(e.message, true));
 
 
 BODIES["stats"] = ("Stats", """
+<h1>Handwriting</h1>
+<p class="muted">How far each reading of a note was from the transcript you approved.</p>
+<div id="hand"></div>
 <h1>Reading errors</h1>
 <p class="muted">What the model got wrong, from its own reading compared with the receipt as you approved it.
 Receipts approved automatically aren't counted: nobody checked them.</p>
@@ -535,6 +538,17 @@ function errorTable(title, groups, cats) {
     + Object.entries(groups).map(([k, g]) => `<tr><td>${esc(k)}</td><td class="num">${g.readings}</td><td class="num">${g.with_errors}</td>`
       + used.map(c => `<td class="num">${g.categories[c] || ''}</td>`).join('') + '</tr>').join('') + '</table></div>';
 }
+api('/api/notes/accuracy').then(a => {
+  const rows = (title, g) => `<h2>${title}</h2><table><tr><th></th><th class="num">readings</th><th class="num">words</th>
+    <th class="num">words wrong</th><th class="num">characters wrong</th><th class="num">unsure marks</th><th class="num">right anyway</th></tr>`
+    + Object.entries(g).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v.readings}</td><td class="num">${v.words}</td>
+      <td class="num">${Math.round(v.wer * 100)}%</td><td class="num">${Math.round(v.cer * 100)}%</td><td class="num">${v.uncertain}</td>
+      <td class="num">${v.uncertain_right}</td></tr>`).join('') + '</table>';
+  $('#hand').innerHTML = Object.keys(a.by_prompt).length ? rows('By prompt version', a.by_prompt) + rows('By engine', a.by_engine)
+    + '<h2>Hardest notes</h2><ul class="checks">' + a.worst.map(w => `<li><a href="${w.url}">#${w.note_id}</a> ${Math.round(w.wer * 100)}% of words wrong
+      <span class="muted">(${esc(w.engine)}, prompt ${esc(w.prompt_version || '?')})</span></li>`).join('') + '</ul>'
+    : '<p class="muted">No note approved yet.</p>';
+}).catch(err => $('#hand').innerHTML = `<p class="muted">${esc(err.message)}</p>`);
 api('/api/errors').then(e => {
   if (!Object.keys(e.by_prompt).length) return $('#errors').innerHTML = '<p class="muted">No receipt approved by hand yet.</p>';
   $('#errors').innerHTML = errorTable('By prompt version', e.by_prompt, e.categories) + errorTable('By engine', e.by_engine, e.categories)
@@ -554,6 +568,114 @@ api('/api/stats').then(s => {
     s.slowest.map(r => `<tr><td>${esc(r.request)}</td><td class="num">${ms(r.ms)}</td><td class="muted">${esc(r.parts)}</td></tr>`).join('') + '</table>';
   $('#body').innerHTML = h;
 }).catch(e => $('#body').textContent = e.message);
+</script>""")
+
+
+BODIES["notes"] = ("Notes", """
+<h1>Notes</h1>
+<p class="muted">Handwritten notes and cork boards, sent from TaskDeck. Check each reading against the photo and approve it.</p>
+<div class="row"><select id="filter" style="width:auto">
+  <option value="read">To check</option><option value="pending">Being read</option><option value="failed">Failed</option>
+  <option value="approved">Approved</option><option value="">All</option>
+</select><input id="q" placeholder="Search the text" style="flex:1"></div>
+<div id="msg" class="msg"></div>
+<div id="list" style="margin-top:12px"></div>
+<script>
+async function load() {
+  const p = new URLSearchParams({limit: 100});
+  if ($('#filter').value) p.set('status', $('#filter').value);
+  if ($('#q').value.trim()) p.set('q', $('#q').value.trim());
+  const r = await api('/api/notes?' + p);
+  $('#list').innerHTML = r.notes.map(n => `<a class="card" href="${n.url}"><div class="row">
+    <span class="grow"><b>${esc(n.first_line || (n.kind === 'board' ? 'Cork board' : 'Note') + ' ' + n.id)}</b><br>
+    <span class="muted">${n.kind === 'board' ? 'board ' + esc(n.board) : 'note'} · ${esc(n.written_on || '')}${n.event ? ' · ' + esc(n.event) : ''}
+      · ${n.photos} photo(s)${n.uncertain ? ' · ' + n.uncertain + ' unsure' : ''}</span></span>
+    <span class="tag ${n.status === 'approved' ? 'approved' : ''}">${esc(n.status)}</span></div></a>`).join('')
+    || '<p class="muted">Nothing here.</p>';
+}
+$('#filter').onchange = load;
+let t; $('#q').oninput = () => { clearTimeout(t); t = setTimeout(load, 300); };
+load().catch(e => say(e.message, true));
+</script>""")
+
+BODIES["notes/"] = ("Note", r"""
+<div class="split">
+  <div class="photos" id="photos"></div>
+  <div>
+    <div class="row"><h1 class="grow" id="title">Note</h1><span id="status"></span></div>
+    <div id="msg" class="msg"></div>
+    <div id="form"></div>
+  </div>
+</div>
+<script>
+const id = Number(location.pathname.split('/').pop());
+let n;
+const marked = text => esc(text).replace(/\[([^\[\]\n]+?)\?\]/g, '<mark title="the model wasn\'t sure">$1?</mark>');
+async function load() {
+  n = await api('/api/notes/' + id);
+  $('#title').textContent = (n.kind === 'board' ? 'Cork board ' + (n.board || '') : 'Note ' + id);
+  $('#status').innerHTML = `<span class="tag ${n.status === 'approved' ? 'approved' : ''}">${esc(n.status)}</span>`;
+  $('#photos').innerHTML = n.photos.map(p => `<div><a href="${p.url}" target="_blank"><img src="${p.url}?w=1200&t=${p.turn}" alt="photo ${p.position}" decoding="async"></a>
+    <div class="row" style="margin:-4px 0 10px"><span class="muted grow">photo ${p.position} of ${n.photos.length}</span>
+    <button class="turn" data-p="${p.position}" data-t="${p.turn}" title="Turn so the writing is upright; the next reading gets it upright">Turn ↻</button></div></div>`).join('');
+  const last = n.runs[0];
+  $('#form').innerHTML = (last ? `<p class="muted">Read ${esc(last.created_at.replace('T', ' '))} by ${esc(last.engine)} in ${last.seconds ?? '?'} s
+      · prompt ${esc(last.prompt_version || '?')}${last.wer != null ? ` · ${Math.round(last.wer * 100)}% of words were wrong` : ''}</p>` : '')
+    + (n.status === 'pending' ? '<p class="msg">Reading… this page updates when it is done.</p>' : '')
+    + (n.error ? `<p class="msg bad">${esc(n.error)}</p>` : '')
+    + `<div class="row"><div class="grow"><label for="f_written">Written on</label><input id="f_written" type="date" value="${esc(n.written_on || '')}"></div>
+       <div class="grow"><label for="f_event">${n.kind === 'board' ? 'Board' : 'Event'}</label>
+       <input id="f_event" value="${esc(n.kind === 'board' ? n.board : n.event)}" placeholder="${n.kind === 'board' ? 'which board' : 'where, if anywhere'}"></div></div>
+      <label for="f_text">Transcript <span class="muted">(Markdown; [word?] is a word the model wasn't sure of: fix it and drop the brackets)</span></label>
+      <textarea id="f_text" rows="16" style="font-family:ui-monospace,monospace">${esc(n.transcript || '')}</textarea>
+      <p class="muted" id="unsure"></p>
+      <div class="card" id="preview" style="white-space:pre-wrap"></div>
+      <div class="row" style="margin-top:14px"><button class="primary" id="approve">Approve</button><button id="save">Save</button>
+        <button id="reparse">Read again</button><button class="danger" id="del">Delete</button></div>
+      <h2>Readings</h2><div id="runs"><button id="showruns">Show every reading, with the prompt and the model's reply</button></div>`;
+  const preview = () => { const v = $('#f_text').value, k = (v.match(/\[[^\[\]\n]+?\?\]/g) || []).length;
+    $('#preview').innerHTML = marked(v); $('#unsure').textContent = k ? k + ' word(s) the model wasn\'t sure of, highlighted below.' : ''; };
+  $('#f_text').oninput = preview; preview();
+  document.querySelectorAll('.turn').forEach(b => b.onclick = async () => {
+    await api(`/api/notes/${id}/photos/${b.dataset.p}`, {json: {turn: (Number(b.dataset.t) + 90) % 360}});
+    await load(); say('Turned. Read again to have the model read it upright.');
+  });
+  $('#save').onclick = () => send(false);
+  $('#approve').onclick = () => send(true);
+  $('#reparse').onclick = readAgain;
+  $('#del').onclick = async () => { if (!confirm('Delete this note and its photos?')) return;
+    await api('/api/notes/' + id, {method: 'DELETE'}); location.href = '/notes'; };
+  $('#showruns').onclick = showRuns;
+  if (n.status === 'pending') setTimeout(waitForReading, 3000);
+}
+async function send(approve) {
+  const body = {transcript: $('#f_text').value, written_on: $('#f_written').value || null, approve};
+  body[n.kind === 'board' ? 'board' : 'event'] = $('#f_event').value;
+  try {
+    await api('/api/notes/' + id, {json: body});
+    if (approve) { const next = (await api('/api/notes?status=read&limit=1')).notes[0];
+      location.href = next ? next.url : '/notes'; }
+    else { await load(); say('Saved.'); }
+  } catch (e) { say(e.message, true); }
+}
+async function readAgain() {
+  try { await api(`/api/notes/${id}/reparse`, {method: 'POST'}); say('Reading again…'); setTimeout(waitForReading, 3000); }
+  catch (e) { say(e.message, true); }
+}
+let waited = 0;
+async function waitForReading() {
+  const now = await api('/api/notes/' + id);
+  if (now.status === 'pending' && (waited += 3) < 600) return setTimeout(waitForReading, 3000);
+  waited = 0; await load(); say(now.status === 'pending' ? 'Still waiting for the model; check back later.' : 'Read again.');
+}
+async function showRuns() {
+  const runs = (await api(`/api/notes/${id}/runs`)).runs;
+  $('#runs').innerHTML = runs.map(r => `<details class="card"><summary>${esc(r.created_at.replace('T', ' '))} · ${esc(r.engine)}
+    · prompt ${esc(r.prompt_version || '?')} · ${r.seconds ?? '?'} s${r.wer != null ? ` · words wrong ${Math.round(r.wer * 100)}%, characters ${Math.round(r.cer * 100)}%` : ''}${r.error ? ' · ' + esc(r.error) : ''}</summary>
+    <h3>Reply</h3><pre style="white-space:pre-wrap">${esc(r.raw || '')}</pre>
+    <h3>Prompt</h3><pre style="white-space:pre-wrap">${esc(r.prompt || '')}</pre></details>`).join('') || '<p class="muted">No readings yet.</p>';
+}
+load().catch(e => say(e.message, true));
 </script>""")
 
 
