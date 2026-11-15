@@ -70,7 +70,9 @@ A `Pipeline` is an ordered list of `Step`s that share a `Context`:
   (`ui/camera_capture.py`, the flet-camera plugin, so it needs an APK built with it), with receipt edge guides
   and an overlap guide; its photos stay in the app's storage (`files.camera_dir()`) until the job sends them.
 * A step that waits on something slow calls `ctx.check_cancelled()` while it waits, so Cancel stops it; to pause
-  between polls, `ctx.sleep(seconds)` does both.
+  between polls, `ctx.sleep(seconds)` does both. `ctx.status(text, done, total)` says what it's doing ("Workstation:
+  page 12 of 154"): the job screen shows it under the progress bar, and with `done`/`total` the bar moves within
+  the step (PDF Parser passes on the service's `step`, `page` and `pages` this way).
 * Jobs that call a JSON service on the AI Workstation (Photo OCR, PDF Parser) use `shared/service.py`'s `Service`:
   the request (the service's `{"error"}` or "can't reach it: the phone isn't on Tailscale" as the job's error),
   the checks of the service URL setting, and `GET /api/health`.

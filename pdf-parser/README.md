@@ -137,7 +137,7 @@ unfinished jobs up again.
 |---|---|
 | `GET /api/health` | `{ok, vision: {state, model, multimodal, message, requests, failures, …}, tesseract, queued}` |
 | `POST /api/jobs` | multipart, the PDF as field `pdf` (at most 200 MB) → `202 {id, file, status: "queued", url, zip}` |
-| `GET /api/jobs/<id>` | `{id, file, status: queued/running/done/failed, step ("page 3 of 12"), error, summary, url, zip}` |
+| `GET /api/jobs/<id>` | `{id, file, status: queued/running/done/failed, step ("page 3 of 12", "page 3 of 12: OCR", "page 3 of 12: vision model, image check (5)"), page, pages, error, summary, url, zip}` |
 | `GET /api/jobs` | the latest 50 jobs |
 | `GET /jobs/<id>/` | a page listing the bundle's files, with links; `/jobs/<id>/<path>` is one file |
 | `GET /jobs/<id>.zip` | the whole bundle |

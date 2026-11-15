@@ -97,7 +97,8 @@ class Jobs:
         folder = self.root / job_id
         folder.mkdir()
         (folder / name).write_bytes(data)
-        status = self._write(folder, id=job_id, file=name, status="queued", step=None, error=None, summary=None,
+        status = self._write(folder, id=job_id, file=name, status="queued", step=None, page=None, pages=None,
+                             error=None, summary=None,
                              created=now(), started=None, finished=None, url=f"/jobs/{job_id}/",
                              zip=f"/jobs/{job_id}.zip")
         self.queue.put(job_id)
@@ -121,7 +122,8 @@ class Jobs:
         out = folder / "out"
         try:
             manifest = parse_pdf.parse(folder / st["file"], out, self.vision,
-                                       progress=lambda msg: self._write(folder, step=msg))
+                                       progress=lambda msg, page=None, pages=None:
+                                       self._write(folder, step=msg, page=page, pages=pages))
             bundle = out / Path(st["file"]).stem
             shutil.make_archive(str(folder / "bundle"), "zip", bundle.parent, bundle.name)
             self._write(folder, status="done", step=None, finished=now(), summary=manifest["summary"])

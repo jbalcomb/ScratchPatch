@@ -209,6 +209,28 @@ void wrapped(const ImVec4& color, const std::string& text) {
 }
 
 void hint(const std::string& text) { wrapped(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), text); }
+
+// A throbber: a turning arc the height of a line of text, so a run that waits (on a service, say) visibly isn't
+// stuck. The caller asks for redraws while it shows (Shell::redraw_after_ms).
+void throbber(ImU32 color) {
+    const float size = ImGui::GetTextLineHeight();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(size, size));
+    const ImVec2 centre(at.x + size * 0.5f, at.y + size * 0.5f);
+    const float radius = size * 0.38f, start = static_cast<float>(ImGui::GetTime() * 6.0);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->PathArcTo(centre, radius, start, start + 4.2f, 24);
+    draw->PathStroke(color, 0, std::max(1.5f, size * 0.12f));
+}
+
+// 0:07, 1:42, 1:02:05
+std::string elapsed(double seconds) {
+    const long long s = static_cast<long long>(seconds);
+    char text[32];
+    if (s >= 3600) std::snprintf(text, sizeof(text), "%lld:%02lld:%02lld", s / 3600, s / 60 % 60, s % 60);
+    else std::snprintf(text, sizeof(text), "%lld:%02lld", s / 60, s % 60);
+    return text;
+}
 }  // namespace
 
 // ---- start, stop, messages from the job host -------------------------------------------------------------
@@ -674,12 +696,22 @@ void Shell::on_message(const json& msg) {
             tasks_.erase(google_.retry_task);
             google_.retry_task = 0;
         }
+    } else if (event == "status") {
+        auto it = runs_.find(msg.value("run", 0));
+        if (it == runs_.end() || it->second.done) return;
+        it->second.status = str(msg, "text");
+        it->second.status_fraction = msg.contains("fraction") && msg["fraction"].is_number() ? msg["fraction"].get<double>() : -1;
     } else if (event == "progress" || event == "done" || event == "committed") {
         auto it = runs_.find(msg.value("run", 0));
         if (it == runs_.end()) return;
         RunState& run = it->second;
         const JobSpec* job = find_job(run.job_id);
         if (event == "progress") {
+            if (msg.value("step", 0) != run.step || str(msg, "name") != run.step_name) {
+                run.step_began = ImGui::GetTime();
+                run.status.clear();  // a new step: what the last one said no longer applies
+                run.status_fraction = -1;
+            }
             run.step = msg.value("step", 0);
             run.total = msg.value("total", 0);
             run.step_name = str(msg, "name");
@@ -866,6 +898,7 @@ void Shell::run_job(const JobSpec& job, JobForm& form) {
     run.job_title = job.title;
     run.inputs = form_inputs(job, form, true);
     run.started = now_hms();
+    run.began = run.step_began = ImGui::GetTime();
     runs_[run.id] = run;
     form.run_id = run.id;
     send({{"op", "run"}, {"run", run.id}, {"job", job.id}, {"inputs", form_inputs(job, form, false)},
@@ -1097,6 +1130,7 @@ void Shell::draw_palette() {
 
 bool Shell::draw(const PerfSnapshot& perf) {
     ImGuiIO& io = ImGui::GetIO();
+    redraw_ms_ = 0;
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_K)) {
         palette_open_ = !palette_open_;
         palette_focus_ = palette_open_;
@@ -1790,10 +1824,21 @@ bool Shell::draw_field(const std::string& owner, FormValues& form, const FieldSp
 void Shell::draw_run(const JobSpec& job, RunState& run) {
     ImGui::PushID(run.id);
     if (!run.done) {
-        const float fraction = run.total ? static_cast<float>(run.step) / run.total : 0.0f;
+        // The bar moves by steps, and within a step when the job says how far it is (ctx.status).
+        const double within = run.status_fraction >= 0 ? run.status_fraction : 0.0;
+        const float fraction = run.total ? static_cast<float>((run.step + within) / run.total) : 0.0f;
         char overlay[160];
         std::snprintf(overlay, sizeof(overlay), "%s (%d of %d)", run.step_name.c_str(), run.step + 1, std::max(run.total, 1));
         ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0), overlay);
+        // Still working: the throbber turns, the clock counts, and the step says what it's doing if it can.
+        throbber(ImGui::GetColorU32(ImGuiCol_PlotHistogram));
+        ImGui::SameLine();
+        const double now = ImGui::GetTime();
+        std::string line = run.cancel_sent ? "Cancelling" : (run.status.empty() ? "Working" : run.status);
+        line += "  \xC2\xB7  " + elapsed(now - run.began);
+        if (now - run.step_began >= 10 && run.step_began > run.began) line += " (this step " + elapsed(now - run.step_began) + ")";
+        ImGui::TextUnformatted(line.c_str());
+        redraw_ms_ = 50;  // about 20 frames a second for the throbber, not the display's full rate
         ImGui::BeginDisabled(run.cancel_sent);
         if (ImGui::Button("Cancel")) {
             send({{"op", "cancel"}, {"run", run.id}});

@@ -86,6 +86,8 @@ class Context:
     # What the app offers jobs that need more than their inputs, e.g. "google_drive": a function returning
     # a signed-in DriveClient (only there while Google Drive is connected and unlocked).
     services: dict[str, Any] = field(default_factory=dict)
+    # Set by the app: shows what status() says under the progress bar.
+    on_status: Callable[[str, float | None], None] | None = None
     _cancelled: bool = False
 
     def __getitem__(self, key: str) -> Any:
@@ -108,6 +110,13 @@ class Context:
     def check_cancelled(self) -> None:
         if self._cancelled:
             raise Cancelled()
+
+    def status(self, text: str, done: float | None = None, total: float | None = None) -> None:
+        """Say what the current step is doing, for a step that takes a while (a service's "page 12 of 154");
+        with ``done`` and ``total``, how far it is. The app shows it under the progress bar."""
+        fraction = min(max(done / total, 0.0), 1.0) if done is not None and total else None
+        if self.on_status:
+            self.on_status(str(text or ""), fraction)
 
     def sleep(self, seconds: float) -> None:
         """Wait, e.g. between polls of a service, but stop at once (Cancelled) when the run is cancelled."""

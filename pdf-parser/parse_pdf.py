@@ -240,9 +240,12 @@ def _inside(inner, outer, share=0.6):
 # ---------------------------------------------------------------- the document
 
 def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
-    """Parse one PDF into ``out_root/<name>/``. -> the manifest (also written as manifest.json)."""
+    """Parse one PDF into ``out_root/<name>/``. -> the manifest (also written as manifest.json).
+
+    ``progress(msg, page, pages)`` is told where it is: "page 12 of 154", "page 12 of 154: OCR", "page 12 of
+    154: vision model, image check (3)" (the vision model's requests are the slow part)."""
     pdf_path = Path(pdf_path)
-    say = progress or (lambda msg: None)
+    say = progress or (lambda msg, page=None, pages=None: None)
     out = Path(out_root) / pdf_path.stem
     if out.exists():
         shutil.rmtree(out)
@@ -253,14 +256,24 @@ def parse(pdf_path, out_root, vision=None, use_vision=True, progress=None):
         raise ValueError("the PDF is password-protected")
     imgs = images_mod.PageImages(doc, out, budget)
     pages, elements, text_out = [], [], []
+    where = {"n": 0}
+    asks = {"verdict": "image check", "read_text": "reading text"}
+
+    def asking(task):
+        n = where["n"]
+        say(f"page {n} of {doc.page_count}: vision model, {asks.get(task, task)} ({budget.requests + 1})",
+            n, doc.page_count)
+
+    budget.on_request = asking
     for index, page in enumerate(doc):
-        n = index + 1
-        say(f"page {n} of {doc.page_count}")
+        n = where["n"] = index + 1
+        say(f"page {n} of {doc.page_count}", n, doc.page_count)
         rotation = page.rotation
         kind = triage(page)
         info = {"page": n, "width": round(page.rect.width, 2), "height": round(page.rect.height, 2),
                 "rotation": rotation, "kind": kind}
         if kind == "ocr":
+            say(f"page {n} of {doc.page_count}: OCR", n, doc.page_count)
             texts, extra = ocr_page(page, n, out)
             scanned = extra["ocr_words"] >= SCANNED_MIN_WORDS and (extra["ocr_confidence"] or 0) >= SCANNED_MIN_CONF
             kind = "scanned" if scanned else "image"
@@ -381,7 +394,7 @@ def main(argv=None):
         if ok is False:
             print("vision: carrying on without it; images that look wrong go to needs_review", file=sys.stderr)
     manifest = parse(args.pdf, args.out, vision, use_vision=not args.no_vision,
-                     progress=lambda msg: print(msg, file=sys.stderr))
+                     progress=lambda msg, page=None, pages=None: print(msg, file=sys.stderr))
     print(json.dumps(manifest["summary"], indent=1))
     print(Path(args.out) / Path(args.pdf).stem)
     return 0

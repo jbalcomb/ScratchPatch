@@ -55,6 +55,7 @@ def wait_for_parsing(ctx):
     job = ctx["job"]
     deadline = time.monotonic() + WAIT_SECONDS
     while job.get("status") in ("queued", "running") and time.monotonic() < deadline:
+        ctx.status(f"Workstation: {job.get('step') or job.get('status')}", job.get("page"), job.get("pages"))
         ctx.sleep(POLL_SECONDS)
         job = call(ctx.settings, "GET", f"/api/jobs/{job['id']}")
     ctx["job"] = job

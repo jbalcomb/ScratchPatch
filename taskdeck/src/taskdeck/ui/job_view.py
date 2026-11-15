@@ -326,9 +326,11 @@ class JobScreen:
         self.ctx = Context({}, services={**self.app.services(), "start_task": self._start_task})
         self._set_running(True)
         steps = list(self.pipeline)
+        at = {"i": 0, "total": len(steps), "name": ""}
 
         def on_progress(i: int, total: int, s) -> None:
             # Called from the worker thread; only touch plain attributes and schedule a redraw.
+            at.update(i=i, total=total, name=s.name)
             self.progress.value = i / total if total else 1
             self.status.value = f"Step {min(i + 1, total)}/{total}: {s.name}" if i < total else "Done"
             self.steps_list.controls = [
@@ -336,6 +338,15 @@ class JobScreen:
             ]
             self.app.page.update()
 
+        def on_status(text: str, fraction: float | None) -> None:
+            # A step saying what it's doing (ctx.status): under the bar, and the bar moves within the step.
+            i, total = at["i"], at["total"]
+            if i < total:
+                self.progress.value = (i + (fraction or 0)) / total
+                self.status.value = f"Step {i + 1}/{total}: {at['name']}" + (f" · {text}" if text else "")
+                self.app.page.update()
+
+        self.ctx.on_status = on_status
         settings = self.app.job_settings(self.plugin.id)
         report = await asyncio.to_thread(self._network_scoped(self.plugin.run, self.ctx), raw, on_progress,
                                          self.ctx, settings)

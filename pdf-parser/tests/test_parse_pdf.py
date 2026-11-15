@@ -116,7 +116,12 @@ def test_config_from_env():
 
 def test_vision_rejects_the_blank_crop_after_retries(sample_pdf, tmp_path, fake_llm):
     fake_llm["answer"] = blank_or_chart
-    m = parse_pdf.parse(sample_pdf, tmp_path, make_vision(fake_llm))
+    said = []
+    m = parse_pdf.parse(sample_pdf, tmp_path, make_vision(fake_llm), progress=lambda *a: said.append(a))
+    # Progress: each page, and each request to the vision model (the slow part), with the page numbers.
+    assert said[0] == ("page 1 of 2", 1, 2) and ("page 2 of 2", 2, 2) in said
+    assert [a for a in said if "vision" in a[0]] == [
+        (f"page 1 of 2: vision model, image check ({n})", 1, 2) for n in range(1, images.MAX_ATTEMPTS + 1)]
     blank = by_id(m)["p1-i3"]
     assert blank["status"] == "needs_review" and len(blank["attempts"]) == images.MAX_ATTEMPTS
     assert all(a["vision"]["content_type"] == "blank" for a in blank["attempts"])

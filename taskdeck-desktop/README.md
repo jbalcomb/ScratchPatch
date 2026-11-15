@@ -6,7 +6,8 @@ First built with **Dear ImGui** (Win32 + Direct3D 11, C++20); later measured and
 
 **Status:** the phone app's four places (Home with pinned tiles, All jobs, History, Settings), the command
 palette (Ctrl+K), live performance numbers in Settings, and the phone app's own jobs, run by Python: each job
-gets a screen built from its fields (with the Windows file picker for files), Run, progress, Cancel, the
+gets a screen built from its fields (with the Windows file picker for files), Run, progress (with a throbber,
+the time so far and what the step says it's doing, e.g. the PDF parser service's page), Cancel, the
 result, and the confirm/commit step. Each job's settings have their own screen (Save checks them first, Test
 settings, the job's own buttons such as "Test connection"); keys and passwords are kept in Windows Credential
 Manager. Pins, history, drafts (what you typed and haven't finished) and the palette's ranking are kept

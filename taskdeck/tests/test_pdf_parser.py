@@ -23,7 +23,7 @@ class FakeService:
     def __init__(self):
         self.requests, self.uploads = [], []
         self.health = {"ok": True, "vision": {"state": "ok", "model": "qwen3-vl-8b"}, "tesseract": True, "queued": 0}
-        self.statuses = [{**JOB, "status": "running", "step": "page 3 of 12"},
+        self.statuses = [{**JOB, "status": "running", "step": "page 3 of 12", "page": 3, "pages": 12},
                          {**JOB, "status": "done", "summary": SUMMARY}]
         self.upload_answer = (202, JOB)
         fake = self
@@ -103,6 +103,16 @@ def test_sends_the_pdf_waits_and_summarizes(service, pdf):
                       ("Output folder", f"{service.url}/jobs/{JOB['id']}/"),
                       ("Download (.zip)", f"{service.url}/jobs/{JOB['id']}.zip")]
     assert r.warning.startswith("1 image needs a look")
+
+
+def test_says_where_the_service_is(service, pdf):
+    from taskdeck.core import Context
+
+    said = []
+    ctx = Context({}, on_status=lambda text, fraction: said.append((text, fraction)))
+    report = pdf_parser.PLUGIN.run({"pdf": str(pdf)}, ctx=ctx, settings={"service_url": service.url})
+    assert report.ok, report.error
+    assert said == [("Workstation: queued", None), ("Workstation: page 3 of 12", 0.25)]
 
 
 def test_vision_stopped_is_a_warning(service, pdf):

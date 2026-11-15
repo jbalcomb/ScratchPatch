@@ -310,9 +310,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdline, int) {
             continue;
         }
         if (!continuous && frames_left <= 0) {
-            // Idle: sleep until input. While typing, wake twice a second for the blinking cursor.
+            // Idle: sleep until input. While typing, wake twice a second for the blinking cursor; while a
+            // throbber shows, as often as it asks.
             g_trace.add("idle, frames drawn", static_cast<long long>(snap.frames));
-            ::MsgWaitForMultipleObjects(0, nullptr, FALSE, io.WantTextInput ? 500 : INFINITE, QS_ALLINPUT);
+            DWORD wait = io.WantTextInput ? 500 : INFINITE;
+            if (const int ms = shell.redraw_after_ms(); ms > 0 && static_cast<DWORD>(ms) < wait) wait = static_cast<DWORD>(ms);
+            ::MsgWaitForMultipleObjects(0, nullptr, FALSE, wait, QS_ALLINPUT);
             g_trace.add("woke");
             frames_left = 1;
             continue;

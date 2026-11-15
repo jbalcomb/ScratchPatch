@@ -46,6 +46,7 @@ class Sent:
 
 @step(Stage.EXECUTE)
 def slow(ctx):
+    ctx.status("waiting on the service", 1, 4)
     while True:
         ctx.check_cancelled()
         time.sleep(0.01)
@@ -156,6 +157,13 @@ class HostTest(unittest.TestCase):
         done = self.sent.wait(lambda m: m.get("event") == "done")
         self.assertFalse(done["ok"])
         self.assertIn("Name is required", done["error"])
+
+    def test_status(self):
+        self.host.handle({"op": "run", "run": 6, "job": "slow", "inputs": {}, "settings": {}})
+        status = self.sent.wait(lambda m: m.get("event") == "status")
+        self.assertEqual(status, {"event": "status", "run": 6, "text": "waiting on the service", "fraction": 0.25})
+        self.host.handle({"op": "cancel", "run": 6})
+        self.sent.wait(lambda m: m.get("event") == "done")
 
     def test_cancel(self):
         self.host.handle({"op": "run", "run": 5, "job": "slow", "inputs": {}, "settings": {}})

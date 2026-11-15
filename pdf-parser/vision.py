@@ -261,6 +261,7 @@ class Budget:
         self.failed_seconds = 0.0
         self.stopped = None if self.vision else ("vision disabled" if vision and vision.configured else
                                                  "no vision model configured")
+        self.on_request = None  # called with the task ("verdict", "read_text") before each request: progress
 
     @property
     def available(self):
@@ -282,6 +283,8 @@ class Budget:
     def _call(self, request, task, context):
         if not self.available:
             return None
+        if self.on_request:
+            self.on_request(task)
         started = time.monotonic()
         self.requests += 1
         try:

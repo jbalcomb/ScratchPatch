@@ -10,6 +10,8 @@ Host -> app, unasked:
     {"event": "ready", "python": "3.14.3", "jobs": [<job>...], "errors": {"module": "why it didn't load"}}
     {"event": "fatal", "error": "..."}                       the jobs couldn't be loaded; the host exits
     {"event": "progress", "run": 7, "step": 1, "total": 4, "name": "check archive"}
+    {"event": "status", "run": 7, "text": "Workstation: page 12 of 154", "fraction": 0.08}
+        what the current step is doing (the job's ctx.status); fraction: how far into the step, or null
     {"event": "done", "run": 7, "ok": true, "cancelled": false, "error": null, "seconds": 0.12,
      "result": <result or null>, "steps": [{"name", "stage", "seconds", "ok", "error"}...]}
     {"event": "committed", "run": 7, "ok": true, "message": "...", "confirm_label": null}
@@ -342,6 +344,12 @@ class Host:
 
         def progress(i: int, total: int, step: Any) -> None:
             send({"event": "progress", "run": rid, "step": i, "total": total, "name": step.name})
+
+        def status(text: str, fraction: float | None) -> None:
+            send({"event": "status", "run": rid, "text": text, "fraction": fraction})
+
+        if hasattr(ctx, "on_status"):  # older job code has no ctx.status
+            ctx.on_status = status
 
         try:
             report = plugin.run(msg.get("inputs") or {}, progress, ctx, msg.get("settings"))

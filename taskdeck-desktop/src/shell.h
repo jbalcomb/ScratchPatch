@@ -81,6 +81,9 @@ struct RunState {
     bool done = false, ok = false, cancelled = false, cancel_sent = false;
     int step = 0, total = 0;
     std::string step_name, error, started;  // started: local time, "14:05:09"
+    double began = 0, step_began = 0;        // ImGui::GetTime() when the run and its current step started
+    std::string status;                      // what the step is doing (the job's ctx.status), "" when nothing
+    double status_fraction = -1;             // how far into the step, or -1 when the job doesn't know
     double seconds = 0;
     nlohmann::json result;  // the host's result object, or null
     // The commit step (two-phase jobs): idle -> committing -> committed, or a message and a confirm button.
@@ -138,6 +141,8 @@ public:
     // Draws one frame. Returns true while something animates, so the loop keeps drawing; otherwise the
     // window sleeps until the next input or job host message.
     bool draw(const PerfSnapshot& perf);
+    // While a slow animation shows (a running job's throbber), how soon to draw again (ms); 0 = no need.
+    int redraw_after_ms() const { return redraw_ms_; }
     // Work that can't happen inside a frame (the file dialog, which runs its own modal loop). Call after Present.
     void after_frame();
     // Saves the open job's draft and stops the job host.
@@ -159,6 +164,7 @@ public:
     bool take_restart_for_update();
 
 private:
+    int redraw_ms_ = 0;
     void draw_close_notice();
     void draw_update_banner();
     void draw_update_status();

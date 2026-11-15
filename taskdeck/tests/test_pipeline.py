@@ -78,6 +78,20 @@ def test_result_plain_text_aligns_rows():
     assert text.splitlines() == ["a     1", "long  2", "body"]
 
 
+def test_status_goes_to_the_app():
+    from taskdeck.core import Context
+
+    ctx = Context({})
+    ctx.status("page 3 of 12", 3, 12)  # nobody listening: nothing happens
+    said = []
+    ctx.on_status = lambda text, fraction: said.append((text, fraction))
+    ctx.status("page 3 of 12", 3, 12)
+    ctx.status("queued")
+    ctx.status("odd", 5, 0)
+    ctx.status("past the end", 13, 12)
+    assert said == [("page 3 of 12", 0.25), ("queued", None), ("odd", None), ("past the end", 1.0)]
+
+
 def test_sleep_waits_and_stops_when_cancelled():
     import threading
     import time
