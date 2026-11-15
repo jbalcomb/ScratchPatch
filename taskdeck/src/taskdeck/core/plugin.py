@@ -66,7 +66,9 @@ class Field:
     # FILES fields: the files come in groups, one per thing (e.g. "product"), separated by a blank line;
     # the value is then a list of groups (lists of paths), and the photo picker offers "1 product" / "N products".
     grouped: str = ""
-    camera: str = ""  # FILES fields: "receipt" adds Take photos, TaskDeck's camera with receipt edge guides
+    # FILES fields: adds Take photos, TaskDeck's camera. "receipt": with receipt edge guides and the overlap guide;
+    # "page": the plain camera (a note's pages, a cork board)
+    camera: str = ""
 
     @classmethod
     def text(cls, name: str, label: str, **kw: Any) -> "Field":

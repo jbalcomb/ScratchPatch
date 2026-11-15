@@ -81,6 +81,8 @@ class FakeModel:
         self.product_by_model = {}
         self.ask_reply = "It reads 11/07/26: November 7, 2026."  # a free question (no answer shape asked for)
         self.pick = None
+        self.note_reply = "# Pi:\n**need for OpenClaw**\nClaude Code → Open Code → Pi\nUltimate Pi: [DEV?]\n[box]\n- Docker\n- MCP"
+        self.board_reply = "## top left - plan\nShip it → [Friday?]"
         self.fail = False
         self.server = Server(self.handle)
         self.url = self.server.url
@@ -96,6 +98,10 @@ class FakeModel:
             reply = self.product_by_model.get(req.get("model"), self.product)
         elif "Which of these catalog products" in text:
             reply = {"product_id": self.pick}
+        elif "pages of one handwritten note" in text:
+            return 200, {"choices": [{"message": {"content": "```markdown\n" + self.note_reply + "\n```"}}]}, None
+        elif "one cork board" in text:
+            return 200, {"choices": [{"message": {"content": self.board_reply}}]}, None
         elif "response_format" not in req:  # a free question from the review page
             return 200, {"choices": [{"message": {"content": self.ask_reply}}]}, None
         else:

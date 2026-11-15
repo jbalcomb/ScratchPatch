@@ -17,6 +17,7 @@ import errors
 import timing
 import checks
 import immich
+import notes as notes_mod
 import reconcile
 from db import Store, loads, now
 import parsing
@@ -53,6 +54,11 @@ class Service:
         self.budget_db = env.get("BUDGET_DB") or str(Path.home() / "budget" / "budget.db")
         self.wake = threading.Event()
         self.work_lock = threading.Lock()
+        # Handwritten notes and cork boards (NOTES-PRD.md): in Postgres, when NOTES_DATABASE_URL says where.
+        self.note_engines = [e for e in self._engine_list(env, "PHOTO_OCR_NOTE_ENGINE", [e["name"] for e in self.parse_engines])
+                             if e["kind"] == "vlm"]
+        dsn = env.get("NOTES_DATABASE_URL")
+        self.notes = notes_mod.Notes(dsn, self.cache / "notes", self.note_engines) if dsn else None
 
     def _engine_list(self, env, var, default):
         names = [n.strip() for n in (env.get(var) or "").split(",") if n.strip()] or default
@@ -697,6 +703,7 @@ class Service:
         with self.work_lock:
             for name, fn in (("library", self.sync_library), ("albums", self.poll_albums),
                              ("receipts", self.parse_pending), ("products", self.parse_pending_products),
+                             ("notes", self.read_notes),
                              ("page copies", self.make_page_copies), ("error log", self.log_reviewed_errors)):
                 try:
                     done[name] = fn()
@@ -704,6 +711,14 @@ class Service:
                     log.warning("%s: %s", name, e)
                     done[name] = f"error: {e}"
         return done
+
+    def read_notes(self):
+        return self.notes.read_pending() if self.notes else 0
+
+    def require_notes(self):
+        if self.notes is None:
+            raise ValueError("notes aren't set up: NOTES_DATABASE_URL isn't set (README, Handwritten notes)")
+        return self.notes
 
     def run_worker(self, interval=60, stop=None):
         stop = stop or threading.Event()

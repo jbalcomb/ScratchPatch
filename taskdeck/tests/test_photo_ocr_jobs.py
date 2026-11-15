@@ -11,7 +11,7 @@ import urllib.parse
 import pytest
 
 from taskdeck.jobs import photo_ocr
-from taskdeck.jobs.photo_ocr import api, items, lists, photos, reconcile
+from taskdeck.jobs.photo_ocr import api, items, lists, notes, photos, reconcile
 from taskdeck.shared import http
 
 RECEIPT = {"id": 17, "status": "parsed", "bucket": "review", "merchant": "Giant Eagle", "purchase_date": "2026-10-12",
@@ -169,7 +169,7 @@ def run(plugin, settings, **inputs):
 def test_plugins_share_one_settings_set_and_category():
     ids = [p.id for p in photo_ocr.PLUGINS]
     assert ids == ["photo_ocr_capture", "photo_ocr_review", "photo_ocr_unmatched", "photo_ocr_product_photo",
-                   "photo_ocr_shopping", "photo_ocr_reconcile"]
+                   "photo_ocr_shopping", "photo_ocr_reconcile", "photo_ocr_handwritten_note", "photo_ocr_cork_board"]
     assert {p.settings_id for p in photo_ocr.PLUGINS} == {"photo_ocr_capture"}
     assert {p.category for p in photo_ocr.PLUGINS} == {"Photo OCR"}
     assert all(p.settings == api.SETTINGS for p in photo_ocr.PLUGINS)
@@ -539,3 +539,93 @@ def test_a_new_store_is_said_plainly(service, settings, tmp_path):
     report = run(photos.CAPTURE, settings, photos=photo_files(tmp_path, "r.jpg"))
     assert dict(report.result.rows)["Status"] == "Needs a look: first receipt from this store"
     assert report.result.warning.startswith("First receipt from Giant Eagle: check it once on the review page")
+
+
+# ---- handwritten notes and cork boards ----------------------------------------------------------------
+
+NOTE_TEXT = "# Pi:\nClaude Code → Open Code → Pi\nUltimate Pi: [DEV?]\n[box]\n- Docker\n- [tailscale?]"
+
+
+def note_service(service, readings):
+    """POST /api/notes answers ids 40, 41, ...; GET /api/notes/<id> the given readings after one pending poll."""
+    ids, plain = iter(range(40, 60)), service.answer
+
+    def answer(req):
+        if req["method"] == "POST" and req["path"] == "/api/notes":
+            parts = parse_multipart(req["content_type"], req["body"])
+            return 201, {"id": next(ids), "photos": sum(1 for p in parts if p[0] == "photo"), "status": "pending"}
+        return plain(req)
+
+    service.answer = answer
+    service.pending_polls = 1
+    for nid, reading in readings.items():
+        service.readings[f"/api/notes/{nid}"] = reading
+
+
+def posted_notes(service):
+    return [parse_multipart(r["content_type"], r["body"]) for r in service.requests
+            if r["method"] == "POST" and r["path"] == "/api/notes"]
+
+
+def test_a_handwritten_note_shows_its_transcript_and_unsure_words(service, settings, tmp_path):
+    note_service(service, {40: {"id": 40, "status": "read", "transcript": NOTE_TEXT}})
+    report = run(notes.NOTE, settings, photos=photo_files(tmp_path, "p1.jpg", "p2.jpg"), event="AI meetup",
+                 written_on="2026-10-24")
+    assert report.ok, report.error
+    [parts] = posted_notes(service)
+    assert [(n, f, d if f is None else None) for n, f, d in parts] == [
+        ("kind", None, b"handwritten"), ("event", None, b"AI meetup"), ("written_on", None, b"2026-10-24"),
+        ("photo", "p1.jpg", None), ("photo", "p2.jpg", None)]
+    r = report.result
+    assert r.title == "Note #40: Pi:" and r.text == NOTE_TEXT and len(r.images) == 2
+    assert r.rows == [("Note", "#40"), ("Photos", "2"), ("Unsure words", "DEV, tailscale"),
+                      ("Review page", f"{service.url}/notes/40")]
+    assert r.warning == "The model wasn't sure of 2 words: fix them on the review page, then approve."
+
+
+def test_several_notes_at_once_and_the_photo_date_by_default(service, settings, tmp_path):
+    note_service(service, {40: {"id": 40, "status": "read", "transcript": "Wake-Up 0500"},
+                           41: {"id": 41, "status": "failed", "error": "the model returned nothing"}})
+    a, b, c = photo_files(tmp_path, "a.jpg", "b.jpg", "c.jpg").splitlines()
+    report = run(notes.NOTE, settings, photos=f"{a}\n{b}\n\n{c}")
+    assert report.ok, report.error
+    sent = posted_notes(service)
+    assert [[f for _, f, _ in p if f] for p in sent] == [["a.jpg", "b.jpg"], ["c.jpg"]]
+    assert all(n != "written_on" and n != "event" for p in sent for n, _, _ in p)  # the service takes the photo's date
+    assert report.result.title == "2 notes sent"
+    assert report.result.rows == [("1. #40", "Wake-Up 0500"), ("2. #41", "reading failed: the model returned nothing"),
+                                  ("Notes page", f"{service.url}/notes")]
+
+
+def test_a_bad_date_is_caught_before_sending(service, settings, tmp_path):
+    report = run(notes.NOTE, settings, photos=photo_files(tmp_path, "a.jpg"), written_on="Oct 24")
+    assert not report.ok and "2026-11-15" in report.error and posted_notes(service) == []
+
+
+def test_a_cork_board_is_one_note_of_all_its_photos(service, settings, tmp_path):
+    note_service(service, {40: {"id": 40, "status": "read", "transcript": "## top left - plan\nShip it"}})
+    report = run(notes.BOARD, settings, board="Job search", photos=photo_files(tmp_path, "left.jpg", "right.jpg"))
+    assert report.ok, report.error
+    [parts] = posted_notes(service)
+    assert [(n, d) for n, f, d in parts if f is None] == [("kind", b"board"), ("board", b"Job search")]
+    assert [f for _, f, _ in parts if f] == ["left.jpg", "right.jpg"]
+    assert report.result.title == "Board #40: top left - plan" and report.result.rows[0] == ("Board", "#40")
+    assert report.result.warning == "Check it against the photo on the review page, then approve."
+
+
+def test_note_camera_photos_are_deleted_once_sent(service, settings, tmp_path, monkeypatch):
+    from taskdeck.shared import files as storage
+    monkeypatch.setenv("TASKDECK_DATA_DIR", str(tmp_path / "app"))
+    note_service(service, {40: {"id": 40, "status": "read", "transcript": "x"}})
+    shot = storage.camera_dir() / "page-1.jpg"
+    shot.write_bytes(b"camera page")
+    report = run(notes.NOTE, settings, photos=str(shot))
+    assert report.ok, report.error
+    assert not shot.exists() and report.result.images == [b"camera page"]
+
+
+def test_note_fields_offer_the_plain_camera():
+    by_name = {f.name: f for f in notes.NOTE.fields}
+    assert by_name["photos"].camera == "page" and by_name["photos"].grouped == "note"
+    board = {f.name: f for f in notes.BOARD.fields}
+    assert board["photos"].camera == "page" and not board["photos"].grouped and board["board"].required
