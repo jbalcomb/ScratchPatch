@@ -4,6 +4,7 @@
     python web.py                         # http://127.0.0.1:8096, jobs in ~/pdf-parser (PDF_PARSER_HOME)
     python web.py --host 127.0.0.1 --port 8096
 
+    GET  /                    the latest jobs, with links to their files, review and zip
     GET  /api/health          {ok, vision: {state, model, message, ...}, tesseract, queued}
     POST /api/jobs            multipart, the PDF as field "pdf"  -> {id, status, url, zip}
     GET  /api/jobs            the latest 50 jobs
@@ -195,6 +196,43 @@ def listing_page(job_id, bundle):
             f"<a href='manifest.json'>manifest.json</a></p><ul>{rows}</ul>")
 
 
+def _when(iso):
+    try:
+        return dt.datetime.fromisoformat(iso).strftime("%d %b %H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
+def summary_line(st):
+    """One line for a job: what was found, or where it is."""
+    s = st.get("summary") or {}
+    if st.get("status") == "done":
+        review = s.get("images_needs_review") or 0
+        return (f"{s.get('pages', 0)} pages · {s.get('tables', 0)} tables · {s.get('images_kept', 0)} images kept"
+                + (f" · {review} to review" if review else ""))
+    if st.get("status") == "failed":
+        return f"failed: {st.get('error') or 'no reason given'}"
+    return st.get("status", "") + (f": {st['step']}" if st.get("step") else "")
+
+
+def home_page(jobs, limit=30):
+    """The service's front page: the latest jobs, each with links to its files, its review and its zip."""
+    rows = []
+    for st in jobs.recent(limit):
+        jid = html.escape(st["id"])
+        links = (f"<a href='/jobs/{jid}/'>Files</a> · <a href='/jobs/{jid}/review/'>Review</a> · "
+                 f"<a href='/jobs/{jid}.zip'>Download .zip</a>") if st.get("status") == "done" else ""
+        rows.append(f"<li><b>{html.escape(st.get('file') or '')}</b> <small>{_when(st.get('created'))}</small><br>"
+                    f"<span class='{html.escape(st.get('status') or '')}'>{html.escape(summary_line(st))}</span>"
+                    f"{'<br>' + links if links else ''}</li>")
+    body = "".join(rows) or "<li>No PDFs parsed yet: send one from TaskDeck's PDF Parser job.</li>"
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>PDF Parser</title><style>body{font-family:system-ui,sans-serif;margin:16px;max-width:760px;"
+            "line-height:1.5}li{margin:0 0 14px}ul{padding-left:18px}.failed{color:#c62828}"
+            "small{color:#777}</style><body><h2>PDF Parser</h2><p>Latest jobs, newest first.</p>"
+            f"<ul>{body}</ul>")
+
+
 def make_handler(jobs, vision):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -222,6 +260,8 @@ def make_handler(jobs, vision):
                                         "queued": jobs.queue.qsize()})
             if path == "/api/jobs":
                 return self._send(200, {"jobs": jobs.recent()})
+            if path == "/":
+                return self._send(200, home_page(jobs).encode(), "text/html; charset=utf-8")
             m = re.fullmatch(r"/api/jobs/([^/]+)", path)
             if m:
                 st = jobs.status(m.group(1))

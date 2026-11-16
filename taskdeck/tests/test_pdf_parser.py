@@ -26,6 +26,7 @@ class FakeService:
         self.statuses = [{**JOB, "status": "running", "step": "page 3 of 12", "page": 3, "pages": 12},
                          {**JOB, "status": "done", "summary": SUMMARY}]
         self.upload_answer = (202, JOB)
+        self.jobs = []
         fake = self
 
         class Handler(http_server.BaseHTTPRequestHandler):
@@ -45,6 +46,8 @@ class FakeService:
                     fake.uploads += [(p.get_param("name", header="content-disposition"), p.get_filename(),
                                       p.get_payload(decode=True)) for p in msg.iter_parts()]
                     status, answer = fake.upload_answer
+                elif path == "/api/jobs":
+                    status, answer = 200, {"jobs": fake.jobs}
                 elif path == "/api/health":
                     status, answer = 200, fake.health
                 elif path == f"/api/jobs/{JOB['id']}":
@@ -101,6 +104,7 @@ def test_sends_the_pdf_waits_and_summarizes(service, pdf):
                       ("Images kept", "8"), ("Needs review", "1"), ("Also", "2 duplicate, 5 icons"),
                       ("Vision checks", "4 (1 failed)"),
                       ("Output folder", f"{service.url}/jobs/{JOB['id']}/"),
+                      ("Review", f"{service.url}/jobs/{JOB['id']}/review/"),
                       ("Download (.zip)", f"{service.url}/jobs/{JOB['id']}.zip")]
     assert r.warning.startswith("1 image needs a look")
 
@@ -175,3 +179,31 @@ def test_readiness(service):
 def test_unreachable_service_blocks(monkeypatch):
     problems = pdf_parser.PLUGIN.check_ready_online({"service_url": "http://127.0.0.1:9"})
     assert problems and problems[0].blocking and problems[0].fix == "recheck"
+
+
+def test_jobs_lists_the_latest_with_links(service):
+    other = "20261108-090000-def456"
+    service.jobs = [
+        {**JOB, "status": "running", "step": "page 3 of 12", "created": "2026-11-15T09:05:00"},
+        {**JOB, "id": other, "file": "manual.pdf", "status": "done", "summary": SUMMARY, "created": "2026-11-08T09:00:00",
+         "url": f"/jobs/{other}/", "zip": f"/jobs/{other}.zip"},
+        {**JOB, "file": "broken.pdf", "status": "failed", "error": "ValueError: the PDF is password-protected",
+         "created": "2026-11-07T12:30:00"}]
+    report = pdf_parser.JOBS.run({}, settings={"service_url": service.url})
+    assert report.ok, report.error
+    assert service.requests == [("GET", "/api/jobs")]
+    r = report.result
+    assert r.title == "Latest 3 PDF Parser jobs"
+    assert r.rows == [
+        ("report.pdf  15 Nov 09:05", "running: page 3 of 12"),
+        ("manual.pdf  8 Nov 09:00", f"12 pages · 3 tables · 8 images kept · 1 to review\n"
+                                    f"Files: {service.url}/jobs/{other}/\nReview: {service.url}/jobs/{other}/review/\n"
+                                    f"Download (.zip): {service.url}/jobs/{other}.zip"),
+        ("broken.pdf  7 Nov 12:30", "failed: ValueError: the PDF is password-protected"),
+        ("All jobs", f"{service.url}/")]
+    assert pdf_parser.JOBS.settings_id == "pdf_parser"   # the same service URL setting as PDF Parser
+
+
+def test_jobs_when_there_are_none(service):
+    report = pdf_parser.JOBS.run({}, settings={"service_url": service.url})
+    assert report.ok and report.result.title == "No PDFs parsed yet"

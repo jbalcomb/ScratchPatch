@@ -5,6 +5,7 @@ See docs/jobs/pdf_parser.md."""
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
@@ -93,7 +94,8 @@ def show_result(ctx):
     vision = s.get("vision") or {}
     if vision.get("requests"):
         rows.append(("Vision checks", f"{vision['requests']}" + (f" ({vision['failed']} failed)" if vision.get("failed") else "")))
-    rows += [folder, ("Download (.zip)", base_url(settings) + str(job.get("zip") or ""))]
+    rows += [folder, ("Review", base_url(settings) + str(job.get("url") or "") + "review/"),
+             ("Download (.zip)", base_url(settings) + str(job.get("zip") or ""))]
     warnings = []
     if review:
         warnings.append(f"{review} image{'s' if review != 1 else ''} need{'s' if review == 1 else ''} a look: "
@@ -105,22 +107,59 @@ def show_result(ctx):
                         rows=rows, warning=" ".join(warnings) or None)
 
 
-class PdfParser(JobPlugin):
-    id = "pdf_parser"
-    title = "PDF Parser"
-    description = ("Send a PDF to the AI Workstation, which takes out its text, tables and images (with OCR and an "
-                   "image check), and get a folder with all of it and a manifest.")
+RECENT = 10  # jobs listed by PDF Parser jobs
+
+
+def _when(iso: str | None) -> str:
+    try:
+        d = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return ""
+    return f"{d.day} {d:%b %H:%M}"
+
+
+def job_line(job: dict) -> str:
+    """What a job found, or where it is."""
+    s = job.get("summary") or {}
+    if job.get("status") == "done":
+        review = _n(s, "images_needs_review")
+        return (f"{_n(s, 'pages')} pages · {_n(s, 'tables')} tables · {_n(s, 'images_kept')} images kept"
+                + (f" · {review} to review" if review else ""))
+    if job.get("status") == "failed":
+        return f"failed: {job.get('error') or 'no reason given'}"
+    return str(job.get("status") or "") + (f": {job['step']}" if job.get("step") else "")
+
+
+@step(Stage.EXECUTE, name="get jobs")
+def get_jobs(ctx):
+    ctx["jobs"] = call(ctx.settings, "GET", "/api/jobs").get("jobs") or []
+
+
+@step(Stage.PRESENT)
+def show_jobs(ctx):
+    base, jobs = base_url(ctx.settings), ctx["jobs"][:RECENT]
+    rows = []
+    for job in jobs:
+        lines = [job_line(job)]
+        if job.get("status") == "done":
+            lines += [f"Files: {base}{job.get('url')}", f"Review: {base}{job.get('url')}review/",
+                      f"Download (.zip): {base}{job.get('zip')}"]
+        rows.append((f"{job.get('file')}  {_when(job.get('created'))}".strip(), "\n".join(lines)))
+    rows.append(("All jobs", base + "/"))
+    ctx.result = Result(title=f"Latest {len(jobs)} PDF Parser job{'s' if len(jobs) != 1 else ''}" if jobs
+                        else "No PDFs parsed yet", rows=rows)
+
+
+class PdfParserJob(JobPlugin):
+    """What the PDF Parser jobs share: the category, the service setting and the readiness checks."""
+
     category = "Tools"
-    icon = "PICTURE_AS_PDF"
-    tags = ("pdf", "parse", "extract", "text", "tables", "images", "ocr", "tesseract", "manifest", "document")
-    fields = (Field.file("pdf", "PDF", required=True, extensions=(".pdf",),
-                         help="Browse to the PDF. It's parsed on the workstation; the phone only sends it."),)
     settings = (
         Field.text("service_url", "PDF parser service URL", required=True, default=DEFAULT_URL,
                    help="The workstation's Tailscale Service address (pdf-parser/README.md)."),
         WIFI_ONLY,
     )
-    run_label = "Parse PDF"
+    settings_from = "pdf_parser"
 
     def clean_settings(self, values):
         url = str(values.get("service_url") or "").strip().rstrip("/")
@@ -145,8 +184,35 @@ class PdfParser(JobPlugin):
                                     blocking=False, fix="recheck"))
         return problems
 
+
+class PdfParser(PdfParserJob):
+    id = "pdf_parser"
+    title = "PDF Parser"
+    description = ("Send a PDF to the AI Workstation, which takes out its text, tables and images (with OCR and an "
+                   "image check), and get a folder with all of it and a manifest.")
+    icon = "PICTURE_AS_PDF"
+    tags = ("pdf", "parse", "extract", "text", "tables", "images", "ocr", "tesseract", "manifest", "document")
+    fields = (Field.file("pdf", "PDF", required=True, extensions=(".pdf",),
+                         help="Browse to the PDF. It's parsed on the workstation; the phone only sends it."),)
+    run_label = "Parse PDF"
+
     def build_pipeline(self):
         return Pipeline([service_configured, read_pdf, send_pdf, wait_for_parsing, show_result])
 
 
+class PdfParserJobs(PdfParserJob):
+    id = "pdf_parser_jobs"
+    title = "PDF Parser jobs"
+    description = ("The latest PDFs parsed on the AI Workstation, with links to their files, their review page and "
+                   "the .zip: to get back to a result you left.")
+    icon = "HISTORY"
+    tags = ("pdf", "parse", "jobs", "history", "results", "download", "zip", "review")
+    run_label = "Show jobs"
+
+    def build_pipeline(self):
+        return Pipeline([service_configured, get_jobs, show_jobs])
+
+
 PLUGIN = PdfParser()
+JOBS = PdfParserJobs()
+PLUGINS = (PLUGIN, JOBS)
