@@ -32,6 +32,8 @@ the licences (`LICENSES\`). About 16 MB zipped.
 **Updates** (decision 5): a few seconds after start TaskDeck reads the release's manifest
 (`taskdeck-desktop-manifest.json`: build number, SHA-256, size). When there's a newer build, a banner offers
 it (Update, What's new, Later; also Settings > App updates, where the check at start can be turned off).
+The status bar along the bottom shows the version, with a callout while a newer one is available, downloading
+or waiting for a restart (a click opens Settings > App updates).
 Update downloads the zip into `.update\` in TaskDeck's folder, checks its SHA-256 and unpacks it there;
 "Restart TaskDeck to update" (once nothing runs) stops the jobs, moves the files it replaces into `.old\`,
 moves the new ones in, and starts the new TaskDeck. If a file can't be moved (open in another program), what

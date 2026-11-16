@@ -518,6 +518,42 @@ void Shell::draw_update_banner() {
     ImGui::Spacing();
 }
 
+void Shell::draw_status_bar() {
+    using S = Updater::State;
+    const ImVec4 dim = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    ImGui::AlignTextToFramePadding();
+    if (install::build() > 0) ImGui::TextColored(dim, "TaskDeck %s", install::version().c_str());
+    else ImGui::TextColored(dim, "TaskDeck, built from source");
+    const Updater::Status u = updater_.status();
+    if (ImGui::IsItemHovered() && !u.checked_at.empty())
+        ImGui::SetTooltip(u.state == S::UpToDate ? "Up to date (checked %s)" : "Checked for updates at %s", u.checked_at.c_str());
+
+    // The callout: a newer version, on its way, or waiting for a restart. A click opens Settings > App updates.
+    std::string callout;
+    if (u.state == S::Available) callout = "Version " + u.latest_version + " is available";
+    else if (u.state == S::Downloading)
+        callout = "Downloading " + u.latest_version + (u.size > 0 ? ": " + std::to_string(u.done * 100 / u.size) + "%" : "");
+    else if (u.state == S::Ready) callout = "Restart TaskDeck to update to " + u.latest_version;
+    else if (u.state == S::Failed && u.failed_download) callout = "The update to " + u.latest_version + " failed";
+    if (callout.empty()) return;
+    ImGui::SameLine();
+    const bool failed = u.state == S::Failed;
+    const ImVec4 fill = failed ? kError : kWarn;
+    ImGui::PushStyleColor(ImGuiCol_Button, fill);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(fill.x + 0.05f, fill.y + 0.05f, fill.z + 0.05f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fill);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.08f, 0.08f, 0.10f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ImGui::GetFrameHeight() * 0.5f);
+    const std::string label = "\xE2\x86\x91 " + callout;  // an up arrow
+    if (ImGui::Button(label.c_str())) {
+        go(static_cast<int>(Tab::Settings));
+        scroll_to_updates_ = true;
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Open Settings > App updates");
+}
+
 void Shell::draw_close_notice() {
     const char* title = "Close TaskDeck?";
     if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
@@ -1150,8 +1186,10 @@ bool Shell::draw(const PerfSnapshot& perf) {
     ImGui::Begin("TaskDeck", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                           ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
-    // Navigation on the left, like a desktop app (the phone has it at the bottom).
-    ImGui::BeginChild("nav", ImVec2(180 * dpi(), 0), ImGuiChildFlags_Borders);
+    // Navigation on the left, like a desktop app (the phone has it at the bottom); the status bar below both.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float bar_height = ImGui::GetFrameHeight() + style.ItemSpacing.y;
+    ImGui::BeginChild("nav", ImVec2(180 * dpi(), -bar_height), ImGuiChildFlags_Borders);
     const char* labels[] = {"Home", "All jobs", "History", "Settings"};
     const bool on_page = open_job_id_.empty() && settings_job_id_.empty();
     for (int i = 0; i < 4; ++i)
@@ -1161,7 +1199,7 @@ bool Shell::draw(const PerfSnapshot& perf) {
     ImGui::EndChild();
     ImGui::SameLine();
 
-    ImGui::BeginChild("page");
+    ImGui::BeginChild("page", ImVec2(0, -bar_height));
     draw_update_banner();
     const JobSpec* settings_job = settings_job_id_.empty() ? nullptr : find_job(settings_job_id_);
     const JobSpec* job = open_job_id_.empty() ? nullptr : find_job(open_job_id_);
@@ -1175,6 +1213,7 @@ bool Shell::draw(const PerfSnapshot& perf) {
         case Tab::Settings: draw_settings(perf); break;
     }
     ImGui::EndChild();
+    draw_status_bar();
     ImGui::End();
 
     if (palette_open_) draw_palette();
@@ -1446,6 +1485,10 @@ void Shell::draw_settings(const PerfSnapshot& perf) {
     if (ImGui::Button("Restart the job host")) start_host();
 
     ImGui::SeparatorText("App updates");
+    if (scroll_to_updates_) {
+        ImGui::SetScrollHereY(0.0f);
+        scroll_to_updates_ = false;
+    }
     if (install::build() > 0 && install::packaged()) {
         ImGui::Text("Version:       TaskDeck %s", install::version().c_str());
         bool checks = update_checks();

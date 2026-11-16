@@ -167,6 +167,8 @@ private:
     int redraw_ms_ = 0;
     void draw_close_notice();
     void draw_update_banner();
+    // The strip along the bottom: TaskDeck's version, and a callout when a newer one is available.
+    void draw_status_bar();
     void draw_update_status();
     bool update_checks() const;  // check for updates at start (Settings)
     Activity run_activity(const RunState& run) const;
@@ -246,6 +248,7 @@ private:
     CloseAction close_action_ = CloseAction::None;
     Updater updater_;
     bool update_banner_hidden_ = false, restart_for_update_ = false;
+    bool scroll_to_updates_ = false;  // the status bar's callout opened Settings: show App updates
 
     // Requests waiting for a reply from the job host.
     struct Request { enum Kind { Check, Test, Action } kind; std::string job_id; int index = 0; bool save = false; };
