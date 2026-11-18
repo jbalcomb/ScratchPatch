@@ -16,11 +16,27 @@ import os
 from pathlib import Path
 from typing import Collection
 
-from taskdeck.core import Cancelled, JobNature, Task, copying
+from taskdeck.core import GOOGLE_ACCOUNT, Cancelled, JobNature, Task, copying
 from taskdeck.shared import drive_uploads, files, gdrive, google_oauth, http
 from taskdeck.shared.gdrive import DriveLocation
 
 NATURE = JobNature.ONE_TIME_COPY
+
+
+class UploadFailed(RuntimeError):
+    """The upload stopped; ``fix`` is GOOGLE_ACCOUNT when connecting Google again would fix it (the task
+    keeps it, and the screen offers "Connect again")."""
+
+    def __init__(self, message: str, cause: BaseException | None = None):
+        super().__init__(message)
+        self.fix = GOOGLE_ACCOUNT if _sign_in_problem(cause) else ""
+
+
+def _sign_in_problem(exc: BaseException | None) -> bool:
+    """Google refused the saved sign-in (revoked or expired), as opposed to a network or Drive problem."""
+    if isinstance(exc, google_oauth.OAuthError):
+        return exc.code in ("invalid_grant", "invalid_client", "unauthorized_client")
+    return isinstance(exc, gdrive.DriveError) and exc.status == 401
 
 
 def _parts(path: str) -> list[str]:
@@ -107,11 +123,11 @@ def push(task: Task, client: gdrive.DriveClient, local: Path, parent_path: str,
         count = stop.count
         if isinstance(stop.error, (gdrive.UploadCancelled, Cancelled)):
             raise Cancelled(f"Stopped. {drive_uploads.were_uploaded(count)} to {target}.") from None
-        raise RuntimeError(f"{stop.error}{_before(count)}") from None
+        raise UploadFailed(f"{stop.error}{_before(count)}", stop.error) from None
     except (gdrive.UploadCancelled, Cancelled):  # Cancel, also while paused or waiting for Wi-Fi
         raise Cancelled(f"Stopped. {drive_uploads.were_uploaded(count)} to {target}.") from None
     except (gdrive.DriveError, http.HttpError, google_oauth.OAuthError, OSError) as exc:
-        raise RuntimeError(f"{exc}{_before(count)}") from None
+        raise UploadFailed(f"{exc}{_before(count)}", exc) from None
     message = f"Uploaded {count:,} file{'s' * (count != 1)} ({files.human_size(sent)}) to {target}"
     if skipped:
         message += f". Skipped {skipped:,} already there"

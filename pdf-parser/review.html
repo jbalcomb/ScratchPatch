@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Review</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --ink: #1f2328; --muted: #656d76; --line: #d0d7de;
+    --text_layer: #2f6fdd; --ocr: #d97706; --vision: #8b3fd9; --table: #1a8f4a; --image: #0f8a8a;
+    --checked: #1a7f37; --disputed: #cf222e; --escalated: #9a2b00; --accent: #2f6fdd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8d96a0; --line: #30363d;
+      --text_layer: #6ea8fe; --ocr: #f0a33a; --vision: #b783f5; --table: #4ac27a; --image: #3cc3c3;
+      --checked: #3fb950; --disputed: #f85149; --escalated: #ff8a5c; --accent: #6ea8fe;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line);
+           padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  header h1 { font-size: 15px; margin: 0; }
+  header label { color: var(--muted); }
+  input, select, button, textarea { font: inherit; color: inherit; background: var(--panel);
+           border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #coverage { width: 100%; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 13px; }
+  #coverage b { color: var(--ink); font-weight: 600; }
+  #coverage .alert b { color: var(--disputed); }
+  main { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; align-items: flex-start; }
+  #viewer { flex: 1 1 520px; min-width: 0; }
+  #pagebar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  #pagewrap { position: relative; background: #fff; border: 1px solid var(--line); line-height: 0; }
+  #pagewrap img { width: 100%; height: auto; display: block; }
+  #pagewrap svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  .box { fill-opacity: 0; pointer-events: all; stroke-width: 1.2; vector-effect: non-scaling-stroke; cursor: pointer; }
+  .box.unreviewed { stroke-dasharray: 4 3; }
+  .box.checked { fill-opacity: .08; }
+  .box.disputed, .box.escalated { stroke: var(--disputed) !important; stroke-width: 2.5; }
+  .box.selected { stroke-width: 3; fill-opacity: .15; }
+  .box:hover { fill-opacity: .1; }
+  .earlier { fill: none; stroke: var(--disputed); stroke-dasharray: 6 4; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .handle { fill: var(--accent); stroke: #fff; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: nwse-resize; }
+  #detail { flex: 1 1 380px; max-width: 560px; background: var(--panel); border: 1px solid var(--line);
+            border-radius: 8px; padding: 12px 16px; position: sticky; top: 96px; max-height: calc(100vh - 112px); overflow: auto; }
+  #detail h2 { font-size: 15px; margin: 0 0 4px; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  .chip { display: inline-block; padding: 0 6px; border-radius: 10px; font-size: 12px; border: 1px solid currentColor; margin-right: 4px; }
+  #crop { max-width: 100%; border: 1px solid var(--line); background: #fff; display: block; margin: 8px 0; }
+  textarea { width: 100%; min-height: 120px; resize: vertical; font-family: ui-monospace, monospace; font-size: 13px; }
+  table.grid { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  table.grid td { border: 1px solid var(--line); padding: 2px 4px; min-width: 40px; vertical-align: top; white-space: pre-wrap; }
+  table.grid td.diff { background: color-mix(in srgb, var(--disputed) 18%, transparent); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+  .history { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; font-size: 13px; }
+  .history .rev { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .history .rev.differs { border-color: var(--disputed); }
+  del { background: color-mix(in srgb, var(--disputed) 22%, transparent); text-decoration: line-through; }
+  ins { background: color-mix(in srgb, var(--checked) 22%, transparent); text-decoration: none; }
+  .warn { color: var(--disputed); }
+  .muted { color: var(--muted); }
+  img.extracted { max-width: 100%; border: 1px solid var(--line); background: #fff; }
+  .attempts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .attempts img { height: 70px; border: 1px solid var(--line); }
+  #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+  #legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 4px; border: 2px solid var(--c); vertical-align: -1px; }
+  #msg { min-height: 1.4em; font-size: 13px; }
+  @media (max-width: 700px) { #detail { position: static; max-height: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Review</h1>
+  <label>Reviewer <input id="reviewer" size="12" placeholder="your name"></label>
+  <label>Queue
+    <select id="queue">
+      <option value="disputed">Disputed</option>
+      <option value="vision">Vision model (required)</option>
+      <option value="needs_review">Needs review (required)</option>
+      <option value="ocr">OCR text</option>
+      <option value="unchecked">Everything not checked</option>
+    </select>
+  </label>
+  <button id="next" class="primary">Next in queue</button>
+  <span id="queuecount" class="muted"></span>
+  <div id="coverage"></div>
+</header>
+<main>
+  <section id="viewer">
+    <div id="pagebar">
+      <button id="prev">◀</button>
+      <label>Page <input id="pageno" type="number" min="1" style="width:5em"></label>
+      <span id="pagecount" class="muted"></span>
+      <button id="nextpage">▶</button>
+      <div id="legend">
+        <span style="--c:var(--text_layer)">text layer</span><span style="--c:var(--ocr)">OCR</span>
+        <span style="--c:var(--vision)">vision</span><span style="--c:var(--table)">table</span>
+        <span style="--c:var(--image)">image</span><span class="muted">dashed: not checked · red: disputed</span>
+      </div>
+    </div>
+    <div id="pagewrap"><img id="pageimg" alt=""><svg id="overlay"></svg></div>
+  </section>
+  <aside id="detail"><p class="muted">Pick a box on the page, or press <b>Next in queue</b>.</p></aside>
+</main>
+<script>
+"use strict";
+const JOB = location.pathname.split("/")[2];
+const PX_PER_PT = 2;                       // the service renders pages at 144 DPI
+const CHECKED = ["reviewed", "confirmed", "settled"];
+const SVGNS = "http://www.w3.org/2000/svg";
+let data = null, page = 1, selected = null, editBox = null, tableRows = null;
+
+const $ = id => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "class" ? n.className = v : n.setAttribute(k, v);
+  for (const k of kids) n.append(k);
+  return n;
+};
+const svgEl = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+const colorOf = e => e.type === "text" ? `var(--${e.source})` : `var(--${e.type})`;
+const isChecked = e => CHECKED.includes(e.review.state);
+const fmt = v => v === null || v === undefined ? "–" : v + "%";
+
+try { $("reviewer").value = localStorage.getItem("pdfReviewer") || ""; } catch (e) {}
+$("reviewer").addEventListener("change", () => { try { localStorage.setItem("pdfReviewer", $("reviewer").value.trim()); } catch (e) {} });
+
+async function load() {
+  const r = await fetch(`/api/jobs/${JOB}/review`);
+  if (!r.ok) { $("detail").textContent = (await r.json()).error; return; }
+  data = await r.json();
+  $("title").textContent = data.file;
+  document.title = `Review · ${data.file}`;
+  $("pagecount").textContent = `of ${data.pages.length}`;
+  showCoverage();
+  const q = new URLSearchParams(location.search);
+  showPage(+(q.get("page") || 1));
+  if (q.get("element")) select(q.get("element"));
+}
+
+function showCoverage() {
+  const c = data.coverage;
+  const items = [["Required", fmt(c.required) + (c.required_left ? ` (${c.required_left} left)` : "")],
+                 ["Pages", fmt(c.pages)], ["Text", fmt(c.text)], ["Tables", fmt(c.tables)],
+                 ["Images", fmt(c.images)], ["Mixed pages", fmt(c.mixed_pages)]];
+  const box = $("coverage"); box.replaceChildren();
+  for (const [k, v] of items) box.append(el("span", {}, `${k} `, el("b", {}, v)));
+  if (c.disputed || c.escalated) box.append(el("span", {class: "alert"}, "Disputed ", el("b", {}, `${c.disputed}`), ` · escalated `, el("b", {}, `${c.escalated}`)));
+  const acc = Object.entries(c.accuracy).filter(([, a]) => a.checked)
+    .map(([src, a]) => `${src} ${a.accepted}% of ${a.checked}`).join(" · ");
+  if (acc) box.append(el("span", {}, "Accepted as parsed: ", el("b", {}, acc)));
+  $("queuecount").textContent = `${queueItems().length} in this queue`;
+}
+
+function queueItems() {
+  const q = $("queue").value;
+  return data.elements.filter(e => q === "disputed" ? ["disputed", "escalated"].includes(e.review.state)
+    : q === "unchecked" ? !isChecked(e) : e.queue === q && !isChecked(e));
+}
+
+function showPage(n) {
+  page = Math.min(Math.max(1, n), data.pages.length);
+  const p = data.pages[page - 1];
+  $("pageno").value = page;
+  $("pageimg").src = `/jobs/${JOB}/page/${page}.png`;
+  $("overlay").setAttribute("viewBox", `0 0 ${p.width} ${p.height}`);
+  drawBoxes();
+}
+
+function drawBoxes() {
+  const svg = $("overlay"); svg.replaceChildren();
+  for (const e of data.elements.filter(e => e.page === page)) {
+    const b = e === selected && editBox ? editBox : appliedBox(e);
+    const cls = ["box", isChecked(e) ? "checked" : e.review.state === "unreviewed" ? "unreviewed" : e.review.state];
+    if (e === selected) cls.push("selected");
+    const r = svgEl("rect", {x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], class: cls.join(" ")});
+    r.style.stroke = colorOf(e); r.style.fill = colorOf(e);
+    r.addEventListener("pointerdown", ev => { if (e !== selected) { ev.stopPropagation(); select(e.id); } else startDrag(ev, "move"); });
+    svg.append(r);
+  }
+  if (selected && selected.page === page) {
+    for (const rv of selected.review.reviews.filter(rv => rv !== selected.review.applied && rv.bbox))
+      svg.append(svgEl("rect", {x: rv.bbox[0], y: rv.bbox[1], width: rv.bbox[2] - rv.bbox[0], height: rv.bbox[3] - rv.bbox[1], class: "earlier"}));
+    const b = editBox;
+    for (const [cx, cy, corner] of [[b[0], b[1], "tl"], [b[2], b[1], "tr"], [b[0], b[3], "bl"], [b[2], b[3], "br"]]) {
+      const h = svgEl("rect", {x: cx - 4, y: cy - 4, width: 8, height: 8, class: "handle"});
+      h.addEventListener("pointerdown", ev => startDrag(ev, corner));
+      svg.append(h);
+    }
+  }
+}
+
+const appliedBox = e => (e.review.applied && e.review.applied.bbox) || e.bbox;
+const appliedText = e => (e.review.applied && e.review.applied.text !== undefined) ? e.review.applied.text : (e.text || "");
+
+function toPoints(ev) {
+  const svg = $("overlay"), pt = svg.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+function startDrag(ev, mode) {
+  ev.preventDefault(); ev.stopPropagation();
+  const p = data.pages[page - 1], start = toPoints(ev), orig = editBox.slice();
+  const move = e2 => {
+    const now = toPoints(e2), dx = now.x - start.x, dy = now.y - start.y, b = orig.slice();
+    if (mode === "move") { b[0] += dx; b[2] += dx; b[1] += dy; b[3] += dy; }
+    if (mode.includes("l")) b[0] += dx; if (mode.includes("r")) b[2] += dx;
+    if (mode.includes("t")) b[1] += dy; if (mode.includes("b")) b[3] += dy;
+    if (b[2] - b[0] < 4 || b[3] - b[1] < 4) return;
+    editBox = [Math.max(0, b[0]), Math.max(0, b[1]), Math.min(p.width, b[2]), Math.min(p.height, b[3])].map(v => Math.round(v * 10) / 10);
+    drawBoxes(); drawCrop();
+  };
+  const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); };
+  addEventListener("pointermove", move); addEventListener("pointerup", up);
+}
+
+function select(id) {
+  selected = data.elements.find(e => e.id === id) || null;
+  if (!selected) return;
+  editBox = appliedBox(selected).slice();
+  tableRows = null;
+  if (selected.page !== page) showPage(selected.page); else drawBoxes();
+  history.replaceState(null, "", `?page=${selected.page}&element=${selected.id}`);
+  showDetail();
+}
+
+function drawCrop() {
+  const c = $("crop"), img = $("pageimg");
+  if (!c || !img.complete || !img.naturalWidth) return;
+  const pad = 6, b = editBox, s = img.naturalWidth / data.pages[page - 1].width;
+  const x = Math.max(0, (b[0] - pad) * s), y = Math.max(0, (b[1] - pad) * s);
+  const w = Math.min(img.naturalWidth - x, (b[2] - b[0] + 2 * pad) * s), h = Math.min(img.naturalHeight - y, (b[3] - b[1] + 2 * pad) * s);
+  const scale = Math.min(1, 520 / w);
+  c.width = w * scale; c.height = h * scale;
+  c.getContext("2d").drawImage(img, x, y, w, h, 0, 0, c.width, c.height);
+}
+$("pageimg").addEventListener("load", drawCrop);
+
+// ---- word-level diff (for disputed reviews)
+function diffWords(a, b) {
+  const A = a.split(/(\s+)/), B = b.split(/(\s+)/);
+  if (A.length * B.length > 4e6) return [el("span", {}, b)];
+  const L = Array.from({length: A.length + 1}, () => new Uint16Array(B.length + 1));
+  for (let i = A.length - 1; i >= 0; i--) for (let j = B.length - 1; j >= 0; j--)
+    L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while (i < A.length || j < B.length) {
+    if (i < A.length && j < B.length && A[i] === B[j]) { out.push(A[i]); i++; j++; }
+    else if (j < B.length && (i >= A.length || L[i][j + 1] >= L[i + 1][j])) { out.push(el("ins", {}, B[j])); j++; }
+    else { out.push(el("del", {}, A[i])); i++; }
+  }
+  return out;
+}
+
+// ---- CSV
+function parseCSV(t) {
+  const rows = []; let row = [], cell = "", q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"' && t[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') q = false; else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && t[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+function gridTable(rows, compare) {
+  const t = el("table", {class: "grid"});
+  rows.forEach((r, i) => {
+    const tr = el("tr");
+    r.forEach((c, j) => {
+      const td = el("td", {contenteditable: compare ? "false" : "true"}, c);
+      if (compare && (compare[i] || [])[j] !== c) td.className = "diff";
+      if (!compare) td.addEventListener("input", () => { tableRows[i][j] = td.innerText; });
+      tr.append(td);
+    });
+    t.append(tr);
+  });
+  return t;
+}
+
+async function showDetail(keepRows = null) {
+  const e = selected, d = $("detail"); d.replaceChildren();
+  const st = e.review.state;
+  d.append(el("h2", {}, `${e.id} · ${e.type}`));
+  const meta = el("div", {class: "meta"});
+  meta.append(el("span", {class: "chip", style: `color:${colorOf(e)}`}, e.type === "text" ? e.source : e.type));
+  meta.append(el("span", {class: "chip", style: `color:${["disputed", "escalated"].includes(st) ? "var(--disputed)" : CHECKED.includes(st) ? "var(--checked)" : "var(--muted)"}`}, st));
+  if (e.confidence !== undefined && e.confidence !== null) meta.append(` OCR confidence ${e.confidence}%`);
+  if (e.low_confidence) meta.append(el("span", {class: "warn"}, " · low confidence"));
+  if (e.flags && e.flags.length) meta.append(` · flags: ${e.flags.join(", ")}`);
+  if (e.status) meta.append(` · ${e.status}`);
+  meta.append(` · queue: ${e.queue}`);
+  d.append(meta);
+  if (["disputed", "escalated"].includes(st))
+    d.append(el("p", {class: "warn"}, st === "disputed" ? "Two reviews disagree: this needs a tiebreaker from someone else. Shown: the newest review. Differences from the earlier reviews are marked below and drawn in red on the page."
+                                                          : "Three reviews all differ: the document's owner decides. Shown: the newest review."));
+  d.append(el("div", {class: "muted"}, "On the page:"), el("canvas", {id: "crop"}));
+  drawCrop();
+
+  const applied = e.review.applied;
+  if (e.type === "text") {
+    if (e.ocr_text !== undefined) d.append(el("div", {class: "muted"}, "Tesseract read: ", el("i", {}, e.ocr_text)));
+    d.append(el("div", {class: "muted"}, e.source === "vision" ? "Text (the vision model's reading; correct it if it's wrong):" : "Text:"));
+    const ta = el("textarea", {id: "text"}); ta.value = appliedText(e); d.append(ta);
+  } else if (e.type === "table") {
+    tableRows = keepRows || (applied && applied.rows ? applied.rows.map(r => r.slice())
+      : parseCSV(await (await fetch(`/jobs/${JOB}/${e.file}`)).text()));
+    d.append(el("div", {class: "muted"}, `Table (${e.file}); click a cell to edit:`), gridTable(tableRows));
+    const ops = el("div", {class: "actions"});
+    const redraw = () => showDetail(tableRows);
+    ops.append(el("button", {}, "+ row"), el("button", {}, "+ column"), el("button", {}, "− last row"), el("button", {}, "− last column"));
+    const [addR, addC, delR, delC] = ops.children;
+    addR.onclick = () => { tableRows.push(Array(Math.max(...tableRows.map(r => r.length), 1)).fill("")); redraw(); };
+    addC.onclick = () => { tableRows.forEach(r => r.push("")); redraw(); };
+    delR.onclick = () => { tableRows.pop(); redraw(); };
+    delC.onclick = () => { tableRows.forEach(r => r.pop()); redraw(); };
+    d.append(ops);
+  } else {
+    d.append(el("div", {class: "muted"}, "Extracted image:"), el("img", {class: "extracted", src: `/jobs/${JOB}/${e.file}`}));
+    if (e.vision) d.append(el("div", {class: "meta"}, `Vision model: ${e.vision.complete ? "complete" : "not complete"}, ${e.vision.content_type}${e.vision.issue ? " — " + e.vision.issue : ""}`));
+    const tries = (e.attempts || []).filter(a => a.file);
+    if (tries.length) {
+      const box = el("div", {class: "attempts"});
+      for (const a of tries) box.append(el("figure", {}, el("img", {src: `/jobs/${JOB}/${a.file}`, title: `${a.strategy}: score ${a.score}`})));
+      d.append(el("div", {class: "muted"}, "All attempts:"), box);
+    }
+    d.append(el("p", {class: "muted"}, "Wrong crop? Drag the box on the page, or its corners, and save the correction: the image is cut again from the page."));
+  }
+
+  const actions = el("div", {class: "actions"});
+  const accept = el("button", {class: "primary"}, "Accept"), save = el("button", {}, "Save correction"), reject = el("button", {}, "Reject");
+  accept.onclick = () => submit("accepted");
+  save.onclick = () => submit("corrected");
+  reject.onclick = () => { const why = prompt("Why reject it? (noise, printer's mark, duplicate…)"); if (why !== null) submit("rejected", {reason: why}); };
+  actions.append(accept, save, reject);
+  d.append(actions, el("div", {id: "msg"}));
+
+  if (e.review.reviews.length) {
+    const h = el("div", {class: "history"}, el("b", {}, "Reviews"));
+    for (const rv of e.review.reviews) {
+      const isApplied = rv === applied;
+      const box = el("div", {class: "rev"});
+      box.append(el("div", {}, el("b", {}, rv.by), ` · ${rv.decision} · ${rv.at.replace("T", " ").replace("+00:00", " UTC")}${isApplied ? " · shown" : ""}`));
+      if (rv.reason) box.append(el("div", {class: "muted"}, `Reason: ${rv.reason}`));
+      if (!isApplied && applied && ["disputed", "escalated"].includes(st)) {
+        if (rv.decision !== applied.decision) { box.classList.add("differs"); box.append(el("div", {class: "warn"}, `Decided "${rv.decision}"; the newest review decided "${applied.decision}".`)); }
+        if (e.type === "text" && (rv.text !== undefined || applied.text !== undefined)) {
+          const theirs = rv.text !== undefined ? rv.text : e.text || "", shown = appliedText(e);
+          if (theirs.trim() !== shown.trim()) { box.classList.add("differs"); const p = el("div", {}, "Their text → newest: "); p.append(...diffWords(theirs, shown)); box.append(p); }
+        }
+        if (e.type === "table" && rv.rows) { box.classList.add("differs"); box.append(el("div", {class: "muted"}, "Their table (cells that differ from the one shown are marked):"), gridTable(rv.rows, tableRows)); }
+        if (rv.bbox) { box.classList.add("differs"); box.append(el("div", {class: "muted"}, `Their box (red dashes on the page): ${rv.bbox.join(", ")}`)); }
+      }
+      h.append(box);
+    }
+    d.append(h);
+  }
+}
+
+async function submit(decision, extra = {}) {
+  const by = $("reviewer").value.trim();
+  if (!by) { $("msg").textContent = "Type your name in Reviewer first."; $("reviewer").focus(); return; }
+  const e = selected, body = {element: e.id, decision, by, ...extra};
+  if (decision === "corrected") {
+    const b0 = e.bbox;
+    if (editBox.some((v, i) => Math.abs(v - b0[i]) > 0.5)) body.bbox = editBox;
+    if (e.type === "text" && $("text").value !== (e.text || "")) body.text = $("text").value;
+    if (e.type === "table" && tableRows) {
+      const original = parseCSV(await (await fetch(`/jobs/${JOB}/${e.file}`)).text());
+      if (JSON.stringify(tableRows) !== JSON.stringify(original)) body.rows = tableRows;
+    }
+    if (!body.bbox && body.text === undefined && !body.rows) { $("msg").textContent = "Nothing is changed from the parse: use Accept, or edit first."; return; }
+  }
+  const r = await fetch(`/api/jobs/${JOB}/reviews`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const res = await r.json();
+  if (!r.ok) { $("msg").textContent = res.error; return; }
+  const i = data.elements.findIndex(x => x.id === e.id);
+  data.elements[i] = res.element;
+  data.coverage = res.coverage;
+  showCoverage();
+  nextInQueue(e);
+}
+
+function nextInQueue(after) {
+  const items = queueItems();
+  if (!items.length) { selected = null; drawBoxes(); $("detail").replaceChildren(el("p", {}, "Nothing left in this queue.")); return; }
+  const idx = after ? data.elements.findIndex(x => x.id === after.id) : -1;
+  const nxt = items.find(x => data.elements.indexOf(x) > idx) || items[0];
+  select(nxt.id);
+}
+
+$("next").onclick = () => nextInQueue(selected);
+$("queue").onchange = () => { showCoverage(); nextInQueue(null); };
+$("prev").onclick = () => showPage(page - 1);
+$("nextpage").onclick = () => showPage(page + 1);
+$("pageno").onchange = () => showPage(+$("pageno").value);
+$("overlay").addEventListener("pointerdown", () => { if (selected) { selected = null; editBox = null; drawBoxes(); } });
+load();
+</script>
+</body>
+</html>

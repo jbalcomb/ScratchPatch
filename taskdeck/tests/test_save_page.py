@@ -43,7 +43,7 @@ class FakeDaemon:
 def daemon(monkeypatch):
     d = FakeDaemon()
     monkeypatch.setattr(http, "request", d)
-    monkeypatch.setattr(save_page.time, "sleep", lambda s: None)
+    monkeypatch.setattr(save_page, "POLL_SECONDS", 0)
     return d
 
 

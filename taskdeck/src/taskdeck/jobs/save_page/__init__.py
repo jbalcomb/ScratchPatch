@@ -6,7 +6,6 @@ the machine's save roots. The save finishes on the machine even if the phone goe
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
@@ -69,12 +68,8 @@ def queue(ctx):
 
 @step(Stage.EXECUTE, name="save the page")
 def wait(ctx):
-    job, deadline = ctx["job"], time.monotonic() + WAIT_SECONDS
-    while job.get("status") in ("queued", "running") and time.monotonic() < deadline:
-        ctx.check_cancelled()
-        time.sleep(POLL_SECONDS)
-        job = call(ctx.settings, "save.status", {"id": job["id"]})
-    ctx["job"] = job
+    ctx["job"] = steps.wait_for_job(ctx, ctx["job"], lambda job: call(ctx.settings, "save.status", {"id": job["id"]}),
+                                    wait_seconds=WAIT_SECONDS, poll_seconds=POLL_SECONDS)
 
 
 @step(Stage.PRESENT)

@@ -102,7 +102,11 @@ reads a stale chunk. Uploads reuse Extract Archive's parallel uploader (`taskdec
 The upload runs as a **background task**, like Extract Archive's: the parse result shows right away, and
 below it a bar for *Checking what's already in Google Drive* and one for *Uploading to Google Drive* (files
 done, speed, time left), "Paused: no connection" while the network is gone, Cancel, the notification while
-TaskDeck is in the background, and **Open in Drive** when it's done. Run is disabled until it finishes. The
+TaskDeck is in the background, and **Open in Drive** when it's done.
+
+If the upload fails or is stopped, **Retry upload** sends the folder already on the phone again (no new
+parse; what's already in Drive is skipped). If Google refused the saved sign-in (revoked, or expired after
+7 days while the consent screen is in Testing), **Connect again** signs in again and then retries by itself. Run is disabled until it finishes. The
 generic job screen offers this to any job (`Context.services["start_task"]`); the widgets are shared with
 Extract Archive (`taskdeck/ui/task_view.py`).
 

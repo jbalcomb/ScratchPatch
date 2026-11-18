@@ -1,9 +1,10 @@
 # Photo OCR
 
-Six jobs in the **Photo OCR** category are thin screens over the photo OCR service on the AI Workstation
-([photo-ocr/API.md](../../../photo-ocr/API.md)), reached over Tailscale. The service reads photos of receipts
-and products with the local models, checks the readings and stores them; the phone sends photos and shows lists.
-The design is in [photo-ocr/PRD.md](../../../photo-ocr/PRD.md).
+Eight jobs in the **Photo OCR** category are thin screens over the photo OCR service on the AI Workstation
+([photo-ocr/API.md](../../../photo-ocr/API.md)), reached over Tailscale. The service reads photos of receipts,
+products, handwritten notes and cork boards with the local models, checks the readings and stores them; the phone sends photos and shows lists.
+The design is in [photo-ocr/PRD.md](../../../photo-ocr/PRD.md) and, for notes and boards,
+[photo-ocr/NOTES-PRD.md](../../../photo-ocr/NOTES-PRD.md).
 
 ## Setup
 
@@ -11,7 +12,7 @@ The design is in [photo-ocr/PRD.md](../../../photo-ocr/PRD.md).
    [photo-ocr/README.md](../../../photo-ocr/README.md). Note the HTTPS address it prints.
 2. On the phone, connect Tailscale.
 3. Open **Receipt capture**, tap the **tune** icon and set **Photo OCR service URL** to that address, e.g.
-   `https://<workstation>.<tailnet>.ts.net:8444`. All six jobs use this one setting.
+   `https://<workstation>.<tailnet>.ts.net:8444`. All eight jobs use this one setting.
 
 When a job opens, it checks `GET /api/health`. If the service doesn't answer, the job says so, and says when
 the reason is that the phone isn't on Tailscale. Errors from the service are shown as the job's error.
@@ -24,6 +25,8 @@ the reason is that the phone isn't on Tailscale. Errors from the service are sho
 | **Review queue** | Counts, then every receipt and product whose reading needs a person: for a receipt its store, date, total, bucket and the fields to check; for a product its name, brand, size and the fields to check. Readings in the retake bucket say a new photo is needed. Review them on the `/review` page. |
 | **Unmatched items** | Receipt lines not yet matched to a product, as "text (store, date, price) → suggestion". **Accept suggestions** matches every item whose suggestion scores 90% or more; the preview lists exactly those first. The service then matches the same text automatically, on other receipts too. Match the rest on the `/items` page. |
 | **Product photo** | Pick photos with the same photo grid. With several selected, the top bar offers **1 product** (they are all one product, e.g. its front and label) and **N products** (each photo is its own product); picking again adds more products. The field shows the thumbnails under "Product 1", "Product 2", …. **Send products** sends each product, waits for all the readings together, and shows them: for one product, the photos beside the name, brand and size, whether every check passed and the fields to check; for several, one line each, in the order picked, beside the first photo of each. A product the service refuses is listed as not sent; the others still go. A doubtful reading also shows up in the review queue. |
+| **Handwritten note** | Photos of handwritten notes: **Take photos** opens TaskDeck's camera without the receipt guides (each session is one note), or **Add…** picks photos with the photo grid, where **1 note** keeps the selected pages together and **N notes** makes each photo its own note. Optional **Event** (where it was written) and **Written on** (YYYY-MM-DD; empty takes the photo's date). **Send notes** sends each note, waits for the readings, and shows the transcript beside the photos, the words the model wasn't sure of (it marks them like `[DEV?]`), and the review page, where the transcript is fixed against the photo and approved. Camera photos are deleted once sent; the workstation keeps the originals in Postgres. Notes need the service's notes database (photo-ocr/README.md, Handwritten notes). |
+| **Cork board** | One board from one or more photos (all the photos are one board), with the board's **name** (use the same name each time) and an optional **As of** date. The result and review page as for a note; the transcript has a section per card or page on the board. |
 | **Shopping list** | Products that are due, with how many days overdue, the usual store, the last price and the best price and store. |
 | **Reconciliation** | Matches receipts to bank charges, then lists receipts with no bank charge and charges with no receipt. Bank charges come from the budget store, which the service reads on every run; bank exports are imported in the budget project, not here. No inputs. Match the leftovers by hand on the `/reconcile` page. |
 

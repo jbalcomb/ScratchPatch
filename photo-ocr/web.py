@@ -30,6 +30,7 @@ import reconcile  # noqa: E402
 from immich import LocalPhotos  # noqa: E402
 from picker import Picker, PickerError  # noqa: E402
 from service import ALBUMS, NotFound, Service  # noqa: E402
+import notes as notes_mod  # noqa: E402
 
 log = logging.getLogger("photo-ocr")
 MAX_BYTES = 80 * 1024 * 1024   # one request: several full-size phone photos
@@ -95,6 +96,18 @@ class App:
             ("GET", r"/api/receipts/(\d+)/runs", lambda m, q, b, h: (200, {"runs": self.s.receipt_runs(int(m[1]))})),
             ("POST", r"/api/receipts/(\d+)/ask", lambda m, q, b, h: (200, self.s.ask(int(m[1]), self.json(b).get("question")))),
             ("GET", r"/api/images/(\d+)", self.image),
+            ("POST", r"/api/notes", self.post_note),
+            ("GET", r"/api/notes", lambda m, q, b, h: (200, {"notes": self.s.require_notes().list(
+                q.get("status"), q.get("q"), q.get("limit", 50))})),
+            ("GET", r"/api/notes/accuracy", lambda m, q, b, h: (200, self.s.require_notes().accuracy())),
+            ("GET", r"/api/notes/(\d+)", lambda m, q, b, h: (200, self.s.require_notes().get(int(m[1])))),
+            ("POST", r"/api/notes/(\d+)", lambda m, q, b, h: (200, self.s.require_notes().edit(int(m[1]), self.json(b)))),
+            ("DELETE", r"/api/notes/(\d+)", self.delete_note),
+            ("POST", r"/api/notes/(\d+)/reparse", self.reparse_note),
+            ("GET", r"/api/notes/(\d+)/runs", lambda m, q, b, h: (200, {"runs": self.s.require_notes().runs(int(m[1]))})),
+            ("GET", r"/api/notes/(\d+)/photos/(\d+)", self.note_photo),
+            ("POST", r"/api/notes/(\d+)/photos/(\d+)", lambda m, q, b, h: (200, self.s.require_notes().turn(
+                int(m[1]), int(m[2]), self.json(b).get("turn")))),
             ("GET", r"/api/items/unmatched", lambda m, q, b, h: (200, {"items": self.s.unmatched_items(q.get("limit", 50))})),
             ("POST", r"/api/items/(\d+)/match", self.match_item),
             ("GET", r"/api/products", lambda m, q, b, h: (200, {"products": self.s.products(q.get("q"), q.get("status"))})),
@@ -115,7 +128,7 @@ class App:
             ("GET", r"/manifest.webmanifest", lambda m, q, b, h: (200, (pages.MANIFEST.encode(), "application/manifest+json"))),
             ("GET", r"/sw.js", lambda m, q, b, h: (200, (pages.SERVICE_WORKER.encode(), "text/javascript"))),
             ("GET", r"/icon.svg", lambda m, q, b, h: (200, (pages.ICON.encode(), "image/svg+xml"))),
-            ("GET", r"/(|capture|review|review/\d+|items|products|products/\d+|shopping|reconcile|picker|stats)", self.page),
+            ("GET", r"/(|capture|review|review/\d+|items|products|products/\d+|shopping|reconcile|picker|stats|notes|notes/\d+)", self.page),
         ]
 
     # ---- helpers ----
@@ -164,6 +177,8 @@ class App:
         immich_state = None if isinstance(self.s.photos, LocalPhotos) else self.s.photos.ping()
         return 200, {"ok": True, "immich": immich_state, "engines": [e["name"] for e in self.s.parse_engines],
                      "product_engines": [e["name"] for e in self.s.product_engines],
+                     # notes: null when not set up, else "ok" or why the database doesn't answer
+                     "notes": None if self.s.notes is None else (self.s.notes.ping() or "ok"),
                      "version": 1}
 
     def post_receipt(self, m, q, b, h):
@@ -176,6 +191,30 @@ class App:
         _, files = self.form(h, b)
         n = self.s.add_photos(int(m[1]), photos_from(files))
         return 200, {"id": int(m[1]), "photos": n, "status": "pending"}
+
+    def post_note(self, m, q, b, h):
+        """multipart: photo (repeated, in order), kind (handwritten or board), event, written_on, board."""
+        fields, files = self.form(h, b)
+        photos = photos_from(files)
+        nid = self.s.require_notes().create(fields.get("kind") or "handwritten", photos, event=fields.get("event"),
+                                            written_on=fields.get("written_on"), board=fields.get("board"))
+        self.s.wake.set()
+        return 201, {"id": nid, "photos": len(photos), "status": "pending", "url": f"/notes/{nid}"}
+
+    def delete_note(self, m, q, b, h):
+        self.s.require_notes().delete(int(m[1]))
+        return 200, {"ok": True}
+
+    def reparse_note(self, m, q, b, h):
+        self.s.require_notes().reparse(int(m[1]))
+        self.s.wake.set()
+        return 200, {"status": "pending"}
+
+    def note_photo(self, m, q, b, h):
+        width = q.get("w")
+        if width is not None and not str(width).isdigit():
+            raise HttpError(400, "w must be a width in pixels")
+        return 200, self.s.require_notes().photo(int(m[1]), int(m[2]), int(width) if width else None)
 
     def get_receipts(self, m, q, b, h):
         return 200, {"receipts": self.s.list_receipts(q.get("bucket"), q.get("status"), q.get("limit", 50))}
@@ -338,7 +377,7 @@ def make_handler(app):
                 status, payload = app.handle(method, url.path.rstrip("/") or "/", parse_qs(url.query), body, self.headers)
             except HttpError as e:
                 status, payload = e.status, {"error": str(e)}
-            except NotFound as e:
+            except (NotFound, notes_mod.NotFound) as e:
                 status, payload = 404, {"error": str(e)}
             except (ValueError, PickerError) as e:
                 status, payload = 400, {"error": str(e)}

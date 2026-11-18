@@ -193,15 +193,17 @@ def _push(job_id: str):
         if not ctx.get("drive"):
             return
         folder = drive_folder(ctx.settings)
-        client, base, include = ctx.services["google_drive"](), ctx["base"], ctx["include"]
+        connect, base, include = ctx.services["google_drive"], ctx["base"], ctx["include"]
         ctx["drive_target"] = drive.target(folder, base.name)
 
         def work(task: Task) -> str:
-            return drive.push(task, client, base, folder, include=include)
+            # The client is made when the upload starts, so "Retry upload" after "Connect again" signs in anew.
+            return drive.push(task, connect(), base, folder, include=include)
 
         start = ctx.services.get("start_task")
         if start:  # in the app: a background task with its own progress (and notification), like Extract Archive
-            ctx["upload_task"] = start(f"Uploading {base.name} to {drive.target(folder, '')}", work)
+            ctx["upload_task"] = start(f"Uploading {base.name} to {drive.target(folder, '')}", work,
+                                       retry_label="Retry upload")
             return
         try:  # no app (tests, scripts): upload now
             ctx["upload_message"] = work(Task(0, "upload", job_id))

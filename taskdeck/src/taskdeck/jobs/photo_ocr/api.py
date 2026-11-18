@@ -3,14 +3,13 @@ Photo OCR jobs. Amounts from the service are integer cents."""
 
 from __future__ import annotations
 
-import json
-import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Problem, Stage, Step, StepError, step
-from taskdeck.shared import http, tailscale
+from taskdeck.shared import service
 
+SERVICE = service.Service("photo OCR service", "https://ai-workstation.tail1234.ts.net:8443")
 SETTINGS_ID = "photo_ocr_capture"  # the job that stores the settings all Photo OCR jobs use
 CATEGORY = "Photo OCR"
 PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
@@ -26,7 +25,7 @@ FIELD_NAMES = {"merchant": "store", "purchase_date": "date", "total": "total", "
 
 
 def base_url(settings: dict[str, Any]) -> str:
-    return str(settings.get("service_url") or "").strip().rstrip("/")
+    return SERVICE.base_url(settings)
 
 
 def page_url(settings: dict[str, Any], path: str) -> str:
@@ -40,34 +39,9 @@ def dollars(cents: Any) -> str:
     return f"{'-' if cents < 0 else ''}${abs(cents) / 100:,.2f}"
 
 
-def _error_message(exc: http.HttpError, url: str) -> str:
-    if exc.status is None:
-        why = tailscale.why_unreachable(url)
-        return f"Can't reach the photo OCR service: {why}." if why else str(exc)
-    try:
-        error = json.loads(exc.body).get("error")
-    except (ValueError, AttributeError):
-        error = None
-    return str(error) if error else f"the photo OCR service answered: {exc}"
-
-
-def call(settings: dict[str, Any], method: str, path: str, *, params: dict[str, Any] | None = None,
-         json_body: Any = None, fields: list[tuple[str, str]] = (), files: list[tuple[str, str, bytes]] = (),
-         timeout: float = 30) -> dict[str, Any]:
+def call(settings: dict[str, Any], method: str, path: str, **kw: Any) -> dict[str, Any]:
     """One API request. The service's ``{"error": ...}`` (or a network failure) becomes a StepError."""
-    url = base_url(settings) + path
-    if params:
-        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-    try:
-        if files:
-            data = http.post_multipart(url, fields, files, timeout=timeout)
-        else:
-            data = http.request(method, url, json_body=json_body, timeout=timeout)
-    except http.HttpError as exc:
-        raise StepError(_error_message(exc, url)) from None
-    if not isinstance(data, dict):
-        raise StepError(f"{base_url(settings)} didn't answer like the photo OCR service. Check the service URL.")
-    return data
+    return SERVICE.call(settings, method, path, **kw)
 
 
 def read_files(paths: list[str], extensions: tuple[str, ...], field: str = "photo") -> list[tuple[str, str, bytes]]:
@@ -95,32 +69,18 @@ def fetch(key: str, path: str, label: str) -> Step:
 
 @step(Stage.VALIDATE, name="check service URL")
 def service_configured(ctx):
-    problems = url_problems(ctx.settings, phone_itself=False)  # (check_ready warns about localhost)
-    if problems:
-        raise StepError(problems[0].message)
+    SERVICE.check_url(ctx.settings)
 
 
 def url_problems(settings: dict[str, Any], phone_itself: bool = True) -> list[Problem]:
-    url = base_url(settings)
-    if not url:
-        return [Problem("Set the photo OCR service URL in this job's settings (the tune icon at the top).")]
-    if not url.startswith(("http://", "https://")):
-        return [Problem("the photo OCR service URL must start with https:// "
-                        "(e.g. https://ai-workstation.tail1234.ts.net:8443).")]
-    if phone_itself and tailscale.host_of(url) in ("localhost", "127.0.0.1"):
-        return [Problem("the photo OCR service URL points at the phone itself (localhost). "
-                        "Use the workstation's Tailscale Serve address.")]
-    return []
+    return SERVICE.url_problems(settings, phone_itself)
 
 
 def health_problems(settings: dict[str, Any], uses_immich: bool = False) -> list[Problem]:
     """GET /api/health: is the service there, and (for photo uploads) can it reach Immich?"""
-    try:
-        health = call(settings, "GET", "/api/health", timeout=8)
-    except StepError as exc:
-        return [Problem(str(exc), fix="recheck")]
-    if health.get("ok") is not True:
-        return [Problem("the photo OCR service isn't ready (its health check failed).", fix="recheck")]
+    health, problems = SERVICE.health(settings)
+    if problems:
+        return problems
     if uses_immich and health.get("immich") is False:
         return [Problem("the photo OCR service can't reach Immich right now.", blocking=False, fix="recheck")]
     return []

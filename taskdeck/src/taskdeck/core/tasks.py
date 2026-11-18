@@ -105,6 +105,9 @@ class Task:
     done: int = 0
     total: int = 0
     message: str = ""  # result or error, for the user
+    # A failure the user can fix, from the exception's ``fix`` attribute: an account's settings id (e.g.
+    # "account:google") means "connect that account again", and the screen offers a button for it.
+    fix: str = ""
     note: str = ""  # a passing state while running, e.g. "Paused: no connection"
     phases: list[Phase] = field(default_factory=list)  # optional stages, each shown with its own bar
     result: Any = None  # anything the job wants to keep (e.g. the destination folder)
@@ -280,6 +283,7 @@ class TaskManager:
                 task.status = CANCELLED
             except Exception as exc:  # shown to the user; the job formats its own errors
                 task.message = str(exc) or type(exc).__name__
+                task.fix = str(getattr(exc, "fix", "") or "")
                 task.status = FAILED
                 error = traceback.format_exc()
             task.finished = time.time()

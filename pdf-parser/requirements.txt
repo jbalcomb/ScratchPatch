@@ -1,0 +1,4 @@
+# PyMuPDF pinned: its table finder (with the pymupdf-layout model that 2.x pulls in) decides which tables are
+# found, so a new version can change results. Upgrade on purpose and compare a few real PDFs.
+pymupdf==2.1
+Pillow>=10.1
