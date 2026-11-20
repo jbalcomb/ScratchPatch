@@ -8,6 +8,7 @@ are found; when you extract one, give it a ``shared.`` key via
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from taskdeck.core.pipeline import Context, Result, Stage, Step, StepError
@@ -101,3 +102,23 @@ def _fmt(value: Any) -> str:
     if isinstance(value, int) and not isinstance(value, bool):
         return f"{value:,}"
     return str(value)
+
+
+# ---- waiting for a service ---------------------------------------------------
+
+def wait_for_job(ctx: Context, job: dict, check: Callable[[dict], dict], *, wait_seconds: float,
+                 poll_seconds: float, label: str = "") -> dict:
+    """A job running on a service (status queued or running, then done or failed): ask ``check(job)`` for its
+    latest state every ``poll_seconds`` until it's neither, or ``wait_seconds`` pass (then the latest state:
+    the service carries on). Cancel stops the wait at once.
+
+    While it waits, the job screen shows what the service says it's doing (``ctx.status``): its ``step``
+    ("page 3 of 12") or else its status, after ``label`` ("Workstation: page 3 of 12"); with ``page`` and
+    ``pages`` the progress bar moves too."""
+    deadline = time.monotonic() + wait_seconds
+    while job.get("status") in ("queued", "running") and time.monotonic() < deadline:
+        said = str(job.get("step") or job.get("status"))
+        ctx.status(f"{label}: {said}" if label else said, job.get("page"), job.get("pages"))
+        ctx.sleep(poll_seconds)
+        job = check(job)
+    return job

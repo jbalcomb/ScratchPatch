@@ -1,0 +1,391 @@
+From a73e2a187bc9c4c7f2e5051705043f6fe430116b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 18:13:28 +0000
+Subject: [PATCH] Save pages to this machine: save.roots, save.queue,
+ save.status, save.list
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A queued save opens the page in a background tab, waits for the network to
+go quiet, and writes MHTML (Page.captureSnapshot) and/or PDF into a folder
+inside one of CHROMERS_SAVE_ROOTS (default web=~/Archive/web). Paths that
+lead out of a root (.., absolute, symlinks) are refused; names come from
+the page title and date, never overwriting ("… (2)"). One save at a time;
+finished jobs are kept for save.status and appended to
+~/.config/chromers/saves.jsonl. For the TaskDeck "Save web page" job.
+
+Tested end to end with headless Chromium: MHTML includes JS-rendered
+content and images; escape attempts, unknown roots and missing tokens
+are refused.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ README.md               |  20 ++++-
+ daemon/src/commands.ts  |  42 +++++++++++
+ daemon/src/config.ts    |  18 +++++
+ daemon/src/index.ts     |   4 +-
+ daemon/src/mcp-stdio.ts |   4 +-
+ daemon/src/saves.ts     | 161 ++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 246 insertions(+), 3 deletions(-)
+ create mode 100644 daemon/src/saves.ts
+
+diff --git a/README.md b/README.md
+index 973602b..34d3684 100644
+--- a/README.md
++++ b/README.md
+@@ -94,12 +94,29 @@ claude mcp add chromers -- npx --prefix "$PWD/daemon" tsx "$PWD/daemon/src/mcp-s
+ ## Commands
+ `tabs.list` `tabs.new` `tabs.activate` `tabs.close` · `page.navigate` `page.back`
+ `page.forward` `page.reload` · `page.scroll` `page.click` `page.type` `page.key` ·
+-`page.read` `page.screenshot` `page.zoom` · `page.eval` (off unless `CHROMERS_ALLOW_EVAL=1`).
++`page.read` `page.screenshot` `page.zoom` · `page.eval` (off unless `CHROMERS_ALLOW_EVAL=1`) ·
++`save.roots` `save.queue` `save.status` `save.list`.
+ 
+ Commands without `tab` act on the tab you're looking at. To add a command, add one entry
+ to `daemon/src/commands.ts`. REST, WebSocket, MCP, the catalog, and the Python
+ `call()` pick it up automatically.
+ 
++## Saving pages to this machine
++`save.queue` saves a page as it looks, on this machine's disk: the browser opens it in a background tab
++(the tab you're looking at is left alone), waits for it to finish loading, and writes **MHTML** (one file
++Chrome/Edge open exactly as the page was) and/or **PDF**. It's queued, so the caller (e.g. the TaskDeck
++phone app's "Save web page" job) can go away; `save.status` with the returned id tells how it went.
++
++Saves only go into the folders in `CHROMERS_SAVE_ROOTS` (by name), plus a subfolder inside one; a path
++that leads out of a root (`..`, an absolute path, a symlink) is refused.
++
++```bash
++curl -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
++     -d '{"url":"example.com","root":"web","folder":"recipes","formats":["mhtml","pdf"]}' \
++     localhost:7700/api/commands/save.queue           # -> {"ok":true,"result":{"id":"…","status":"queued",…}}
++```
++Finished jobs are also appended to `~/.config/chromers/saves.jsonl`.
++
+ ## Configuration (environment)
+ | Var | Default | |
+ |---|---|---|
+@@ -108,6 +125,7 @@ to `daemon/src/commands.ts`. REST, WebSocket, MCP, the catalog, and the Python
+ | `CHROMERS_TOKEN` | `~/.config/chromers/token` | Bearer token for REST/WS/MCP |
+ | `CHROMERS_CDP_URL` | `http://127.0.0.1:9222` | |
+ | `CHROMERS_ALLOW_EVAL` | off | Enables `page.eval` |
++| `CHROMERS_SAVE_ROOTS` | `web=~/Archive/web` | Folders `save.*` may write into, by name: `web=~/Archive/web,docs=/srv/docs` |
+ | `CHROMIUM_BIN` | snap Chromium | For `launch-chromium.sh`, e.g. your own build |
+ 
+ ## Security model
+diff --git a/daemon/src/commands.ts b/daemon/src/commands.ts
+index 7a665fb..db625b2 100644
+--- a/daemon/src/commands.ts
++++ b/daemon/src/commands.ts
+@@ -2,6 +2,7 @@ import { z } from "zod";
+ import type { KeyInput } from "puppeteer-core";
+ import { BrowserLink, CommandError } from "./browser.js";
+ import type { Config } from "./config.js";
++import type { SaveQueue } from "./saves.js";
+ 
+ /**
+  * The one command set. Every input channel (REST, phone WebSocket, MCP,
+@@ -17,6 +18,7 @@ export interface Command<S extends z.ZodObject = z.ZodObject> {
+ export interface Ctx {
+   browser: BrowserLink;
+   config: Config;
++  saves: SaveQueue;
+ }
+ 
+ /** Commands that return an image put base64 PNG data here so MCP can render it. */
+@@ -276,6 +278,46 @@ export const commands: Command[] = [
+       return { result: await page.evaluate(expression) };
+     },
+   }),
++  cmd({
++    name: "save.roots",
++    description: "Folders on this machine that pages can be saved into (by name), from CHROMERS_SAVE_ROOTS.",
++    schema: z.object({}),
++    async run(_a, { config }) {
++      return Object.entries(config.saveRoots).map(([name, folder]) => ({ name, folder }));
++    },
++  }),
++  cmd({
++    name: "save.queue",
++    description:
++      "Queue a page to be saved on this machine, as it looks: MHTML (one file Chrome/Edge open as the page " +
++      "was) and/or PDF, into a folder inside one of the save roots. Returns a job; poll save.status with its id.",
++    schema: z.object({
++      url: z.string().min(1),
++      root: z.string().min(1).describe("A root name from save.roots"),
++      folder: z.string().default("").describe("Subfolder inside the root, e.g. 'recipes/2026'"),
++      formats: z.array(z.enum(["mhtml", "pdf"])).min(1).default(["mhtml"]),
++      name: z.string().optional().describe("File name without extension; default: the page title and date"),
++    }),
++    async run({ url, root, folder, formats, name }, { saves }) {
++      return saves.queue({ url: normalizeUrl(url), root, folder, formats, name });
++    },
++  }),
++  cmd({
++    name: "save.status",
++    description: "A save job's state (queued, running, done, failed), title, files written, or error.",
++    schema: z.object({ id: z.string().min(1) }),
++    async run({ id }, { saves }) {
++      return saves.get(id);
++    },
++  }),
++  cmd({
++    name: "save.list",
++    description: "Recent save jobs, newest first.",
++    schema: z.object({ limit: z.number().int().positive().max(200).default(20) }),
++    async run({ limit }, { saves }) {
++      return saves.list(limit);
++    },
++  }),
+ ];
+ 
+ const byName = new Map(commands.map((c) => [c.name, c]));
+diff --git a/daemon/src/config.ts b/daemon/src/config.ts
+index a082920..9b90bc0 100644
+--- a/daemon/src/config.ts
++++ b/daemon/src/config.ts
+@@ -14,6 +14,11 @@ export interface Config {
+   token: string;
+   /** Allow arbitrary JavaScript evaluation in pages (page.eval). Off by default. */
+   allowEval: boolean;
++  /**
++   * Folders save.* may write into, by name (CHROMERS_SAVE_ROOTS="web=~/Archive/web,docs=/srv/docs").
++   * A save names a root and a subfolder inside it; nothing outside these folders can be written.
++   */
++  saveRoots: Record<string, string>;
+ }
+ 
+ const CONFIG_DIR = join(homedir(), ".config", "chromers");
+@@ -44,6 +49,18 @@ function tailscaleIp(): string | undefined {
+   }
+ }
+ 
++/** "web=~/Archive/web,docs=/srv/docs" -> { web: "/home/me/Archive/web", docs: "/srv/docs" }. */
++export function parseSaveRoots(spec: string): Record<string, string> {
++  const roots: Record<string, string> = {};
++  for (const part of spec.split(",").map((p) => p.trim()).filter(Boolean)) {
++    const eq = part.indexOf("=");
++    if (eq < 1) throw new Error(`CHROMERS_SAVE_ROOTS: "${part}" should be name=folder`);
++    const folder = part.slice(eq + 1).trim().replace(/^~(?=$|\/)/, homedir());
++    roots[part.slice(0, eq).trim()] = folder;
++  }
++  return roots;
++}
++
+ export function loadConfig(): Config {
+   const hosts = process.env.CHROMERS_HOSTS
+     ? process.env.CHROMERS_HOSTS.split(",").map((h) => h.trim())
+@@ -55,5 +72,6 @@ export function loadConfig(): Config {
+     port: Number(process.env.CHROMERS_PORT ?? 7700),
+     token: loadToken(),
+     allowEval: process.env.CHROMERS_ALLOW_EVAL === "1",
++    saveRoots: parseSaveRoots(process.env.CHROMERS_SAVE_ROOTS ?? "web=~/Archive/web"),
+   };
+ }
+diff --git a/daemon/src/index.ts b/daemon/src/index.ts
+index 6b5a876..cab79e3 100644
+--- a/daemon/src/index.ts
++++ b/daemon/src/index.ts
+@@ -5,13 +5,15 @@ import express from "express";
+ import { requireToken } from "./auth.js";
+ import { BrowserLink } from "./browser.js";
+ import { loadConfig } from "./config.js";
++import { SaveQueue } from "./saves.js";
+ import type { Ctx } from "./commands.js";
+ import { restRouter } from "./adapters/rest.js";
+ import { attachWebSocket } from "./adapters/ws.js";
+ import { mcpHttpHandler } from "./adapters/mcp.js";
+ 
+ const config = loadConfig();
+-const ctx: Ctx = { config, browser: new BrowserLink(config.cdpUrl) };
++const browser = new BrowserLink(config.cdpUrl);
++const ctx: Ctx = { config, browser, saves: new SaveQueue(browser, config) };
+ const publicDir = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+ 
+ const app = express();
+diff --git a/daemon/src/mcp-stdio.ts b/daemon/src/mcp-stdio.ts
+index 444a350..ddccf92 100644
+--- a/daemon/src/mcp-stdio.ts
++++ b/daemon/src/mcp-stdio.ts
+@@ -6,8 +6,10 @@
+ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+ import { BrowserLink } from "./browser.js";
+ import { loadConfig } from "./config.js";
++import { SaveQueue } from "./saves.js";
+ import { buildMcpServer } from "./adapters/mcp.js";
+ 
+ const config = loadConfig();
+-const server = buildMcpServer({ config, browser: new BrowserLink(config.cdpUrl) });
++const browser = new BrowserLink(config.cdpUrl);
++const server = buildMcpServer({ config, browser, saves: new SaveQueue(browser, config) });
+ await server.connect(new StdioServerTransport());
+diff --git a/daemon/src/saves.ts b/daemon/src/saves.ts
+new file mode 100644
+index 0000000..e66cb2b
+--- /dev/null
++++ b/daemon/src/saves.ts
+@@ -0,0 +1,161 @@
++import { appendFileSync, mkdirSync, realpathSync, writeFileSync, existsSync } from "node:fs";
++import { homedir } from "node:os";
++import { isAbsolute, join, relative, resolve, sep } from "node:path";
++import { randomBytes } from "node:crypto";
++import type { BrowserLink } from "./browser.js";
++import { CommandError } from "./browser.js";
++import type { Config } from "./config.js";
++
++/**
++ * Saving pages to this machine's disk, queued: callers (e.g. TaskDeck on a phone) queue a URL and
++ * come back for the result, so the save finishes even if they disconnect. One save at a time, in a
++ * background tab (the tab you're looking at is left alone), as MHTML (one file that Chrome/Edge open
++ * exactly as the page looked) and/or PDF.
++ */
++
++export type Format = "mhtml" | "pdf";
++
++export interface SaveJob {
++  id: string;
++  url: string;
++  root: string;
++  folder: string; // inside the root
++  formats: Format[];
++  name?: string; // file name without extension; default: page title + date
++  status: "queued" | "running" | "done" | "failed";
++  title?: string;
++  finalUrl?: string;
++  files: { path: string; bytes: number }[];
++  error?: string;
++  queuedAt: string;
++  finishedAt?: string;
++}
++
++const LOG = join(homedir(), ".config", "chromers", "saves.jsonl");
++const KEEP = 200; // finished jobs remembered for save.status / save.list
++const LOAD_TIMEOUT_MS = 60_000;
++const SETTLE_MS = 1500; // after the network goes quiet: late images, fonts, lazy content
++
++/** The folder for a save: inside the named root, never outside it (no "..", no absolute paths). */
++export function resolveFolder(roots: Record<string, string>, root: string, folder: string): string {
++  const base = roots[root];
++  if (!base) throw new CommandError(`unknown root "${root}"; allowed: ${Object.keys(roots).join(", ") || "none"}`);
++  const sub = (folder ?? "").trim().replace(/\\/g, "/");
++  if (isAbsolute(sub) || sub.split("/").includes("..")) throw new CommandError("folder must stay inside the root");
++  mkdirSync(base, { recursive: true });
++  const realBase = realpathSync(base);
++  const target = resolve(realBase, sub);
++  const rel = relative(realBase, target);
++  if (rel.startsWith("..") || isAbsolute(rel)) throw new CommandError("folder must stay inside the root");
++  mkdirSync(target, { recursive: true });
++  const realTarget = realpathSync(target); // a symlink inside the root must not lead out of it
++  if (realTarget !== realBase && !realTarget.startsWith(realBase + sep)) {
++    throw new CommandError("folder must stay inside the root");
++  }
++  return realTarget;
++}
++
++/** "My Page: Title?" -> "My Page - Title" (safe on Windows, Linux and macOS). */
++export function safeName(text: string, max = 80): string {
++  const s = text.replace(/[\\/:*?"<>|\x00-\x1f]+/g, " - ").replace(/\s+/g, " ").replace(/^[ .-]+|[ .-]+$/g, "");
++  return (s || "page").slice(0, max).trim();
++}
++
++function uniquePath(dir: string, base: string, ext: string): string {
++  let path = join(dir, `${base}.${ext}`);
++  for (let n = 2; existsSync(path); n++) path = join(dir, `${base} (${n}).${ext}`);
++  return path;
++}
++
++export class SaveQueue {
++  private jobs = new Map<string, SaveJob>();
++  private order: string[] = [];
++  private running = false;
++
++  constructor(private browser: BrowserLink, private config: Config, private logFile = LOG) {}
++
++  queue(req: { url: string; root: string; folder?: string; formats: Format[]; name?: string }): SaveJob {
++    resolveFolder(this.config.saveRoots, req.root, req.folder ?? ""); // refuse a bad folder now, not later
++    const job: SaveJob = {
++      id: randomBytes(6).toString("hex"),
++      url: req.url,
++      root: req.root,
++      folder: req.folder ?? "",
++      formats: req.formats,
++      name: req.name,
++      status: "queued",
++      files: [],
++      queuedAt: new Date().toISOString(),
++    };
++    this.jobs.set(job.id, job);
++    this.order.push(job.id);
++    while (this.order.length > KEEP) this.jobs.delete(this.order.shift()!);
++    void this.pump();
++    return job;
++  }
++
++  get(id: string): SaveJob {
++    const job = this.jobs.get(id);
++    if (!job) throw new CommandError(`no save job ${id} (finished jobs are remembered until the daemon restarts)`);
++    return job;
++  }
++
++  list(limit = 20): SaveJob[] {
++    return this.order.slice(-limit).reverse().map((id) => this.jobs.get(id)!).filter(Boolean);
++  }
++
++  private async pump(): Promise<void> {
++    if (this.running) return;
++    this.running = true;
++    try {
++      for (let job; (job = this.order.map((id) => this.jobs.get(id)!).find((j) => j?.status === "queued")); ) {
++        await this.run(job);
++      }
++    } finally {
++      this.running = false;
++    }
++  }
++
++  private async run(job: SaveJob): Promise<void> {
++    job.status = "running";
++    let page;
++    try {
++      const dir = resolveFolder(this.config.saveRoots, job.root, job.folder);
++      const browser = await this.browser.get();
++      page = await browser.newPage({ background: true });
++      await page.goto(job.url, { waitUntil: "networkidle2", timeout: LOAD_TIMEOUT_MS });
++      await new Promise((r) => setTimeout(r, SETTLE_MS));
++      job.title = await page.title();
++      job.finalUrl = page.url();
++      const stamp = new Date().toISOString().slice(0, 10);
++      const base = safeName(job.name || `${job.title || new URL(job.finalUrl).hostname} ${stamp}`);
++      if (job.formats.includes("mhtml")) {
++        const cdp = await page.createCDPSession();
++        const { data } = (await cdp.send("Page.captureSnapshot", { format: "mhtml" })) as { data: string };
++        await cdp.detach();
++        const path = uniquePath(dir, base, "mhtml");
++        writeFileSync(path, data);
++        job.files.push({ path, bytes: Buffer.byteLength(data) });
++      }
++      if (job.formats.includes("pdf")) {
++        const pdf = await page.pdf({ printBackground: true, format: "A4" });
++        const path = uniquePath(dir, base, "pdf");
++        writeFileSync(path, pdf);
++        job.files.push({ path, bytes: pdf.length });
++      }
++      job.status = "done";
++    } catch (e) {
++      job.status = "failed";
++      job.error = e instanceof Error ? e.message : String(e);
++    } finally {
++      job.finishedAt = new Date().toISOString();
++      await page?.close().catch(() => undefined);
++      try {
++        mkdirSync(join(this.logFile, ".."), { recursive: true });
++        appendFileSync(this.logFile, JSON.stringify(job) + "\n");
++      } catch {
++        // the log is a record, not required
++      }
++    }
++  }
++}
+-- 
+2.43.0
+

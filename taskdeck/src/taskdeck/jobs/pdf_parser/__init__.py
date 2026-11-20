@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from taskdeck.core import WIFI_ONLY, Field, JobPlugin, Pipeline, Problem, Result, Stage, StepError, step
-from taskdeck.shared import service
+from taskdeck.shared import service, steps
 
 DEFAULT_URL = "https://pdf-parser.tailc54221.ts.net"  # the Tailscale Service "pdf-parser" on the AI Workstation
 MAX_MB = 200
@@ -53,13 +53,8 @@ def send_pdf(ctx):
 def wait_for_parsing(ctx):
     """Ask every POLL_SECONDS until the job is done or failed, up to WAIT_SECONDS; Cancel stops the wait (the
     service carries on)."""
-    job = ctx["job"]
-    deadline = time.monotonic() + WAIT_SECONDS
-    while job.get("status") in ("queued", "running") and time.monotonic() < deadline:
-        ctx.status(f"Workstation: {job.get('step') or job.get('status')}", job.get("page"), job.get("pages"))
-        ctx.sleep(POLL_SECONDS)
-        job = call(ctx.settings, "GET", f"/api/jobs/{job['id']}")
-    ctx["job"] = job
+    ctx["job"] = steps.wait_for_job(ctx, ctx["job"], lambda job: call(ctx.settings, "GET", f"/api/jobs/{job['id']}"),
+                                    wait_seconds=WAIT_SECONDS, poll_seconds=POLL_SECONDS, label="Workstation")
 
 
 def _n(summary: dict, key: str) -> int:
