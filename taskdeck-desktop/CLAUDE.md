@@ -82,7 +82,9 @@ Android) lives in `../taskdeck` of this repository. Read `README.md` and `docs/P
   GitHub Actions workflows must be at the root in `.github/workflows/`, named `taskdeck-desktop-*.yml`, with
   `working-directory: taskdeck-desktop` and a `paths:` filter for this folder.
 * Work on the `taskdeck-desktop` branch. Other sessions push to `main` for other projects: merge
-  `origin/main` before you push, and never rewrite shared history.
+  `origin/main` before you push, and never rewrite shared history. Merge the branch into `main` only when the
+  user asks: a push to `main` publishes a desktop release (`taskdeck-desktop-release.yml`) and, when it
+  changes `../taskdeck`, the phone app too.
 * Never commit credentials (API keys, the Google service-account key, OAuth client secrets). The repo is
   public.
 * Don't change `../taskdeck` from here without the user asking: the phone app is in daily use and publishes

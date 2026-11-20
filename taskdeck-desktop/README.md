@@ -39,11 +39,11 @@ Update downloads the zip into `.update\` in TaskDeck's folder, checks its SHA-25
 moves the new ones in, and starts the new TaskDeck. If a file can't be moved (open in another program), what
 was moved is put back, TaskDeck says why and starts again on the old version, still offering the update. The
 next start removes `.old\`. Pins, history, settings and keys aren't in that folder, so they stay. Downloads
-are HTTPS from github.com; anyone who can push to the `taskdeck-desktop` branch can change what installed
+are HTTPS from github.com; anyone who can push to `main` can change what installed
 copies run (the same trust as the phone's live updates, `../taskdeck/docs/UPDATES.md`).
 
-The release workflow (`.github/workflows/taskdeck-desktop-release.yml`) runs on every push to the
-`taskdeck-desktop` branch that changes this folder or the phone's jobs: tests, a build numbered with the run
+The release workflow (`.github/workflows/taskdeck-desktop-release.yml`) runs on every push to `main` that
+changes this folder or the phone's jobs (they ship with it): tests, a build numbered with the run
 number (shown as version `0.1.<build>`), `tools/package.ps1` (which also checks that every job loads in the
 bundled Python), then the zip and the manifest are uploaded. A build from source is build 0: it uses Python
 from PATH and the source tree's jobs, and never offers updates.
@@ -159,7 +159,7 @@ cmake --build build-mingw    # -> build-mingw/TaskDeck.exe
 
 GitHub Actions builds it with MSVC on every push that changes this folder
 (`.github/workflows/taskdeck-desktop-ci.yml`) and keeps `TaskDeck.exe` as a download on the run; the release
-workflow (above) publishes from the `taskdeck-desktop` branch.
+workflow (above) publishes from `main`.
 
 ## Layout
 

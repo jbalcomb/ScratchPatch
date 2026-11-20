@@ -7,10 +7,10 @@ name: TaskDeck Desktop release
 on:
   workflow_dispatch:
   push:
-    # Only this branch publishes: a branch that is behind (main before TaskDeck Desktop is merged into it, an
-    # old copy) must never replace what is installed. Switch to main once the work lands there.
+    # Only main publishes: a branch that is behind (the taskdeck-desktop work branch, an old copy) must never
+    # replace what is installed. A push to main that changes the phone's jobs publishes too: they ship with it.
     branches:
-      - taskdeck-desktop
+      - main
     paths:
       - "taskdeck-desktop/**"
       - "taskdeck/src/taskdeck/**"   # the jobs ship with each release

@@ -92,8 +92,8 @@ The questions as they were asked:
    already runs from the phone's job. Send to Devices waits for CrossMess to reach `main`.
    **Releases and updates (decision 5, done 2026-11-14):** `.github/workflows/taskdeck-desktop-release.yml`
    publishes a zip (the exe, `7z.dll`, the job host, the phone's jobs, Python 3.14's embeddable package, the
-   licences; about 16 MB) and a manifest to the `taskdeck-desktop-latest` release from the `taskdeck-desktop`
-   branch; the app checks the manifest at start, downloads and checks the zip, and swaps its files on Restart
+   licences; about 16 MB) and a manifest to the `taskdeck-desktop-latest` release from `main` (from the
+   `taskdeck-desktop` branch until it was merged, 2026-11-20); the app checks the manifest at start, downloads and checks the zip, and swaps its files on Restart
    (`src/updater.*`, README "Install"). Python is bundled (the decision left it open: a plain exe shouldn't need
    an install). An icon (`assets/taskdeck.ico`) for the window, taskbar and tray. Checked on Windows with two
    local builds (0.1.1 updating to 0.1.2 from a local web server): the banner, Update, Restart (the new version
