@@ -28,11 +28,15 @@ class Sent:
 
     def __init__(self) -> None:
         self.messages: queue.Queue = queue.Queue()
+        self.skipped: list = []  # passed over by an earlier wait: a later one may want them (they can come in any order)
 
     def __call__(self, msg):
         self.messages.put(json.loads(json.dumps(msg, default=str)))  # must be JSON-serializable
 
     def wait(self, pred, timeout=5.0):
+        for i, msg in enumerate(self.skipped):
+            if pred(msg):
+                return self.skipped.pop(i)
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             try:
@@ -41,6 +45,7 @@ class Sent:
                 continue
             if pred(msg):
                 return msg
+            self.skipped.append(msg)
         raise AssertionError("no matching message")
 
 
